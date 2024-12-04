@@ -45,7 +45,10 @@ functions = [
 # fmt: on
 
 # make list to use it multiple times and as np.array for slicing
-cases_quat = np.array(list(product(arguments_quat, functions)), dtype=object)
+idx_normality = np.array([0, 1, 2, 3, 5])
+cases_quat = np.array(list(product(arguments_quat, functions)), dtype=object)[
+    idx_normality
+]
 # cases_quat:
 #   0: no argument
 #   1: no argument, x is normalized
@@ -73,10 +76,9 @@ test_parameters_orthogonality = [
 ]
 
 # is not supposed to work with non-normalized and non-unit quaternions
-idx_normality = np.array([0, 1, 2, 3, 5])
 test_parameters_normality = [
     [Exp_SO3, q3, cases_so3],
-    [Exp_SO3_quat, q4, cases_quat[idx_normality]],
+    [Exp_SO3_quat, q4, cases_quat],
 ]
 
 # all derivatives should work
