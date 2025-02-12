@@ -126,7 +126,21 @@ def Meshed(Base):
 
                 cells = [(VTK_TRIANGLE, face) for face in self.B_visual_mesh.faces]
 
-            return points, cells, None, None
+                # export modes
+                omegas = sol_i.omegas
+                modes_dq = sol_i.modes_dq
+
+                point_data = {}
+                r_OP_q = self.r_OP_q(sol_i.t, sol_i.q[self.qDOF])
+                A_IB_q = self.A_IB_q(sol_i.t, sol_i.q[self.qDOF])
+                for i, mode_dq in enumerate(modes_dq.T):
+                    dr_OC = r_OP_q @ mode_dq
+                    dA_IB = np.einsum("ijk, k -> ij", A_IB_q, mode_dq)
+                    mode_data = (dr_OC[:, None] + dA_IB @ self.B_r_CQi_T).T
+                    mode_str = f"mode {i:02d}, omega {omegas[i]:+.2f}"
+                    point_data[mode_str] = mode_data
+
+            return points, cells, point_data, None
 
     return _Meshed
 

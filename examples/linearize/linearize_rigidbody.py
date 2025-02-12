@@ -14,12 +14,10 @@ if __name__ == "__main__":
     ###################
     # system parameters
     ###################
-    m = 1.0  # mass
     block_dim = np.array([5.0, 3.0, 2.0])  # size of the block
-    B_Theta_C = m / 12 * np.diag(np.diag(-ax2skew_squared(block_dim)))
 
     l0 = 3.0  # rest length of the spring
-    k = 100  # spring stiffness
+    k = 300  # spring stiffness
     d = 2  # damping constant
     d = 0
 
@@ -30,23 +28,15 @@ if __name__ == "__main__":
 
     # initialize rigid body
     q0 = RigidBody.pose2q(r_OC, A_IB)
-    block = RigidBody(m, B_Theta_C, q0=q0, u0=np.zeros(6, dtype=float), name="block")
     block = Box(RigidBody)(
         dimensions=block_dim,
-        mass=m,
-        B_Theta_C=B_Theta_C,
+        density=0.1,
         q0=q0,
-        u0=np.zeros(6, dtype=float),
         name="block",
     )
 
-    # compute offsets
-    B_r_CP0 = 0.5 * np.array([block_dim[0], -block_dim[1], block_dim[2]], dtype=float)
-    B_r_CP1 = 0.5 * np.array([block_dim[0], block_dim[1], block_dim[2]], dtype=float)
-    B_r_CP2 = 0.5 * np.array([-block_dim[0], block_dim[1], block_dim[2]], dtype=float)
-    B_r_CP3 = 0.5 * np.array([-block_dim[0], -block_dim[1], block_dim[2]], dtype=float)
-
-    B_r_CPis = [B_r_CP0, B_r_CP1, B_r_CP2, B_r_CP3]
+    # get offsets of upper vertices
+    B_r_CPis = block.B_r_CQi_T[:, block.B_r_CQi_T[2, :] > 0].T
     r_OQis = [r_OC + A_IB @ (B_r_CPi + np.array([0, 0, l0])) for B_r_CPi in B_r_CPis]
 
     #################
@@ -94,7 +84,7 @@ if __name__ == "__main__":
     B = system.q_dot_u(t0, q0).toarray()
 
     A = np.block(
-        [[np.linalg.solve(M, h_u), np.linalg.solve(M, h_q)], [B, np.zeros([7, 7])]]
+        [[np.zeros([7, 7]), B], [np.linalg.solve(M, h_q), np.linalg.solve(M, h_u)]]
     )
 
     if False:
@@ -107,29 +97,28 @@ if __name__ == "__main__":
         print(f"A: \n{A}")
 
     print("Theoretical values: ")
-    print(f"  omega_vertical: {np.sqrt(4 * k / m)}")
-    print(f" omega long axis: {np.sqrt(k * block_dim[1]**2 / B_Theta_C[0, 0])}")
-    print(f"omega short axis: {np.sqrt(k * block_dim[0]**2 / B_Theta_C[1, 1])}")
+    print(f"  omega_vertical: {np.sqrt(4 * k / block.mass)}")
+    print(f" omega long axis: {np.sqrt(k * block_dim[1]**2 / block.B_Theta_C[0, 0])}")
+    print(f"omega short axis: {np.sqrt(k * block_dim[0]**2 / block.B_Theta_C[1, 1])}")
 
     # compute eigenvalues
     lambdas, vs = np.linalg.eig(A)
     print("Computed values: ")
-    pprint([*lambdas])
 
-    v_u = vs[:6]
-    v_q = vs[6:]
+    v_q = vs[:7]
+    v_u = vs[7:]
 
     for i in range(len(lambdas)):
         vq = v_q[:, i]
         vu = v_u[:, i]
         print(f"Eigenvalue {i}: {np.real(lambdas[i]):.5f} + {np.imag(lambdas[i]):.5f}j")
-        print(f"    Re(v_u): {[str('{s: .5f}').format(s=s) for s in np.real(vu)]}")
-        print(f"    Im(v_u): {[str('{s: .5f}').format(s=s) for s in np.imag(vu)]}")
         print(f"    Re(v_q): {[str('{s: .5f}').format(s=s) for s in np.real(vq)]}")
         print(f"    Im(v_q): {[str('{s: .5f}').format(s=s) for s in np.imag(vq)]}")
+        print(f"    Re(v_u): {[str('{s: .5f}').format(s=s) for s in np.real(vu)]}")
+        print(f"    Im(v_u): {[str('{s: .5f}').format(s=s) for s in np.imag(vu)]}")
 
-        # export
-        if True:
+        # export nonlinear
+        if False:
             T = 2
             nt = 51
             t = np.linspace(0, T, nt)
@@ -151,3 +140,43 @@ if __name__ == "__main__":
             # vtk-export
             dir_name = Path(__file__).parent
             system.export(dir_name, f"vtk_{i}", sol, fps=25)
+
+    # export linearized
+    if True:
+        T = 1
+        nt = 1
+        t = np.linspace(0, T, nt)
+        q = np.array([q0] * nt)
+        u = np.array([u0] * nt)
+
+        v_q_Re = np.real(v_q)
+        v_q_Im = np.imag(v_q)
+        v_q_abs = np.abs(v_q)
+        modes_dq = np.zeros_like(v_q.T, dtype=float)
+        for i in range(len(lambdas)):
+            v_qi = v_q_Re[:, i]
+            v_qi = v_q_abs[:, i]
+            # modes_dq[i] = v_qi
+            modes_dq[i] = v_qi / np.linalg.norm(v_qi)
+        omegas = np.array([np.imag(lambdas)])
+        modes_dq = np.array([modes_dq.T])
+
+        # compose solution object with omegas and modes
+        sol = Solution(system, t, q, u, omegas=omegas, modes_dq=modes_dq)
+
+        # vtk-export
+        dir_name = Path(__file__).parent
+        system.export(dir_name, f"vtk", sol, fps=25)
+
+        # to visualize this export:
+        # - load files in paraview as usual
+        # - add filter "Warp By Vector" (Filters -> Common -> Warp By Vector)
+        # - select desired mode in WarpByVector -> Properties -> Vectors
+        # - Time Manager (View -> Time Inspector to show window)
+        #       - untik time sources
+        #       - increase number of frames
+        #       - Animations -> WrapByVector -> Scale Factor -> klick on "+"
+        #       - edit this animation: Interpolation -> Sinusoid (Phase, Frequency, Offset as default)
+        #       - set Value to desired amplitude (Value of Time 1 is not used)
+        # - activate repeat and play animation
+        # - show other modes by changing the vector in WarpByVector -> Properties -> Vectors
