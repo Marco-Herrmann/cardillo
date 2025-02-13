@@ -7,7 +7,7 @@ from cardillo import System
 from cardillo.discrete import Box, PointMass, Frame, RigidBody
 from cardillo.force_laws import KelvinVoigtElement as SpringDamper
 from cardillo.interactions import TwoPointInteraction
-from cardillo.math import Exp_SO3_quat, ax2skew, ax2skew_squared
+from cardillo.math import Exp_SO3_quat, e3
 from cardillo.solver import ScipyIVP, Solution
 
 if __name__ == "__main__":
@@ -25,6 +25,7 @@ if __name__ == "__main__":
     r_OC = np.array([0, 0, 0], dtype=float)
     A_IB = np.eye(3, dtype=float)
     A_IB = Exp_SO3_quat(np.array([1.0, 2.0, 3.0, 4.0]), normalize=True)
+    A_IB = Exp_SO3_quat(2 * np.random.rand(4) - 1, normalize=True)
 
     # initialize rigid body
     q0 = RigidBody.pose2q(r_OC, A_IB)
@@ -35,9 +36,9 @@ if __name__ == "__main__":
         name="block",
     )
 
-    # get offsets of upper vertices
+    # get offsets of upper vertices and compute positions of suspension
     B_r_CPis = block.B_r_CQi_T[:, block.B_r_CQi_T[2, :] > 0].T
-    r_OQis = [r_OC + A_IB @ (B_r_CPi + np.array([0, 0, l0])) for B_r_CPi in B_r_CPis]
+    r_OQis = [r_OC + A_IB @ (B_r_CPi + e3 * l0) for B_r_CPi in B_r_CPis]
 
     #################
     # assemble system
@@ -83,9 +84,11 @@ if __name__ == "__main__":
     q_dot = system.q_dot(t0, q0, u0)
     B = system.q_dot_u(t0, q0).toarray()
 
-    A = np.block(
-        [[np.zeros([7, 7]), B], [np.linalg.solve(M, h_q), np.linalg.solve(M, h_u)]]
-    )
+    K_bar = np.linalg.solve(M, h_q)
+    D_bar = np.linalg.solve(M, h_u)
+
+    A = np.block([[np.zeros([7, 7]), B], [K_bar, D_bar]])
+    A_undamped = np.block([[np.zeros([7, 7]), B], [K_bar, np.zeros([6, 6])]])
 
     if False:
         print(f"M: \n{M}")
@@ -103,19 +106,27 @@ if __name__ == "__main__":
 
     # compute eigenvalues
     lambdas, vs = np.linalg.eig(A)
+    lambdas_undamped, vs_undamoed = np.linalg.eig(A_undamped)
+
+    las_BMK, Vs_BMK = np.linalg.eig(B @ K_bar)
+    las_MKB, Vs_MKB = np.linalg.eig(K_bar @ B)
+
+    # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems, i.e., if V diagonalizes M_inv@K (V.T @ M_inv @ K @ V is diagonal) V.T @ M_inv@D @ V is also diagonal
+    # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
+
     print("Computed values: ")
 
-    v_q = vs[:7]
-    v_u = vs[7:]
-
-    for i in range(len(lambdas)):
-        vq = v_q[:, i]
-        vu = v_u[:, i]
-        print(f"Eigenvalue {i}: {np.real(lambdas[i]):.5f} + {np.imag(lambdas[i]):.5f}j")
-        print(f"    Re(v_q): {[str('{s: .5f}').format(s=s) for s in np.real(vq)]}")
-        print(f"    Im(v_q): {[str('{s: .5f}').format(s=s) for s in np.imag(vq)]}")
-        print(f"    Re(v_u): {[str('{s: .5f}').format(s=s) for s in np.real(vu)]}")
-        print(f"    Im(v_u): {[str('{s: .5f}').format(s=s) for s in np.imag(vu)]}")
+    if False:
+        for i in range(len(lambdas)):
+            vq = v_q[:7, i]
+            vu = v_u[7:, i]
+            print(
+                f"Eigenvalue {i}: {np.real(lambdas[i]):.5f} + {np.imag(lambdas[i]):.5f}j"
+            )
+            print(f"    Re(v_q): {[str('{s: .5f}').format(s=s) for s in np.real(vq)]}")
+            print(f"    Im(v_q): {[str('{s: .5f}').format(s=s) for s in np.imag(vq)]}")
+            print(f"    Re(v_u): {[str('{s: .5f}').format(s=s) for s in np.real(vu)]}")
+            print(f"    Im(v_u): {[str('{s: .5f}').format(s=s) for s in np.imag(vu)]}")
 
         # export nonlinear
         if False:
@@ -147,28 +158,48 @@ if __name__ == "__main__":
         nt = 1
         t = np.linspace(0, T, nt)
         q = np.array([q0] * nt)
-        u = np.array([u0] * nt)
 
-        v_q_Re = np.real(v_q)
-        v_q_Im = np.imag(v_q)
-        v_q_abs = np.abs(v_q)
-        modes_dq = np.zeros_like(v_q.T, dtype=float)
-        for i in range(len(lambdas)):
-            v_qi = v_q_Re[:, i]
-            v_qi = v_q_abs[:, i]
-            # modes_dq[i] = v_qi
-            modes_dq[i] = v_qi / np.linalg.norm(v_qi)
-        omegas = np.array([np.imag(lambdas)])
-        modes_dq = np.array([modes_dq.T])
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_MKB)
+        las_MKB = las_MKB[sort_idx]
+        Vs_MKB = Vs_MKB[:, sort_idx]
+
+        # compute omegas and print modes
+        omegas = np.zeros_like(las_MKB)
+        for i, lai in enumerate(las_MKB):
+            if np.isclose(lai, 0.0, atol=1e-8):
+                omegas[i] = 0.0
+            elif lai > 0:
+                msg = f"warning: eigenvalue of M_inv @ K @ B is {lai}. This should not happen (expected to be <=0)."
+                print(msg)
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+            # extract eigenvector for velocity and compute the corresponding displacement
+            EV_u = Vs_MKB[:, i]
+            EV_q = B @ EV_u
+
+            # create nicely formatted strings
+            EV_u_str = [str("{s: .5f}").format(s=s) for s in EV_u]
+            EV_q_str = [str("{s: .5f}").format(s=s) for s in EV_q]
+
+            print(f"omega {i}: {omegas[i]:.5f}")
+            print(f"   Eigenvelocity:     {EV_u_str}")
+            print(f"   Eigendisplacement: {EV_q_str}")
+
+        # bring omegas and modes in correct shape
+        omegas = np.array([omegas])
+        modes_dq = np.array([B @ Vs_MKB])
 
         # compose solution object with omegas and modes
-        sol = Solution(system, t, q, u, omegas=omegas, modes_dq=modes_dq)
+        sol = Solution(system, t, q, omegas=omegas, modes_dq=modes_dq)
 
         # vtk-export
         dir_name = Path(__file__).parent
         system.export(dir_name, f"vtk", sol, fps=25)
 
-        # to visualize this export:
+        # Following https://public.kitware.com/pipermail/paraview/2017-October/041077.html to visualize this export:
         # - load files in paraview as usual
         # - add filter "Warp By Vector" (Filters -> Common -> Warp By Vector)
         # - select desired mode in WarpByVector -> Properties -> Vectors
