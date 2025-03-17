@@ -12,6 +12,18 @@ from cardillo.interactions import TwoPointInteraction
 from cardillo.math import Exp_SO3_quat, e3
 from cardillo.solver import ScipyIVP, Solution
 
+
+def scipy_eig(*args, **kwargs):
+    eig = scipy.linalg.eig(*args, **kwargs)
+    if eig[-1].dtype == complex:
+        return eig
+    elif eig[-1].dtype == float:
+        eig = list(eig)
+        assert np.isclose(np.linalg.norm(np.imag(eig[0])), 0.0)
+        eig[0] = eig[0].astype(float)
+        return tuple(eig)
+
+
 if __name__ == "__main__":
     ###################
     # system parameters
@@ -21,7 +33,7 @@ if __name__ == "__main__":
     l0 = 3.0  # rest length of the spring
     k = 300  # spring stiffness
     d = 2  # damping constant
-    d = 0
+    # d = 0
 
     # initial conditions
     r_OC = np.array([0, 0, 0], dtype=float)
@@ -99,6 +111,7 @@ if __name__ == "__main__":
     null_67 = np.zeros([6, 7], dtype=float)
     null_77 = np.zeros([7, 7], dtype=float)
 
+    I_6 = np.eye(6, dtype=float)
     I_7 = np.eye(7, dtype=float)
 
     # matrices for generalized eigenvalue problem
@@ -114,6 +127,8 @@ if __name__ == "__main__":
     # non-descriptor form (standard eigenvalue problem)
     A = np.block([[null_77, B], [M_inv @ K_bar, M_inv @ D]])
     A_undamped = np.block([[null_77, B], [M_inv @ K_bar, null_66]])
+    # projected with q = B @ u
+    A_projected = np.block([[null_66, I_6], [-M_inv @ K, -M_inv @ D]])
 
     if False:
         print(f"M: \n{M}")
@@ -134,16 +149,15 @@ if __name__ == "__main__":
     lambdas_undamped, vs_undamped = np.linalg.eig(A_undamped)
 
     # projected standard eigenvalue problem (no damping)
-    las_MKB, Vs_MKB = np.linalg.eig(M_inv @ K_bar @ B)
+    las_proj, Vs_proj = np.linalg.eig(A_projected)
+    las_proj_unpdamed_squared, Vs_proj_unpdamed_squared = np.linalg.eig(M_inv @ K)
 
     # compute eigenvalues with generalized eigenvalue problem
-    lambdas_g, vs_g = scipy.linalg.eig(A_hat, B_hat)
-    lambdas_g_undamped, vs_g_undamped = scipy.linalg.eig(A_hat_undamped, B_hat)
+    lambdas_g, vs_g = scipy_eig(A_hat, B_hat)
+    lambdas_g_undamped, vs_g_undamped = scipy_eig(A_hat_undamped, B_hat)
 
-    las_g_proj, Vs_g_proj = scipy.linalg.eig(A_hat_proj, B_hat_proj)
-    las_g_proj_undamped_squared, Vs_g_proj_undamped_squared = scipy.linalg.eig(-K, M)
-
-    print(np.sqrt(las_g_proj_undamped_squared))
+    las_g_proj, Vs_g_proj = scipy_eig(A_hat_proj, B_hat_proj)
+    las_g_proj_undamped_squared, Vs_g_proj_undamped_squared = scipy_eig(-K, M)
 
     # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems, i.e., if V diagonalizes M_inv@K (V.T @ M_inv @ K @ V is diagonal) V.T @ M_inv@D @ V is also diagonal
     # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
@@ -193,14 +207,24 @@ if __name__ == "__main__":
         t = np.linspace(0, T, nt)
         q = np.array([q0] * nt)
 
+        # standard form with numpy
+        las_squared, Vs_squared = np.linalg.eig(-M_inv @ K_bar @ B)
+        print(las_squared)
+        # standard form with scipy
+        las_squared, Vs_squared = scipy_eig(-M_inv @ K_bar @ B)
+        print(las_squared)
+        # general form (only available in scipy)
+        las_squared, Vs_squared = scipy_eig(-K, M)
+        print(las_squared)
+
         # sort eigenvalues such that rigid body modes are first
-        sort_idx = np.argsort(-las_MKB)
-        las_MKB = las_MKB[sort_idx]
-        Vs_MKB = Vs_MKB[:, sort_idx]
+        sort_idx = np.argsort(-las_squared)
+        las_squared = las_squared[sort_idx]
+        Vs_squared = Vs_squared[:, sort_idx]
 
         # compute omegas and print modes
-        omegas = np.zeros_like(las_MKB)
-        for i, lai in enumerate(las_MKB):
+        omegas = np.zeros_like(las_squared)
+        for i, lai in enumerate(las_squared):
             if np.isclose(lai, 0.0, atol=1e-8):
                 omegas[i] = 0.0
             elif lai > 0:
@@ -211,7 +235,7 @@ if __name__ == "__main__":
                 omegas[i] = np.sqrt(-lai)
 
             # extract eigenvector for velocity and compute the corresponding displacement
-            EV_u = Vs_MKB[:, i]
+            EV_u = Vs_squared[:, i]
             EV_q = B @ EV_u
 
             # create nicely formatted strings
@@ -224,7 +248,7 @@ if __name__ == "__main__":
 
         # bring omegas and modes in correct shape
         omegas = np.array([omegas])
-        modes_dq = np.array([B @ Vs_MKB])
+        modes_dq = np.array([B @ Vs_squared])
 
         # compose solution object with omegas and modes
         sol = Solution(system, t, q, omegas=omegas, modes_dq=modes_dq)
