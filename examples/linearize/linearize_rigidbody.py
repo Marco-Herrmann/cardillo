@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from pprint import pprint
+import scipy
+import scipy.linalg
 
 from cardillo import System
 from cardillo.discrete import Box, PointMass, Frame, RigidBody
@@ -24,7 +26,7 @@ if __name__ == "__main__":
     # initial conditions
     r_OC = np.array([0, 0, 0], dtype=float)
     A_IB = np.eye(3, dtype=float)
-    A_IB = Exp_SO3_quat(np.array([1.0, 2.0, 3.0, 4.0]), normalize=True)
+    # A_IB = Exp_SO3_quat(np.array([1.0, 2.0, 3.0, 4.0]), normalize=True)
     A_IB = Exp_SO3_quat(2 * np.random.rand(4) - 1, normalize=True)
 
     # initialize rigid body
@@ -38,7 +40,7 @@ if __name__ == "__main__":
 
     # get offsets of upper vertices and compute positions of suspension
     B_r_CPis = block.B_r_CQi_T[:, block.B_r_CQi_T[2, :] > 0].T
-    r_OQis = [r_OC + A_IB @ (B_r_CPi + e3 * l0) for B_r_CPi in B_r_CPis]
+    r_OQis = [r_OC + A_IB @ (B_r_CPi + l0 * e3) for B_r_CPi in B_r_CPis]
 
     #################
     # assemble system
@@ -70,6 +72,10 @@ if __name__ == "__main__":
     system.assemble()
 
     # compute matrices
+    # equations in form:    M @ u_dot = h, q_dot = B @ u
+    # linearization:        M @ u_dot = h_q @ q_dot + h_u @ u, q_dot = B @ u
+    # linear system: M @ u_dot + D @ u + K_bar @ q =0
+    # with      D = -h_u, K_bar = -h_q
     t0 = 0.0
     q0 = system.q0
     u0 = system.u0
@@ -80,15 +86,34 @@ if __name__ == "__main__":
     h = system.h(t0, q0, u0)
     h_q = system.h_q(t0, q0, u0).toarray()
     h_u = system.h_u(t0, q0, u0).toarray()
+    K_bar = -h_q
+    D = -h_u
 
     q_dot = system.q_dot(t0, q0, u0)
     B = system.q_dot_u(t0, q0).toarray()
 
-    K_bar = np.linalg.solve(M, h_q)
-    D_bar = np.linalg.solve(M, h_u)
+    # using q = B @ z
+    K = K_bar @ B
 
-    A = np.block([[np.zeros([7, 7]), B], [K_bar, D_bar]])
-    A_undamped = np.block([[np.zeros([7, 7]), B], [K_bar, np.zeros([6, 6])]])
+    null_66 = np.zeros([6, 6], dtype=float)
+    null_67 = np.zeros([6, 7], dtype=float)
+    null_77 = np.zeros([7, 7], dtype=float)
+
+    I_7 = np.eye(7, dtype=float)
+
+    # matrices for generalized eigenvalue problem
+    # A_hat @ v = lambda * B_hat @ v, v = [q, u]
+    A_hat = np.block([[-K_bar, -D], [null_77, B]])
+    A_hat_undamped = np.block([[-K_bar, null_66], [null_77, B]])
+    B_hat = np.block([[null_67, M], [I_7, null_67.T]])
+
+    # projected with q = B @ u
+    A_hat_proj = np.block([[-K, -D], [null_66, B.T @ B]])
+    B_hat_proj = np.block([[null_66, M], [B.T @ B, null_66]])
+
+    # non-descriptor form (standard eigenvalue problem)
+    A = np.block([[null_77, B], [M_inv @ K_bar, M_inv @ D]])
+    A_undamped = np.block([[null_77, B], [M_inv @ K_bar, null_66]])
 
     if False:
         print(f"M: \n{M}")
@@ -104,12 +129,21 @@ if __name__ == "__main__":
     print(f" omega long axis: {np.sqrt(k * block_dim[1]**2 / block.B_Theta_C[0, 0])}")
     print(f"omega short axis: {np.sqrt(k * block_dim[0]**2 / block.B_Theta_C[1, 1])}")
 
-    # compute eigenvalues
+    # compute eigenvalues with standard eigenvalue problem
     lambdas, vs = np.linalg.eig(A)
-    lambdas_undamped, vs_undamoed = np.linalg.eig(A_undamped)
+    lambdas_undamped, vs_undamped = np.linalg.eig(A_undamped)
 
-    las_BMK, Vs_BMK = np.linalg.eig(B @ K_bar)
-    las_MKB, Vs_MKB = np.linalg.eig(K_bar @ B)
+    # projected standard eigenvalue problem (no damping)
+    las_MKB, Vs_MKB = np.linalg.eig(M_inv @ K_bar @ B)
+
+    # compute eigenvalues with generalized eigenvalue problem
+    lambdas_g, vs_g = scipy.linalg.eig(A_hat, B_hat)
+    lambdas_g_undamped, vs_g_undamped = scipy.linalg.eig(A_hat_undamped, B_hat)
+
+    las_g_proj, Vs_g_proj = scipy.linalg.eig(A_hat_proj, B_hat_proj)
+    las_g_proj_undamped_squared, Vs_g_proj_undamped_squared = scipy.linalg.eig(-K, M)
+
+    print(np.sqrt(las_g_proj_undamped_squared))
 
     # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems, i.e., if V diagonalizes M_inv@K (V.T @ M_inv @ K @ V is diagonal) V.T @ M_inv@D @ V is also diagonal
     # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
