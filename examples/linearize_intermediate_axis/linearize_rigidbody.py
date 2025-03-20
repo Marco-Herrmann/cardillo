@@ -31,7 +31,7 @@ if __name__ == "__main__":
     ###################
     block_dim = np.array([5.0, 3.0, 2.0])
     omega = 4 * np.pi
-    axis = 2
+    axis = 1
 
     # initial conditions
     r_OC = np.array([0, 0, 0], dtype=float)
@@ -142,85 +142,50 @@ if __name__ == "__main__":
     K0 = lambda t: K0_bar(t) @ B0(t) + D0_bar(t) @ G0(t) + M0(t) @ G0_dot(t)  # constant
 
     # as the matrices are constant, we can evaluate them at 0
-    M00 = M0(0)
-    D00 = D0(0)
-    K00 = K0(0)
+    t0 = 0.0
+    M00 = M0(t0)
+    D00 = D0(t0)
+    K00 = K0(t0)
 
     # compose matrices for EVP
     null_66 = np.zeros([6, 6], dtype=float)
-    A_hat_proj = np.block([[-K00, null_66], [null_66, M00]])
-    B_hat_proj = np.block([[D00, M00], [M00, null_66]])
+    A_hat = np.block([[-K00, null_66], [null_66, M00]])
+    B_hat = np.block([[D00, M00], [M00, null_66]])
 
     # determine eigenvalues
-    las_g_proj, Vs_g_proj = scipy_eig(A_hat_proj, B_hat_proj)
+    las_g, Vs_g = scipy_eig(A_hat, B_hat)
 
-    # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems
-    # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
+    # only do rotational DOFs
+    null_33 = np.zeros([3, 3], dtype=float)
+    A_hat_rot = np.block([[-K00[3:, 3:], null_33], [null_33, M00[3:, 3:]]])
+    B_hat_rot = np.block([[D00[3:, 3:], M00[3:, 3:]], [M00[3:, 3:], null_33]])
 
-    print(f"Theta values: {np.diag(M00)[3:]}, axis of rotation: {axis}")
+    las_rot, Vs_rot = scipy_eig(A_hat_rot, B_hat_rot)
+
+    # print results
+    ABC = np.diag(M00)[3:]
+    print(f"Theta values: {ABC}, axis of rotation: {axis}")
+    rot_theta = ABC[axis]
+    others = np.delete(ABC, axis)
+    if rot_theta >= np.max(others) or rot_theta <= np.min(others):
+        stable = True
+        print("Axis should be stable!")
+    else:
+        stable = False
+        print("Axis should be unstable!")
+
     print("Computed values: ")
-    print(las_g_proj)
+    
+    eps = 1e-6
+    for las in [las_g, las_rot]:
+        print(
+            f"lambdas: {[str('{s:.3f} + {r:.3f}i').format(s=np.real(lai), r=np.imag(lai)) for lai in las]}"
+        )
 
-    # export linearized
-    if False:
-        T = 1
-        nt = 1
-        t = np.linspace(0, T, nt)
-        q = np.array([q0] * nt)
+        n_l0 = np.sum(np.real(las_rot) > eps)
+        if stable:
+            assert n_l0 == 0, "There should be no eigenvalue with positive real part."
+        else:
+            assert n_l0 == 1, "There should be one eigenvalue with positive real part."
 
-        # general form (only available in scipy)
-        las_squared, Vs_squared = scipy_eig(-K, M)
-        print(las_squared)
-
-        # sort eigenvalues such that rigid body modes are first
-        sort_idx = np.argsort(-las_squared)
-        las_squared = las_squared[sort_idx]
-        Vs_squared = Vs_squared[:, sort_idx]
-
-        # compute omegas and print modes
-        omegas = np.zeros_like(las_squared)
-        for i, lai in enumerate(las_squared):
-            if np.isclose(lai, 0.0, atol=1e-8):
-                omegas[i] = 0.0
-            elif lai > 0:
-                msg = f"warning: eigenvalue of M_inv @ K @ B is {lai}. This should not happen (expected to be <=0)."
-                print(msg)
-                omegas[i] = np.sqrt(lai)
-            else:
-                omegas[i] = np.sqrt(-lai)
-
-            # extract eigenvector for velocity and compute the corresponding displacement
-            EV_u = Vs_squared[:, i]
-            EV_q = B @ EV_u
-
-            # create nicely formatted strings
-            EV_u_str = [str("{s: .5f}").format(s=s) for s in EV_u]
-            EV_q_str = [str("{s: .5f}").format(s=s) for s in EV_q]
-
-            print(f"omega {i}: {omegas[i]:.5f}")
-            print(f"   Eigenvelocity:     {EV_u_str}")
-            print(f"   Eigendisplacement: {EV_q_str}")
-
-        # bring omegas and modes in correct shape
-        omegas = np.array([omegas])
-        modes_dq = np.array([B @ Vs_squared])
-
-        # compose solution object with omegas and modes
-        sol = Solution(system, t, q, omegas=omegas, modes_dq=modes_dq)
-
-        # vtk-export
-        dir_name = Path(__file__).parent
-        system.export(dir_name, f"vtk", sol, fps=25)
-
-        # Following https://public.kitware.com/pipermail/paraview/2017-October/041077.html to visualize this export:
-        # - load files in paraview as usual
-        # - add filter "Warp By Vector" (Filters -> Common -> Warp By Vector)
-        # - select desired mode in WarpByVector -> Properties -> Vectors
-        # - Time Manager (View -> Time Inspector to show window)
-        #       - untik time sources
-        #       - increase number of frames
-        #       - Animations -> WrapByVector -> Scale Factor -> klick on "+"
-        #       - edit this animation: Interpolation -> Sinusoid (Phase, Frequency, Offset as default)
-        #       - set Value to desired amplitude (Value of Time 1 is not used)
-        # - activate repeat and play animation
-        # - show other modes by changing the vector in WarpByVector -> Properties -> Vectors
+    print("\n       Prima\n")
