@@ -929,6 +929,25 @@ class System:
 
         return omegas, modes_dq, sol
 
+    def eigenvalues(self, t, q, u, u_dot, la_g, la_gamma, la_c):
+        M0, D0, K0 = self.linearize(
+            t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=False
+        )
+
+        A_hat = CooMatrix((2 * self.nu, 2 * self.nu))
+        A_hat[: self.nu, : self.nu] = -K0
+        A_hat[self.nu :, self.nu :] = M0
+
+        B_hat = CooMatrix((2 * self.nu, 2 * self.nu))
+        B_hat[: self.nu, : self.nu] = D0
+        B_hat[: self.nu, self.nu :] = M0
+        B_hat[self.nu :, : self.nu] = M0
+
+        # determine eigenvalues
+        las_g, Vs_g = scipy_eig(A_hat.toarray(), B_hat.toarray())
+
+        return las_g, Vs_g
+
 
 def scipy_eig(*args, **kwargs):
     eig = scipy.linalg.eig(*args, **kwargs)

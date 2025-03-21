@@ -141,20 +141,23 @@ if __name__ == "__main__":
     D00 = D0(t0)
     K00 = K0(t0)
 
-    # compose matrices for EVP
-    null_66 = np.zeros([6, 6], dtype=float)
-    A_hat = np.block([[-K00, null_66], [null_66, M00]])
-    B_hat = np.block([[D00, M00], [M00, null_66]])
-
-    # determine eigenvalues
-    las_g, Vs_g = scipy_eig(A_hat, B_hat)
-
     # only do rotational DOFs
     null_33 = np.zeros([3, 3], dtype=float)
     A_hat_rot = np.block([[-K00[3:, 3:], null_33], [null_33, M00[3:, 3:]]])
     B_hat_rot = np.block([[D00[3:, 3:], M00[3:, 3:]], [M00[3:, 3:], null_33]])
 
     las_rot, Vs_rot = scipy_eig(A_hat_rot, B_hat_rot)
+
+    # determine eigenvalues with function of system
+    las_g, Vs_g = system.eigenvalues(
+        system.t0,
+        system.q0,
+        system.u0,
+        system.u_dot0,
+        system.la_g0,
+        system.la_gamma0,
+        system.la_c0,
+    )
 
     # print results
     ABC = np.diag(M00)[3:]
