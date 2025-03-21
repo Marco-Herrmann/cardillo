@@ -851,46 +851,18 @@ class System:
     #################################################
     # projection of constraint of non-holonimc type #
     #################################################
-    def B_pinv(self, t, q):
-        B = self.q_dot_u(t, q)
-        BTB = B.T @ B
-        return scipy.sparse.linalg.inv(BTB.tocsc()) @ B.T
-
-    def B_dot(self, t, q, u, format="coo"):
-        B_t = approx_fprime(t, lambda t_: self.q_dot_u(t_, q).toarray())
-        B_q = approx_fprime(q, lambda q_: self.q_dot_u(t, q_).toarray())
-        q_dot = self.q_dot(t, q, u)
-
-        B_dot = B_t + np.einsum("ijk, k -> ij", B_q, q_dot)
-
-        coo = CooMatrix((self.nq, self.nu))
-        coo[:, :] = B_dot
+    def G(self, t, q, u, format="coo"):
+        coo = CooMatrix((self.nu, self.nu))
+        for contr in self.__q_dot_u_contr:
+            Gi = contr.G(t, q[contr.qDOF], u[contr.uDOF])
+            coo[contr.uDOF, contr.uDOF] = Gi
         return coo.asformat(format)
 
-    def G(self, t, q, u):
-        B = self.q_dot_u(t, q)
-        H = self.q_dot_q(t, q, u)
-
-        B_dot = self.B_dot(t, q, u)
-        B_pinv = self.B_pinv(t, q)
-
-        return B_pinv @ (B_dot - H @ B)
-
     def G_dot(self, t, q, u, u_dot, format="coo"):
-        # TODO: this is really expensive, as G contains the numerical derivative of B (B_dot), the pseudo inverse (B_pinv) and we need a lot of differntiation here!
-        q_dot = self.q_dot(t, q, u)
-        G_t = approx_fprime(t, lambda t_: self.G(t_, q, u).toarray())
-        G_q = approx_fprime(q, lambda q_: self.G(t, q_, u).toarray())
-        G_u = approx_fprime(u, lambda u_: self.G(t, q, u_).toarray())
-
-        G_dot = (
-            G_t
-            + np.einsum("ijk, k -> ij", G_q, q_dot)
-            + np.einsum("ijk, k -> ij", G_u, u_dot)
-        )
-
         coo = CooMatrix((self.nu, self.nu))
-        coo[:, :] = G_dot
+        for contr in self.__q_dot_u_contr:
+            Gi_dot = contr.G_dot(t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF])
+            coo[contr.uDOF, contr.uDOF] = Gi_dot
         return coo.asformat(format)
 
     def linearize(self, t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=False):

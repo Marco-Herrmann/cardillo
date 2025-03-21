@@ -114,6 +114,18 @@ class RigidBody:
         q[3:] = q[3:] / norm(q[3:])
         return q, u
 
+    def G(self, t, q, u):
+        dtype = np.common_type(q, u)
+        G = np.zeros((self.nu, self.nu), dtype=dtype)
+        G[3:, 3:] = ax2skew(u[3:])
+        return G
+
+    def G_dot(self, t, q, u, u_dot):
+        dtype = np.common_type(q, u, u_dot)
+        G_dot = np.zeros((self.nu, self.nu), dtype=dtype)
+        G_dot[3:, 3:] = ax2skew(u_dot[3:])
+        return G_dot
+
     #####################
     # equations of motion
     #####################
