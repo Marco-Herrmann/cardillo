@@ -1,12 +1,13 @@
 import numpy as np
 import warnings
 from copy import deepcopy
-from scipy.sparse import diags
+import scipy
 
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.discrete.frame import Frame
 from cardillo.discrete.meshed import Axis
-from cardillo.solver import consistent_initial_conditions
+from cardillo.math.approx_fprime import approx_fprime
+from cardillo.solver import consistent_initial_conditions, Solution
 from cardillo.visualization import Export
 
 properties = []
@@ -832,3 +833,137 @@ class System:
                 t, q[contr.qDOF], la_F[contr.la_FDOF]
             )
         return coo.asformat(format)
+
+    #########################
+    # general linearization #
+    #########################
+    def D_bar(self, t, q, u):
+        return -self.h_u(t, q, u)
+
+    def K_bar(self, t, q, u, u_dot, la_g, la_gamma, la_c):
+        part_mass = self.Mu_q(t, q, u_dot)
+        part_h = -self.h_q(t, q, u)
+        part_g = -self.Wla_g_q(t, q, la_g)
+        part_gamma = -self.Wla_gamma_q(t, q, la_gamma)
+        part_c = -self.Wla_c_q(t, q, la_c)
+        return part_mass + part_h + part_g + part_gamma + part_c
+
+    #################################################
+    # projection of constraint of non-holonimc type #
+    #################################################
+    def B_pinv(self, t, q):
+        B = self.q_dot_u(t, q)
+        BTB = B.T @ B
+        return scipy.sparse.linalg.inv(BTB.tocsc()) @ B.T
+
+    def B_dot(self, t, q, u, format="coo"):
+        B_t = approx_fprime(t, lambda t_: self.q_dot_u(t_, q).toarray())
+        B_q = approx_fprime(q, lambda q_: self.q_dot_u(t, q_).toarray())
+        q_dot = self.q_dot(t, q, u)
+
+        B_dot = B_t + np.einsum("ijk, k -> ij", B_q, q_dot)
+
+        coo = CooMatrix((self.nq, self.nu))
+        coo[:, :] = B_dot
+        return coo.asformat(format)
+
+    def G(self, t, q, u):
+        B = self.q_dot_u(t, q)
+        H = self.q_dot_q(t, q, u)
+
+        B_dot = self.B_dot(t, q, u)
+        B_pinv = self.B_pinv(t, q)
+
+        return B_pinv @ (B_dot - H @ B)
+
+    def G_dot(self, t, q, u, u_dot, format="coo"):
+        # TODO: this is really expensive, as G contains the numerical derivative of B (B_dot), the pseudo inverse (B_pinv) and we need a lot of differntiation here!
+        q_dot = self.q_dot(t, q, u)
+        G_t = approx_fprime(t, lambda t_: self.G(t_, q, u).toarray())
+        G_q = approx_fprime(q, lambda q_: self.G(t, q_, u).toarray())
+        G_u = approx_fprime(u, lambda u_: self.G(t, q, u_).toarray())
+
+        G_dot = (
+            G_t
+            + np.einsum("ijk, k -> ij", G_q, q_dot)
+            + np.einsum("ijk, k -> ij", G_u, u_dot)
+        )
+
+        coo = CooMatrix((self.nu, self.nu))
+        coo[:, :] = G_dot
+        return coo.asformat(format)
+
+    def linearize(self, t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=False):
+        M0 = self.M(t, q)
+        D0_bar = self.D_bar(t, q, u)
+        K0_bar = self.K_bar(t, q, u, u_dot, la_g, la_gamma, la_c)
+        if static_eq:
+            G0 = CooMatrix((self.nu, self.nu)).asformat("coo")
+            G0_dot = CooMatrix((self.nu, self.nu)).asformat("coo")
+        else:
+            G0 = self.G(t, q, u)
+            G0_dot = self.G_dot(t, q, u, u_dot)
+        B0 = self.q_dot_u(t, q)
+
+        D0 = D0_bar + M0 @ G0
+        K0 = K0_bar @ B0 + D0_bar @ G0 + M0 @ G0_dot
+        return M0, D0, K0
+
+    def eigenmodes(self, t, q, la_g, la_gamma, la_c):
+        u = np.zeros(self.nu)
+        u_dot = np.zeros(self.nu)
+
+        # TODO: I think it should be possible, to get la_g, la_gamma and la_c as consistent variables to t, q, u, ...
+
+        B = self.q_dot_u(t, q)
+        M0, D0, K0 = self.linearize(
+            t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=True
+        )
+
+        # get eigenvalues and eigenvectors of the unda
+        las_ud_squared, Vs_ud = scipy_eig(K0.toarray(), -M0.toarray())
+
+        # TODO: check for proportional damped system, i.e.,
+        # Hint:
+        # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems, i.e., if V diagonalizes M_inv@K (V.T @ M_inv @ K @ V is diagonal) V.T @ M_inv@D @ V is also diagonal
+        # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
+
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_ud_squared)
+        las_ud_squared = las_ud_squared[sort_idx]
+        Vs_ud = Vs_ud[:, sort_idx]
+
+        # compute omegas
+        omegas = np.zeros([len(las_ud_squared)])
+        modes_dq = B @ Vs_ud
+        for i, lai in enumerate(las_ud_squared):
+            if np.isclose(lai, 0.0, atol=1e-8):
+                omegas[i] = 0.0
+            elif lai > 0:
+                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai}. This should not happen."
+                warnings.warn(msg)
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+        # compose solution object with omegas and modes
+        sol = Solution(
+            self,
+            np.array([t]),
+            np.array([q]),
+            omegas=np.array([omegas]),
+            modes_dq=np.array([modes_dq]),
+        )
+
+        return omegas, modes_dq, sol
+
+
+def scipy_eig(*args, **kwargs):
+    eig = scipy.linalg.eig(*args, **kwargs)
+    if eig[-1].dtype == complex:
+        return eig
+    elif eig[-1].dtype == float:
+        eig = list(eig)
+        assert np.isclose(np.linalg.norm(np.imag(eig[0])), 0.0)
+        eig[0] = eig[0].astype(float)
+        return tuple(eig)
