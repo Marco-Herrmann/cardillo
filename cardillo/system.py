@@ -2,6 +2,7 @@ import numpy as np
 import warnings
 from copy import deepcopy
 import scipy
+import scipy.linalg
 
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.discrete.frame import Frame
@@ -869,6 +870,8 @@ class System:
         M0 = self.M(t, q)
         D0_bar = self.D_bar(t, q, u)
         K0_bar = self.K_bar(t, q, u, u_dot, la_g, la_gamma, la_c)
+
+        # project out the contraints g_S
         if static_eq:
             G0 = CooMatrix((self.nu, self.nu)).asformat("coo")
             G0_dot = CooMatrix((self.nu, self.nu)).asformat("coo")
@@ -879,23 +882,37 @@ class System:
 
         D0 = D0_bar + M0 @ G0
         K0 = K0_bar @ B0 + D0_bar @ G0 + M0 @ G0_dot
-        return M0, D0, K0
+
+        # return (M0, D0, K0), B0
+
+        # project out the contraints g
+        # as W_g is sparse, maybe something from here could be helpfull to get a sparse matrix
+        # https://stackoverflow.com/questions/33410146/how-can-i-compute-the-null-space-kernel-x-m-x-0-of-a-sparse-matrix-in-pytho
+        W_g = self.W_g(t, q)
+        Bg_proj_dense = scipy.linalg.null_space(W_g.toarray().T)
+
+        Bg_proj = CooMatrix((self.nu, self.nu - self.nla_g))
+        Bg_proj[:, :] = Bg_proj_dense
+        Bg_proj = Bg_proj.asformat("csr")
+        Mg = Bg_proj.T @ M0 @ Bg_proj
+        Dg = Bg_proj.T @ D0 @ Bg_proj
+        Kg = Bg_proj.T @ K0 @ Bg_proj
+
+        Bg = B0 @ Bg_proj
+
+        return (Mg, Dg, Kg), Bg
 
     def eigenmodes(self, t, q, la_g, la_gamma, la_c):
         u = np.zeros(self.nu)
         u_dot = np.zeros(self.nu)
 
         # TODO: I think it should be possible, to get la_g, la_gamma and la_c as consistent variables to t, q, u, ...
-
-        B = self.q_dot_u(t, q)
-        M0, D0, K0 = self.linearize(
-            t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=True
-        )
+        MDK, B = self.linearize(t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=True)
 
         # get eigenvalues and eigenvectors of the undamped system
-        M0 = M0.toarray()
-        D0 = D0.toarray()
-        K0 = K0.toarray()
+        M0 = MDK[0].toarray()
+        D0 = MDK[1].toarray()
+        K0 = MDK[2].toarray()
         las_ud_squared, Vs_ud = [np.real_if_close(i) for i in scipy.linalg.eig(K0, -M0)]
 
         # TODO: check for proportional damped system, i.e.,
@@ -933,9 +950,10 @@ class System:
         return omegas, modes_dq, sol
 
     def eigenvalues(self, t, q, u, u_dot, la_g, la_gamma, la_c):
-        M0, D0, K0 = self.linearize(
-            t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=False
-        )
+        MDK, B = self.linearize(t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=False)
+        M0 = MDK[0]
+        D0 = MDK[1]
+        K0 = MDK[2]
 
         A_hat = CooMatrix((2 * self.nu, 2 * self.nu))
         A_hat[: self.nu, : self.nu] = -K0
