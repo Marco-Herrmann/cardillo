@@ -1,17 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from pathlib import Path
 from pprint import pprint
-import scipy
 import scipy.linalg
 
 from cardillo import System
-from cardillo.discrete import Box, PointMass, Frame, RigidBody
-from cardillo.force_laws import KelvinVoigtElement as SpringDamper
-from cardillo.interactions import TwoPointInteraction
-from cardillo.math import Exp_SO3_quat, e3, ax2skew, cross3, ei
-from cardillo.math.approx_fprime import approx_fprime
-from cardillo.solver import ScipyIVP, Solution
+from cardillo.discrete import Box, RigidBody
+from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei
 
 
 def scipy_eig(*args, **kwargs):
@@ -175,7 +169,7 @@ if __name__ == "__main__":
         print("Axis should be unstable!")
 
     print("Computed values: ")
-    
+
     eps = 1e-6
     for las in [las_g, las_rot]:
         print(

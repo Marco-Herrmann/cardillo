@@ -6,11 +6,11 @@ import scipy
 import scipy.linalg
 
 from cardillo import System
-from cardillo.discrete import Box, PointMass, Frame, RigidBody
+from cardillo.discrete import Box, RigidBody
 from cardillo.force_laws import KelvinVoigtElement as SpringDamper
 from cardillo.interactions import TwoPointInteraction
 from cardillo.math import Exp_SO3_quat, e3
-from cardillo.solver import ScipyIVP, Solution
+from cardillo.solver import Solution
 
 
 def scipy_eig(*args, **kwargs):
