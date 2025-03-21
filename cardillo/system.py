@@ -892,8 +892,11 @@ class System:
             t, q, u, u_dot, la_g, la_gamma, la_c, static_eq=True
         )
 
-        # get eigenvalues and eigenvectors of the unda
-        las_ud_squared, Vs_ud = scipy_eig(K0.toarray(), -M0.toarray())
+        # get eigenvalues and eigenvectors of the undamped system
+        M0 = M0.toarray()
+        D0 = D0.toarray()
+        K0 = K0.toarray()
+        las_ud_squared, Vs_ud = [np.real_if_close(i) for i in scipy.linalg.eig(K0, -M0)]
 
         # TODO: check for proportional damped system, i.e.,
         # Hint:
@@ -944,17 +947,7 @@ class System:
         B_hat[self.nu :, : self.nu] = M0
 
         # determine eigenvalues
-        las_g, Vs_g = scipy_eig(A_hat.toarray(), B_hat.toarray())
-
-        return las_g, Vs_g
-
-
-def scipy_eig(*args, **kwargs):
-    eig = scipy.linalg.eig(*args, **kwargs)
-    if eig[-1].dtype == complex:
-        return eig
-    elif eig[-1].dtype == float:
-        eig = list(eig)
-        assert np.isclose(np.linalg.norm(np.imag(eig[0])), 0.0)
-        eig[0] = eig[0].astype(float)
-        return tuple(eig)
+        A_hat = A_hat.toarray()
+        B_hat = B_hat.toarray()
+        las, Vs = [np.real_if_close(i) for i in scipy.linalg.eig(A_hat, B_hat)]
+        return las, Vs

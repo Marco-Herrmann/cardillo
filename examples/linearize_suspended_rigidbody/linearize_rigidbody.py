@@ -12,18 +12,6 @@ from cardillo.interactions import TwoPointInteraction
 from cardillo.math import Exp_SO3_quat, e3
 from cardillo.solver import Solution
 
-
-def scipy_eig(*args, **kwargs):
-    eig = scipy.linalg.eig(*args, **kwargs)
-    if eig[-1].dtype == complex:
-        return eig
-    elif eig[-1].dtype == float:
-        eig = list(eig)
-        assert np.isclose(np.linalg.norm(np.imag(eig[0])), 0.0)
-        eig[0] = eig[0].astype(float)
-        return tuple(eig)
-
-
 if __name__ == "__main__":
     ###################
     # system parameters
