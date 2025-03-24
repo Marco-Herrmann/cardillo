@@ -64,7 +64,7 @@ if __name__ == "__main__":
         r_OJ0i = r_OC0 + blocks[i].r_OP(0, blocks[i].q0, B_r_CP=Bi_r_BiJ)
         # r_OJ0i = np.array([0.0, 0.0, 0.0])
         constrainti = Revolute(
-            blocks[i], blocks[i + 1], axis=axis, r_OJ0=r_OJ0i, name=f"constriant{i}"
+            blocks[i], blocks[i + 1], axis=axis, r_OJ0=r_OJ0i, name=f"constraant{i}"
         )
         constraints.append(constrainti)
 
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     # assemble system
     #################
     system.add(*blocks, *constraints)
-    # system.add(connection)
+    system.add(connection)
     system.add(closing)
     system.assemble()
 

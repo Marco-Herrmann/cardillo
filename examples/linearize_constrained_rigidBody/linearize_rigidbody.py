@@ -60,7 +60,7 @@ if __name__ == "__main__":
         r_OJ0i = -block_dim / 2 + i * block_dim
         r_OJ0i[axis] = 0.0
         constrainti = Revolute(
-            blocks[i], blocks[i + 1], axis=axis, r_OJ0=r_OJ0i, name=f"constriant{i}"
+            blocks[i], blocks[i + 1], axis=axis, r_OJ0=r_OJ0i, name=f"constraint{i}"
         )
         constraints.append(constrainti)
 
