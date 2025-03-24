@@ -50,7 +50,7 @@ if __name__ == "__main__":
         dimensions=block_dim,
         density=0.1,
         q0=q01,
-        name="block",
+        name="block1",
     )
     q02 = RigidBody.pose2q(r_OC2, A_IB)
     block2 = Box(RigidBody)(
@@ -74,8 +74,8 @@ if __name__ == "__main__":
     # spring-damper interactions
     # connection = RigidConnection(block, system.origin)
     # connection = FixedDistance(block, system.origin, B2_r_P2J2=block_dim / 2)
-    connection1 = Revolute(system.origin, block1, axis=2, r_OJ0=block_dim / 2)
-    connection2 = Revolute(block1, block2, axis=2, r_OJ0=3 * block_dim / 2)
+    connection1 = Revolute(system.origin, block1, axis=2, r_OJ0=-block_dim / 2)
+    connection2 = Revolute(block1, block2, axis=2, r_OJ0=block_dim / 2)
     # connection = Cylindrical(block, system.origin, axis=2, r_OJ0=block_dim/2)
     system.add(block1, block2, connection1, connection2)
     system.assemble()
@@ -92,7 +92,13 @@ if __name__ == "__main__":
 
     # Following https://public.kitware.com/pipermail/paraview/2017-October/041077.html to visualize this export:
     # - load files in paraview as usual
-    # - add filter "Warp By Vector" (Filters -> Common -> Warp By Vector)
+    # ---> multiple objects?
+    #       - yes:  - select block1 and block2
+    #               - add filter "Group Datasets" (Filters -> Common -> Group Datasets)
+    #               - change coloring, if needed
+    #               -> continue
+    #       - no:   -> continue
+    # - add filter "Warp By Vector" (Filters -> Common -> Warp By Vector) (to GroupDatasets-object or single object)
     # - select desired mode in WarpByVector -> Properties -> Vectors
     # - Time Manager (View -> Time Inspector to show window)
     #       - untik time sources
