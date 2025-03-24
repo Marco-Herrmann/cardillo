@@ -14,22 +14,16 @@ from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei
 from cardillo.solver import Solution
 
 
-def scipy_eig(*args, **kwargs):
-    eig = scipy.linalg.eig(*args, **kwargs)
-    if eig[-1].dtype == complex:
-        return eig
-    elif eig[-1].dtype == float:
-        eig = list(eig)
-        assert np.isclose(np.linalg.norm(np.imag(eig[0])), 0.0)
-        eig[0] = eig[0].astype(float)
-        return tuple(eig)
-
-
 if __name__ == "__main__":
     ###################
     # system parameters
     ###################
     block_dim = np.array([5.0, 3.0, 2.0])  # size of the block
+    n_blocks = 5  # number of blocks
+    axis = 2  # axis of rotation
+
+    # initialize system
+    system = System()
 
     l0 = 3.0  # rest length of the spring
     k = 300  # spring stiffness
@@ -37,47 +31,50 @@ if __name__ == "__main__":
     # d = 0
 
     # initial conditions
-    r_OC = np.array([0, 0, 0], dtype=float)
+    r_OC0 = np.array([0, 0, 0], dtype=float)
     A_IB = np.eye(3, dtype=float)
     # A_IB = Exp_SO3_quat(np.array([1.0, 2.0, 3.0, 4.0]), normalize=True)
     # A_IB = Exp_SO3_quat(2 * np.random.rand(4) - 1, normalize=True)
 
-    r_OC2 = np.array([5, 0, 0])
+    # initialize rigid bodies
+    blocks = []
+    for i in range(n_blocks):
+        r_OC = r_OC0 + i * block_dim  # np.array([i*block_dim[0], 0.0, 0.0])
+        r_OC[axis] = 0.0
+        q0i = RigidBody.pose2q(r_OC, A_IB)
+        blocki = Box(RigidBody)(
+            dimensions=block_dim,
+            density=0.1,
+            q0=q0i,
+            name=f"block{i}",
+        )
+        blocks.append(blocki)
 
-    # initialize rigid body
-    q01 = RigidBody.pose2q(r_OC, A_IB)
-    block1 = Box(RigidBody)(
-        dimensions=block_dim,
-        density=0.1,
-        q0=q01,
-        name="block1",
-    )
-    q02 = RigidBody.pose2q(r_OC2, A_IB)
-    block2 = Box(RigidBody)(
-        dimensions=block_dim,
-        density=0.1,
-        q0=q02,
-        name="block2",
-    )
+    # add origin to the beginning to have an easy handling of the constriants
+    blocks.insert(0, system.origin)
 
-    # get offsets of upper vertices and compute positions of suspension
-    B_r_CPis = block1.B_r_CQi_T[:, block1.B_r_CQi_T[2, :] > 0].T
-    r_OQis = [r_OC + A_IB @ (B_r_CPi + l0 * ei(2)) for B_r_CPi in B_r_CPis]
+    # initialize constraints
+    constraints = []
+    for i in range(n_blocks):
+        # r_OJ0i = np.array([-block_dim[0]/2 + i * block_dim[0], 0.0, 0.0])
+        r_OJ0i = -block_dim / 2 + i * block_dim
+        r_OJ0i[axis] = 0.0
+        constrainti = Revolute(
+            blocks[i], blocks[i + 1], axis=axis, r_OJ0=r_OJ0i, name=f"constriant{i}"
+        )
+        constraints.append(constrainti)
+
+    # connection = RigidConnection(block, system.origin)
+    # connection = FixedDistance(block, system.origin, B2_r_P2J2=block_dim / 2)
+    # connection1 = Revolute(system.origin, blocks[1], axis=2, r_OJ0=np.array([-block_dim[0]/2, 0, 0]))
+    # connection2 = Revolute(blocks[1], blocks[2], axis=2, r_OJ0=np.array([block_dim[0]/2, 0, 0]))
+    # connection3 = Revolute(blocks[2], blocks[3], axis=2, r_OJ0=np.array([3*block_dim[0]/2, 0, 0]))
+    # connection = Cylindrical(block, system.origin, axis=2, r_OJ0=block_dim/2)
 
     #################
     # assemble system
     #################
-
-    # initialize system
-    system = System()
-
-    # spring-damper interactions
-    # connection = RigidConnection(block, system.origin)
-    # connection = FixedDistance(block, system.origin, B2_r_P2J2=block_dim / 2)
-    connection1 = Revolute(system.origin, block1, axis=2, r_OJ0=-block_dim / 2)
-    connection2 = Revolute(block1, block2, axis=2, r_OJ0=block_dim / 2)
-    # connection = Cylindrical(block, system.origin, axis=2, r_OJ0=block_dim/2)
-    system.add(block1, block2, connection1, connection2)
+    system.add(*blocks[1:], *constraints)
     system.assemble()
 
     omegas, modes_dq, sol = system.eigenmodes(
@@ -108,3 +105,7 @@ if __name__ == "__main__":
     #       - set Value to desired amplitude (Value of Time 1 is not used)
     # - activate repeat and play animation
     # - show other modes by changing the vector in WarpByVector -> Properties -> Vectors
+
+    # Adding object to GroupDataset:
+    # - right click on the GroupDataset (or on one of the indicating objects)
+    # - Change Input -> select other objects (use Crtl/Shift)
