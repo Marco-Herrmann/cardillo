@@ -883,6 +883,13 @@ class System:
         D0 = D0_bar + M0 @ G0
         K0 = K0_bar @ B0 + D0_bar @ G0 + M0 @ G0_dot
 
+        # # from a M-D-G-K-N system
+        # M = M0
+        # D = 0.5 * (D0 + D0.T)
+        # G = 0.5 * (D0 - D0.T)
+        # K = 0.5 * (K0 + K0.T)
+        # N = 0.5 * (K0 - K0.T)
+
         # return (M0, D0, K0), B0
 
         # project out the contraints g
