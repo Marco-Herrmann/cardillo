@@ -883,6 +883,10 @@ class System:
         D0 = D0_bar + M0 @ G0
         K0 = K0_bar @ B0 + D0_bar @ G0 + M0 @ G0_dot
 
+        assert (
+            self.nla_c == 0
+        ), "Linearization with compliance form not implemented yet!"
+
         # # from a M-D-G-K-N system
         # M = M0
         # D = 0.5 * (D0 + D0.T)

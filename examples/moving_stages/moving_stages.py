@@ -16,7 +16,6 @@ from cardillo.rods.cosseratRod import make_CosseratRod
 
 
 if __name__ == "__main__":
-
     # create cardillo system
     system = System()
 
@@ -68,7 +67,10 @@ if __name__ == "__main__":
     nel = 10
     pDeg = 2
     Rod = make_CosseratRod(
-        interpolation="Quaternion", mixed=True, polynomial_degree=pDeg
+        # TODO: Test this with the mixed formulation, when the linearization can handle mixed formulations!
+        interpolation="Quaternion",
+        mixed=False,
+        polynomial_degree=pDeg,
     )
 
     # semicircle
@@ -163,8 +165,7 @@ if __name__ == "__main__":
     system.remove(frame_x, frame_y)
     system.add(prismatic_x, prismatic_y)
 
-    # TODO: why is it not working with the rod?
-    system.remove(rod, cable_origin, cable_stage_y)
+    # system.remove(rod, cable_origin, cable_stage_y)
 
     system.set_new_initial_state(sol.q[-1], sol.u[-1], t0)
 
@@ -174,6 +175,11 @@ if __name__ == "__main__":
     omegas, modes_dq, sol_modes = system.eigenmodes(
         system.t0, system.q0, system.la_g0, system.la_gamma0, system.la_c0
     )
+
+    print(omegas)
+    print(len(omegas))
+
+    DX = DY = 1
 
     # vtk-export
     dir_name = Path(__file__).parent
