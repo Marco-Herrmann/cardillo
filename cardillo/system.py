@@ -882,11 +882,15 @@ class System:
 
         # handle compliance form
         # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
-        K0_c = (
-            self.W_c(t, q)
-            @ scipy.sparse.linalg.inv(self.c_la_c("csc"))
-            @ self.c_q(t, q, u, la_c)
-        )
+        c_la_c = self.c_la_c("csc")
+        if c_la_c.shape[0] > 0:
+            K0_c = (
+                self.W_c(t, q)
+                @ scipy.sparse.linalg.inv(c_la_c)
+                @ self.c_q(t, q, u, la_c)
+            )
+        else:
+            K0_c = CooMatrix((self.nu, self.nq)).asformat("csr")
 
         D0 = D0_bar + M0 @ G0
         K0 = (K0_bar + K0_c) @ B0 + D0_bar @ G0 + M0 @ G0_dot
