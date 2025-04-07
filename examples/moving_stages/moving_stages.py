@@ -151,6 +151,7 @@ if __name__ == "__main__":
     sol = solver.solve()
 
     # vtk-export
+    rod._export_dict["level"] = "NodalVolume"
     dir_name = Path(__file__).parent
     system.export(dir_name, f"vtk", sol, fps=25)
 

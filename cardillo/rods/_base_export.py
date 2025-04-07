@@ -578,6 +578,31 @@ class RodExportBase(ABC):
             ###################
             point_data = {}
 
+            if hasattr(sol_i, "omegas") and hasattr(sol_i, "modes_dq"):
+                # export modes
+                omegas = sol_i.omegas
+                modes_dq = sol_i.modes_dq
+                fmt = len(str(len(omegas)))
+
+                for i, dq in enumerate(modes_dq.T):
+                    # get frames
+                    dr_OPs, dd1s, dd2s, dd3s = self.nodalFrames_lin(q, dq)
+
+                    # get characteristic points from the cross-section
+                    compute_dpoints = self.cross_section.vtk_compute_points(
+                        np.array([dr_OPs]),
+                        np.array([dd2s]),
+                        np.array([dd3s]),
+                        vtk_lagrange,
+                    )
+
+                    vtk_dpoints = np.vstack(
+                        [compute_dpoints(0, i) for i in range(num_frames)]
+                    )
+
+                    mode_str = f"mode {i:{fmt}d}, omega {omegas[i]:+.2f}"
+                    point_data[mode_str] = vtk_dpoints
+
             #################
             # add cell data #
             #################

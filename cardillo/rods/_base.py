@@ -6,7 +6,12 @@ from scipy.sparse.linalg import spsolve
 
 from cardillo.math.algebra import norm, cross3, ax2skew
 from cardillo.math.approx_fprime import approx_fprime
-from cardillo.math.rotations import Exp_SO3_quat, T_SO3_inv_quat, T_SO3_inv_quat_P
+from cardillo.math.rotations import (
+    Exp_SO3_quat,
+    Exp_SO3_quat_p,
+    T_SO3_inv_quat,
+    T_SO3_inv_quat_P,
+)
 from cardillo.utility.coo_matrix import CooMatrix
 
 from ._base_export import RodExportBase
@@ -352,6 +357,25 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
                 ]
             )
             return r, A_IB[:, :, 0], A_IB[:, :, 1], A_IB[:, :, 2]
+
+    def nodalFrames_lin(self, q, dq, elementwise=False):
+        assert elementwise == False
+
+        q_body = q[self.qDOF]
+        dq_body = dq[self.qDOF]
+
+        dr = np.array([dq_body[nodalDOF] for nodalDOF in self.nodalDOF_r])
+        dA_IB = np.array(
+            [
+                np.einsum(
+                    "ijk, k -> ij",
+                    Exp_SO3_quat_p(q_body[nodalDOF], normalize=True),
+                    dq_body[nodalDOF],
+                )
+                for nodalDOF in self.nodalDOF_p
+            ]
+        )
+        return dr, dA_IB[:, :, 0], dA_IB[:, :, 1], dA_IB[:, :, 2]
 
     ##################
     # abstract methods
