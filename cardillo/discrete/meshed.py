@@ -131,6 +131,7 @@ def Meshed(Base):
                     # export modes
                     omegas = sol_i.omegas
                     modes_dq = sol_i.modes_dq
+                    fmt = len(str(len(omegas)))
 
                     r_OP_q = self.r_OP_q(sol_i.t, sol_i.q[self.qDOF])
                     A_IB_q = self.A_IB_q(sol_i.t, sol_i.q[self.qDOF])
@@ -139,7 +140,7 @@ def Meshed(Base):
                         dr_OC = r_OP_q @ dq
                         dA_IB = np.einsum("ijk, k -> ij", A_IB_q, dq)
                         mode_data = (dr_OC[:, None] + dA_IB @ self.B_r_CQi_T).T
-                        mode_str = f"mode {i:02d}, omega {omegas[i]:+.2f}"
+                        mode_str = f"mode {i:{fmt}d}, omega {omegas[i]:+.2f}"
                         point_data[mode_str] = mode_data
 
             return points, cells, point_data, None

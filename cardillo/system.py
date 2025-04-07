@@ -880,12 +880,16 @@ class System:
             G0_dot = self.G_dot(t, q, u, u_dot)
         B0 = self.q_dot_u(t, q)
 
-        D0 = D0_bar + M0 @ G0
-        K0 = K0_bar @ B0 + D0_bar @ G0 + M0 @ G0_dot
+        # handle compliance form
+        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
+        K0_c = (
+            self.W_c(t, q)
+            @ scipy.sparse.linalg.inv(self.c_la_c("csc"))
+            @ self.c_q(t, q, u, la_c)
+        )
 
-        assert (
-            self.nla_c == 0
-        ), "Linearization with compliance form not implemented yet!"
+        D0 = D0_bar + M0 @ G0
+        K0 = (K0_bar + K0_c) @ B0 + D0_bar @ G0 + M0 @ G0_dot
 
         # # from a M-D-G-K-N system
         # M = M0

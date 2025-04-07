@@ -67,9 +67,8 @@ if __name__ == "__main__":
     nel = 10
     pDeg = 2
     Rod = make_CosseratRod(
-        # TODO: Test this with the mixed formulation, when the linearization can handle mixed formulations!
         interpolation="Quaternion",
-        mixed=False,
+        mixed=True,
         polynomial_degree=pDeg,
     )
 
