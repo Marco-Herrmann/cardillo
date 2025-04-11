@@ -6,6 +6,7 @@ from cardillo import System
 from cardillo.actuators import PDcontroller
 from cardillo.discrete import RigidBody, Frame, Meshed, Box
 from cardillo.constraints import Prismatic, RigidConnection
+from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.forces import Force
 from cardillo.math import A_IB_basic, cross3, smoothstep2
 from cardillo.solver import BackwardEuler, Newton
@@ -17,8 +18,49 @@ from cardillo.rods import (
 )
 from cardillo.rods.cosseratRod import make_CosseratRod
 
+def consistent_constraints(sys, rod, constraints):
+    rod_impressed = rod.idx_impressed
+    # constraint left side (xi=0)
+    g_pos0 = [0, 1, 2]
+    g_rot0 = [(1, 2), (2, 0), (0, 1)]    
 
-def cantilever(Rod, nel):
+    # constraint at the right side (xi=1) without singularity
+    g_pos1 = []
+    if 0 in rod_impressed:
+        g_pos1.append(0)
+    if (1 in rod_impressed) or (5 in rod_impressed):
+        g_pos1.append(1) 
+    if (2 in rod_impressed) or (4 in rod_impressed):
+        g_pos1.append(2)
+    
+    g_rot1 = []
+    if 3 in rod_impressed:
+        g_rot1.append((1, 2))
+    if 4 in rod_impressed:
+        g_rot1.append((2, 0))
+    if 5 in rod_impressed:
+        g_rot1.append((0, 1))
+
+    g_pos = [g_pos0, g_pos1]
+    g_rot = [g_rot0, g_rot1]
+    cs = []
+    for i, (g_p, g_r, des) in enumerate(zip(g_pos, g_rot, constraints)):
+        if des == "free":
+            g_r = []
+            g_p = []
+        elif des == "rigid":
+            pass
+        elif des == "rot_z":
+            g_r.remove((0, 1))
+        else:
+            raise RuntimeError(des, i)
+        
+        if len(g_p) > 0 or len(g_r) > 0: 
+            cs.append(ProjectedPositionOrientationBase(rod, sys.origin, g_p, g_r, xi1=i))
+
+    return cs
+
+def cantilever(Rod, nel, constraints=["free", "free"]):
     # create cardillo system
     system = System()
 
@@ -70,13 +112,10 @@ def cantilever(Rod, nel):
         cross_section_inertias=cross_section_inertias,
         name="Cosserat_rod",
     )
-
     system.add(rod)
 
-    left_constraint = RigidConnection(rod, system.origin, xi1=0.0)
-    system.add(left_constraint)
-    right_constraint = RigidConnection(rod, system.origin, xi1=1.0)
-    system.add(right_constraint)
+    c = consistent_constraints(system, rod, constraints)
+    system.add(*c)
 
     system.assemble()
 
@@ -101,14 +140,17 @@ def cantilever(Rod, nel):
     dir_name = Path(__file__).parent
     system.export(dir_name, f"vtk_modes", sol_modes, fps=25)
 
-
 if __name__ == "__main__":
     nel = 10
     pDeg = 2
     Rod = make_CosseratRod(
         interpolation="Quaternion",
         mixed=True,
-        polynomial_degree=pDeg,  # constraints=[1, 2, 3]
+        polynomial_degree=pDeg,  
+        constraints=[0, 1, 2, 3, 4]
     )
 
-    cantilever(Rod, nel)
+    constraints = ["free", "free"]
+    constraints = ["rigid", "rigid"]
+    constraints = ["rot_z", "rot_z"]
+    cantilever(Rod, nel, constraints)
