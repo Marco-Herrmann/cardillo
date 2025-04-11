@@ -77,15 +77,21 @@ if __name__ == "__main__":
     system.add(*blocks[1:], *constraints)
     system.assemble()
 
-    omegas, modes_dq, sol = system.eigenmodes(
-        system.t0, system.q0, system.la_g0, system.la_gamma0, system.la_c0
-    )
+    for proj in [None, "NullSpace", "ComplianceProjection"]:
+        omegas, modes_dq, sol = system.eigenmodes(
+            system.t0,
+            system.q0,
+            system.la_g0,
+            system.la_gamma0,
+            system.la_c0,
+            constraints=proj,
+        )
 
-    print(omegas)
+        print(omegas)
 
-    # vtk-export
-    dir_name = Path(__file__).parent
-    system.export(dir_name, f"vtk", sol, fps=25)
+        # vtk-export
+        dir_name = Path(__file__).parent
+        system.export(dir_name, f"vtk{'_'+proj if proj else ''}", sol, fps=25)
 
     # Following https://public.kitware.com/pipermail/paraview/2017-October/041077.html to visualize this export:
     # - load files in paraview as usual
