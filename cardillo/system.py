@@ -2,8 +2,6 @@ import numpy as np
 import warnings
 from copy import deepcopy
 import scipy
-import scipy.linalg
-import scipy.sparse
 
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.discrete.frame import Frame
@@ -917,7 +915,7 @@ class System:
         # K = 0.5 * (K0 + K0.T)
         # N = 0.5 * (K0 - K0.T)
 
-        if constraints is None:
+        if constraints is None or self.nla_g == 0:
             return (M0, D0, K0), B0
 
         W_g = self.W_g(t, q)
@@ -974,9 +972,9 @@ class System:
             Nv_nad = W_g.T @ Vs_g[:, n_min]
             gv_ad = g_q @ B0 @ Vs_g[:, n_min - 1]
             gv_nad = g_q @ B0 @ Vs_g[:, n_min]
-            r_la = las_g[n_min - 1] / las_g[n_min]
-            r_Nv = np.linalg.norm(Nv_ad) / np.linalg.norm(Nv_nad)
-            r_gv = np.linalg.norm(gv_ad) / np.linalg.norm(gv_nad)
+            r_la = 0 if n_min==0 else las_g[n_min - 1] / las_g[n_min]
+            r_Nv = 0 if n_min==0 else np.linalg.norm(Nv_ad) / np.linalg.norm(Nv_nad)
+            r_gv = 0 if n_min==0 else np.linalg.norm(gv_ad) / np.linalg.norm(gv_nad)
             print(f"Projection ratio la: {r_la:.3e}")
             print(f"Projection ratio NullSpace_violation: {r_Nv:.3e}")
             print(f"Projection ratio g_violation: {r_gv:.3e}")
@@ -1014,11 +1012,12 @@ class System:
         N = 0.5 * (MDK[2] - MDK[2].T)
 
         d = M.shape[0]
-        norm_M = scipy.sparse.linalg.norm(M - M.T) / d**2
-        assert np.isclose(norm_M, 0), f"Mass matrix is not symmetric! {norm_M}"
+        atol = np.finfo(float).eps * d * np.max([1, scipy.sparse.linalg.norm(K) / scipy.sparse.linalg.norm(M)])
+        norm_M = scipy.sparse.linalg.norm(M - M.T)
+        assert np.isclose(norm_M, 0.0, atol = atol * scipy.sparse.linalg.norm(M)), f"Mass matrix is not symmetric! {norm_M}"
 
-        norm_N = scipy.sparse.linalg.norm(N) / d**2
-        if not np.isclose(norm_N, 0.0):
+        norm_N = scipy.sparse.linalg.norm(N)
+        if not np.isclose(norm_N, 0.0, atol = atol):
             warnings.warn(f"There are circular forces that will be neglected! {norm_N}")
 
         # compute eigenvalues and eigenvectors
@@ -1040,7 +1039,7 @@ class System:
         omegas = np.zeros([len(las_ud_squared)])
         modes_dq = B @ Vs_ud
         for i, lai in enumerate(las_ud_squared):
-            if np.isclose(lai, 0.0, atol=1e-8 * d**2):
+            if np.isclose(0.0, lai, atol=atol):
                 omegas[i] = 0.0
             elif lai > 0:
                 msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
