@@ -865,15 +865,7 @@ class System:
             coo[contr.uDOF, contr.uDOF] = Gi_dot
         return coo.asformat(format)
 
-    def linearize(
-        self,
-        t,
-        q,
-        u,
-        static_eq=False,
-        constraints=None,
-        debug=False,
-    ):
+    def linearize(self, t, q, u, static_eq=False, constraints=None, debug=False):
         # save state
         t0_ = self.t0
         q0_ = self.q0
@@ -1106,6 +1098,82 @@ class System:
         )
 
         return omegas, modes_dq, sol
+
+    def fundamental_perturbation_matrix(
+        self, sol, constraints="ComplianceProjection", debug=False
+    ):
+        nt = len(sol.t)
+        nz = self.nu - self.nla_g - self.nla_gamma
+
+        las_p = np.zeros([nt, nz])
+        Mii = np.zeros([nt, nz, nz])
+        Minvii = np.zeros([nt, nz, nz])
+        Dii = np.zeros([nt, nz, nz])
+        Kii = np.zeros([nt, nz, nz])
+
+        Phi = np.eye(2 * nz, dtype=float)
+        dt = sol.t[1] - sol.t[0]
+
+        B_last = None
+        for i in range(nt):
+            ti = sol.t[i]
+            qi = sol.q[i]
+            ui = sol.u[i]
+            MDK, B, l_p = self.linearize(ti, qi, ui, True, constraints)
+
+            las_p[i] = l_p
+
+            nz = B.shape[1]
+            p = np.ones(nz, dtype=float)
+            if B_last is not None:
+                # multiply directions with -1 if necessary
+                for j in range(nz):
+                    if B[:, [j]].T @ B_last[:, [j]] < 0:
+                        B[:, [j]] *= -1.0
+                        p[j] = -1.0
+
+            if constraints == "ComplianceProjection":
+                B_last = B
+
+            # apply multiplications with -1 to system matrices
+            P = scipy.sparse.diags(p)
+            M = P.T @ MDK[0] @ P
+            D = P.T @ MDK[1] @ P
+            K = P.T @ MDK[2] @ P
+
+            Mii[i] = M.toarray()
+            Minvii[i] = np.linalg.inv(M.toarray())
+            Dii[i] = D.toarray()
+            Kii[i] = K.toarray()
+
+            # midpoint rule
+            MinvK = np.linalg.solve(M.toarray(), K.toarray())
+            MinvD = np.linalg.solve(M.toarray(), D.toarray())
+            A = np.block([[np.zeros((nz, nz)), np.eye(nz)], [-MinvK, -MinvD]])
+            Phi += dt * A @ Phi * (0.5 if i in [0, nt - 1] else 1)
+
+        import matplotlib.pyplot as plt
+
+        t = sol.t
+        fig, ax = plt.subplots()
+        fig.suptitle("These values should be distinguishable apart!")
+        ax.plot(t, las_p)
+
+        if debug:
+            fig, ax_M = plt.subplots(3, 3)
+            fig, ax_Mi = plt.subplots(3, 3)
+            fig, ax_D = plt.subplots(3, 3)
+            fig, ax_K = plt.subplots(3, 3)
+            for i in range(nz):
+                for j in range(nz):
+                    ax_M[i, j].plot(t, Mii[:, i, j])
+                    ax_Mi[i, j].plot(t, Minvii[:, i, j])
+                    ax_D[i, j].plot(t, Dii[:, i, j])
+                    ax_K[i, j].plot(t, Kii[:, i, j])
+
+            plt.show()
+
+        return Phi
 
     def eigenvalues(self, t, q, u):
         MDK, B, _ = self.linearize(t, q, u, static_eq=False)

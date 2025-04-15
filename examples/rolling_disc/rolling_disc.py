@@ -295,6 +295,7 @@ if __name__ == "__main__":
     # simulation
     ############
     dt = 2.0e-2  # time step
+    # dt = 1.0e-2 / gamma_dot0
 
     # sol = ScipyIVP(system, t1, dt).solve()
     sol = Rattle(system, t1, dt).solve()
@@ -312,83 +313,19 @@ if __name__ == "__main__":
     #################
     # linearization #
     #################
-    import scipy
+    Phi_T = system.fundamental_perturbation_matrix(sol)
+    np.set_printoptions(linewidth=300)
+    print(Phi_T)
+    floquet_multipliers = np.linalg.eigvals(Phi_T)
+    print(np.abs(floquet_multipliers))
 
-    B_last = None
+    if case == "rolling":
+        # before 5.4
+        g_tilde = gravity / r
+        # after eq 5.22
+        omega_squared = -4 / 5 * (g_tilde - 3 * gamma_dot0**2)
 
-    nt = len(t)
-
-    nz = 3
-    las_p = np.zeros([nt, nz])
-    Mii = np.zeros([nt, nz, nz])
-    Minvii = np.zeros([nt, nz, nz])
-    Dii = np.zeros([nt, nz, nz])
-    Kii = np.zeros([nt, nz, nz])
-
-    Phi = np.eye(2 * nz, dtype=float)
-    dt = t[1] - t[0]
-
-    for i in range(nt):
-        ti = sol.t[i]
-        qi = sol.q[i]
-        ui = sol.u[i]
-        MDK, B, l_p = system.linearize(
-            ti, qi, ui, True, constraints="ComplianceProjection"
-        )
-
-        las_p[i] = l_p
-
-        nz = B.shape[1]
-        p = np.ones(nz, dtype=float)
-        if B_last is not None:
-            # multiply directions with -1 if necessary
-            for j in range(nz):
-                if B[:, [j]].T @ B_last[:, [j]] < 0:
-                    B[:, [j]] *= -1.0
-                    p[j] = -1.0
-
-        B_last = B
-
-        # apply multiplications with -1 to system matrices
-        P = scipy.sparse.diags(p)
-        M = P.T @ MDK[0] @ P
-        D = P.T @ MDK[1] @ P
-        K = P.T @ MDK[2] @ P
-
-        Mii[i] = M.toarray()
-        Minvii[i] = np.linalg.inv(M.toarray())
-        Dii[i] = D.toarray()
-        Kii[i] = K.toarray()
-
-        # midpoint rule
-        MinvK = np.linalg.solve(M.toarray(), K.toarray())
-        MinvD = np.linalg.solve(M.toarray(), D.toarray())
-        A = np.block([[np.zeros((nz, nz)), np.eye(nz)], [-MinvK, -MinvD]])
-        Phi += dt * A @ Phi * (0.5 if i in [0, nt - 1] else 1)
-
-    las = np.linalg.eigvals(np.eye(2 * nz) + Phi)
-    print(las)
-
-    # testing a bit around with constant matrix
-    A_FP = np.array([[0, 1], [-1, -0.01]])
-    Floquet_FP = np.abs(np.linalg.eigvals(scipy.linalg.expm(A_FP * np.pi * 2)))
-
-    fig, ax = plt.subplots()
-    fig.suptitle("These values should be distinguishable apart!")
-    ax.plot(t, las_p)
-
-    fig, ax_M = plt.subplots(3, 3)
-    fig, ax_Mi = plt.subplots(3, 3)
-    fig, ax_D = plt.subplots(3, 3)
-    fig, ax_K = plt.subplots(3, 3)
-    for i in range(nz):
-        for j in range(nz):
-            ax_M[i, j].plot(t, Mii[:, i, j])
-            ax_Mi[i, j].plot(t, Minvii[:, i, j])
-            ax_D[i, j].plot(t, Dii[:, i, j])
-            ax_K[i, j].plot(t, Kii[:, i, j])
-
-    plt.show()
+        print(f"{omega_squared = }")
 
     #################
     # post-processing
@@ -434,7 +371,7 @@ if __name__ == "__main__":
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]")
-    scale = r
+    scale = np.max([R, r])
     ax.set_xlim3d(left=-scale, right=scale)
     ax.set_ylim3d(bottom=-scale, top=scale)
     ax.set_zlim3d(bottom=0, top=2 * scale)

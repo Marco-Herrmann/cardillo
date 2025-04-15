@@ -215,6 +215,7 @@ def consistent_initial_conditions(
     g_S0 = system.g_S(t0, q0)
 
     from warnings import warn
+
     warn("Removed a lot of checks!")
 
     # assert np.allclose(
