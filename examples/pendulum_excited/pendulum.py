@@ -6,28 +6,13 @@ from cardillo import System
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.solver import Rattle, BackwardEuler
 
-def cubic_spring(k1, k3):
-    def force(x):
-        return k1 * x + k3 * x**3
-    
-    def force_x(x):
-        return k1 + 3 * k3 * x**2
-    
-    return force, force_x
-
 class Pendulum:
-    def __init__(self, L, m, k1, k3, d):
+    def __init__(self, L, m, g, e, d):
         self.L = L
         self.m = m
-
-        self.k1 = k1
-        self.k3 = k3
-
+        self.g = g
+        self.e = e
         self.d = d
-
-        spring = cubic_spring(k1, k3)
-        self.spring = spring[0]
-        self.spring_y = spring[1] 
 
     def q_dot(self, t, q, u):
         return u
@@ -39,8 +24,8 @@ class Pendulum:
         return self._M
 
 class Pendulum_phi(Pendulum):
-    def __init__(self, L, m, k1, k3, d, phi0=None, phi_dot0=None):
-        super().__init__(L, m, k1, k3, d)
+    def __init__(self, L, m, g, e, d, phi0=None, phi_dot0=None):
+        super().__init__(L, m, g, e, d)
         self._M = m * L**2
 
         self.q0 = np.array([0.0 if phi0 is None else phi0])
@@ -50,11 +35,15 @@ class Pendulum_phi(Pendulum):
 
     def h(self, t, q, u):
         phi = q[0]
+        cphi = np.cos(phi)
+        sphi = np.sin(phi)
+        
+        M_g = -self.L * self.m * self.g * sphi
+        M_e = -self.L * self.m * self.e(t)[2] * cphi
+
         phi_dot = u[0]
-        y = self.L * np.sin(phi)
-        y_dot = self.L * phi_dot * np.cos(phi)
-        F = self.spring(y) + self.d * y_dot
-        return np.array([-self.L * np.cos(phi) * F])
+        M_d = - phi_dot * self.d
+        return np.array([M_g + M_e + M_d])
     
     def h_q(self, t, q, u):
         return approx_fprime(q, lambda q_: self.h(t, q_, u))
@@ -68,20 +57,29 @@ class Pendulum_phi(Pendulum):
         return approx_fprime(u, lambda u_: self.h(t, q, u_))
         return np.array([[-self.d]])
     
-    def r_OP(self, q):
+    def r_OP(self, t, q):
         phi = q[0]
-        return self.L * np.array([np.cos(phi), np.sin(phi)])
+        cphi = np.cos(phi)
+        sphi = np.sin(phi)
+        return self.L * np.array([cphi, -sphi]) + np.array([self.e(t)[0], 0.0])
     
-    def v_P(self, q, u):
+    def v_P(self, t, q, u):
         phi = q[0]
+        cphi = np.cos(phi)
+        sphi = np.sin(phi)
         phi_dot = u[0]
-        return self.L * phi_dot * np.array([-np.sin(phi), np.cos(phi)])
+        return self.L * phi_dot * np.array([-sphi, -cphi]) + np.array([self.e(t)[1], 0.0])
 
     
 class Pendulum_xy(Pendulum):
     def __init__(self, L, m, k1, k3, d, phi0=None, phi_dot0=None):
         super().__init__(L, m, k1, k3, d)
         self._M = m * np.eye(2, dtype=float)
+
+        
+        from warnings import warn
+        warn("damping is 0.0")
+        self.d = 0.0
 
         phi0_ = 0.0 if phi0 is None else phi0
         phi_dot0_ = 0.0 if phi_dot0 is None else phi_dot0
@@ -142,33 +140,31 @@ if __name__ == "__main__":
     # geometry and mass
     L = 1.0
     m = 1.0
-    
-    # spring stiffnesses
-    k1 = -1.0
-    k3 = 2.0
 
-    # k1 = 1.0
-    # k3 = 0.0
+    # gravity
+    g = 9.81
+
+    # excitation
+    om = 1.0 * np.pi
+    e_hat = L / 2
+    e = lambda t: e_hat * np.array([
+        np.sin(om * t),
+        om * np.cos(om * t),
+        - om**2 * np.sin(om * t),
+    ])
+
+    print(f"{om = }, {np.sqrt(g / L) = }")
 
     # damper 
-    d = 0.1
-
-    # show spring stiffness
-    if False:
-        spring = cubic_spring(k1, k3)
-        xs = np.linspace(-L, L, 200)
-        Fs = [spring[0](xi) for xi in xs]
-        fig, ax = plt.subplots()
-        ax.plot(xs, Fs)
-        ax.grid()
+    d = 0.2
     
     # create pendulum
-    phi0 = np.pi/3
-    # phi0 = 0.0
+    # phi0 = np.pi/3
+    phi0 = 0.0
 
     pendulums = [
-        Pendulum_phi(L, m, k1, k3, d, phi0),
-        Pendulum_xy(L, m, k1, k3, d, phi0)
+        Pendulum_phi(L, m, g, e, d, phi0),
+        # Pendulum_xy(L, m, k1, k3, d, phi0)
     ]
 
     # assemble the system
@@ -188,12 +184,14 @@ if __name__ == "__main__":
 
 
     fig, ax = plt.subplots(2, 2)
-    for iP in range(2):
+    for iP in range(len(pendulums)):
         pendulum = pendulums[iP]
         qDOF = pendulum.qDOF
         uDOF = pendulum.uDOF
-        ax[0, iP].plot(t, [pendulum.r_OP(qi[qDOF]) for qi in q])
-        ax[1, iP].plot(t, [pendulum.v_P(qi[qDOF], ui[uDOF]) for qi, ui in zip(q, u)])
+        ax[0, iP].plot(t, [pendulum.r_OP(ti, qi[qDOF]) for ti, qi in zip(t, q)])
+        ax[1, iP].plot(t, [pendulum.v_P(ti, qi[qDOF], ui[uDOF]) for ti, qi, ui in zip(t, q, u)])
+        
+        ax[0, iP].plot(t, [e(ti)[0] for ti in t])
 
     plt.show()
 

@@ -968,6 +968,7 @@ class System:
             M_proj = np.eye(self.nu, dtype=float)
             # M_proj = M0.toarray()
             K_proj = np.diag(np.arange(self.nu, dtype=float) + 1)
+            # TODO: We can use a "negative stiffness" in K_proj. So that we can filter positive and negative eigenvalues
             # K_proj = np.zeros((self.nu, self.nu))
             l_p, V_p = [
                 np.real_if_close(i) for i in scipy.linalg.eigh(-K_proj - K_arr, M_proj)

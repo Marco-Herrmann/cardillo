@@ -20,27 +20,30 @@ if __name__ == "__main__":
     system = System()
 
     # geometry
-    dh = 0.1
+    dh = 10.0
+
+    # density of blocks
+    rho_block = 10.0 / 100**2
 
     ###########
     # stage x #
     ###########
-    dim_x = np.array([0.3, 0.3, dh / 2])
+    dim_x = np.array([30.0, 30.0, dh / 2])
     r_OP0_x = np.array([0.0, 0.0, 0.0])
     A_IB0_x = np.eye(3, dtype=float)
     q0_x = RigidBody.pose2q(r_OP0_x, A_IB0_x)
     u0_x = np.zeros(6, dtype=float)
-    stage_x = Box(RigidBody)(dim_x, 10.0, q0=q0_x, u0=u0_x, name="stage_x")
+    stage_x = Box(RigidBody)(dim_x, rho_block, q0=q0_x, u0=u0_x, name="stage_x")
 
     ###########
     # stage y #
     ###########
-    dim_y = np.array([0.3, 0.3, dh / 2])
-    r_OP0_y = np.array([0.0, 0.0, dh])
+    dim_y = np.array([10.0, 30.0, dh / 2])
+    r_OP0_y = np.array([10.0, 0.0, dh])
     A_IB0_y = np.eye(3, dtype=float)
     q0_y = RigidBody.pose2q(r_OP0_y, A_IB0_y)
     u0_y = np.zeros(6, dtype=float)
-    stage_y = Box(RigidBody)(dim_y, 10.0, q0=q0_y, u0=u0_y, name="stage_y")
+    stage_y = Box(RigidBody)(dim_y, rho_block*3, q0=q0_y, u0=u0_y, name="stage_y")
 
     ####################
     # disturbing force #
@@ -51,12 +54,12 @@ if __name__ == "__main__":
     ################
     # adding cable #
     ################
-    r_cable = 0.002
-    rho_cable = 50.0
+    r_cable = 0.2
+    rho_cable = 50.0 / 100**3
     cross_section = CircularCrossSection(r_cable)
     A = cross_section.area
     I = cross_section.second_moment
-    E = 210_000
+    E = 210_000 / 100**2
     mu = 0.5
     G = E / (2 * (1 + mu))
     material_model = Simo1986(
@@ -75,7 +78,7 @@ if __name__ == "__main__":
     # semicircle
     if True:
         r_OP = lambda xi: np.array(
-            [0.15 + dh / 2 * np.sin(xi), 0.0, dh / 2 - dh / 2 * np.cos(xi)]
+            [15.0 + dh / 2 * np.sin(xi), 0.0, dh / 2 - dh / 2 * np.cos(xi)]
         )
         L = np.pi * dh / 2
         xi1 = np.pi
@@ -101,6 +104,7 @@ if __name__ == "__main__":
 
     # constraint
     cable_origin = RigidConnection(system.origin, rod, xi2=0.0)
+    cable_stage_x = RigidConnection(stage_x, rod, xi2=0.0)
     cable_stage_y = RigidConnection(stage_y, rod, xi2=1.0)
 
     ##############################
@@ -115,11 +119,11 @@ if __name__ == "__main__":
 
     # movement in x
     DX = 0
-    dx = {-1: -0.05, 0: 0.0, 1: 0.05}[DX]
+    dx = {-1: -5.0, 0: 0.0, 1: 5.0}[DX]
 
     # movement in y
     DY = 0
-    dy = {-1: -0.025, 0: 0.0, 1: 0.025}[DY]
+    dy = {-1: -2.5, 0: 0.0, 1: 2.5}[DY]
 
     # steps
     desired_x = lambda t: dx * smoothstep2(t, x_min=t0, x_max=tN)
@@ -138,7 +142,8 @@ if __name__ == "__main__":
     # add components to system
     system.add(stage_x, frame_x, constraint_x)
     system.add(stage_y, frame_y, constraint_y)
-    system.add(rod, cable_origin, cable_stage_y)
+    # system.add(rod, cable_origin, cable_stage_y)
+    system.add(rod, cable_stage_x, cable_stage_y)
 
     # assemble the system
     system.assemble()
@@ -158,8 +163,11 @@ if __name__ == "__main__":
     ###############################
     # constraining stage movement #
     ###############################
-    prismatic_x = Prismatic(system.origin, stage_x, 0, name="prismatic_x")
-    prismatic_y = Prismatic(stage_x, stage_y, 1, name="prismatic_y")
+    prismatic_x = Prismatic(system.origin, stage_x, 0)
+    prismatic_y = Prismatic(stage_x, stage_y, 1)
+    
+    prismatic_x.name="prismatic_x"
+    prismatic_y.name="prismatic_y"
 
     system.remove(constraint_x, constraint_y)
     system.remove(frame_x, frame_y)
@@ -173,13 +181,11 @@ if __name__ == "__main__":
     # compute eigenmodes #
     ######################
     omegas, modes_dq, sol_modes = system.eigenmodes(
-        system.t0, system.q0, system.la_g0, system.la_gamma0, system.la_c0
+        system.t0, system.q0
     )
 
     print(omegas)
     print(len(omegas))
-
-    DX = DY = 1
 
     # vtk-export
     dir_name = Path(__file__).parent
