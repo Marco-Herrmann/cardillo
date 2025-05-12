@@ -865,26 +865,37 @@ class System:
             coo[contr.uDOF, contr.uDOF] = Gi_dot
         return coo.asformat(format)
 
-    def linearize(self, t, q, u, static_eq=False, constraints=None, debug=False):
-        # save state
-        t0_ = self.t0
-        q0_ = self.q0
-        u0_ = self.u0
+    def linearize(
+        self, t, q, u, static_eq=False, constraints=None, debug=False, ccic=True
+    ):
+        # ccic: compute_consistent_initial_conditions
+        if ccic:
+            # save state
+            t0_ = self.t0
+            q0_ = self.q0
+            u0_ = self.u0
 
-        # set stuff for consistent initial condition
-        self.t0 = t
-        self.q0 = q
-        self.u0 = u
+            # set stuff for consistent initial condition
+            self.t0 = t
+            self.q0 = q
+            self.u0 = u
 
-        # get consistent initial conditions
-        t, q, u, q_dot, u_dot, la_g, la_gamma, la_c, la_N, la_F = (
-            consistent_initial_conditions(self)
-        )
+            # get consistent initial conditions
+            t, q, u, q_dot, u_dot, la_g, la_gamma, la_c, la_N, la_F = (
+                consistent_initial_conditions(self)
+            )
 
-        # use old initial state again
-        self.t0 = t0_
-        self.q0 = q0_
-        self.u0 = u0_
+            # use old initial state again
+            self.t0 = t0_
+            self.q0 = q0_
+            self.u0 = u0_
+
+        else:
+            # TODO: may get them from kwargs
+            u_dot = np.zeros([self.nu], dtype=float)
+            la_g = np.zeros([self.nla_g], dtype=float)
+            la_gamma = np.zeros([self.nla_gamma], dtype=float)
+            la_c = np.zeros([self.nla_c], dtype=float)
 
         # continue with linearization
         M0 = self.M(t, q)
@@ -1035,9 +1046,98 @@ class System:
 
         return (Mg, Dg, Kg), Bg, las_p
 
-    def eigenmodes(self, t, q, constraints="ComplianceProjection"):
+    def new_eigenmodes(self, t, q, remove_uDOFs=[]):
+        u = np.zeros([self.nu], dtype=float)
+        u_dot = np.zeros([self.nu], dtype=float)
+        la_g = np.zeros([self.nla_g], dtype=float)
+        la_gamma = np.zeros([self.nla_gamma], dtype=float)
+        la_c = np.zeros([self.nla_c], dtype=float)
+
+        # continue with linearization
+        M0 = self.M(t, q)
+        K0_bar = self.K_bar(t, q, u, u_dot, la_g, la_gamma, la_c)
+
+        # project out the contraints g_S
+        B0 = self.q_dot_u(t, q).asformat("csc")
+        # remove the other constrained DOFs
+        uDOFs = np.setdiff1d(np.arange(self.nu), remove_uDOFs)
+        B_red = B0[:, uDOFs]
+
+        # handle compliance form
+        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
+        c_la_c = self.c_la_c("csc")
+        if c_la_c.shape[0] > 0:
+            K0_c = (
+                self.W_c(t, q)
+                @ scipy.sparse.linalg.inv(c_la_c)
+                @ self.c_q(t, q, u, la_c)
+            )
+        else:
+            K0_c = CooMatrix((self.nu, self.nq)).asformat("csr")
+
+        K0 = (K0_bar + K0_c) @ B0
+
+        K0_red = K0[uDOFs[:, None], uDOFs]
+        M_red = M0[uDOFs[:, None], uDOFs]
+
+        K_red = 0.5 * (K0_red + K0_red.T)
+        N_red = 0.5 * (K0_red - K0_red.T)
+
+        d = M_red.shape[0]
+        atol = (
+            np.finfo(float).eps
+            * d
+            * np.max(
+                [1, scipy.sparse.linalg.norm(K_red) / scipy.sparse.linalg.norm(M_red)]
+            )
+        )
+        norm_M = scipy.sparse.linalg.norm(M_red - M_red.T)
+        assert np.isclose(
+            norm_M, 0.0, atol=atol * scipy.sparse.linalg.norm(M_red)
+        ), f"Mass matrix is not symmetric! {norm_M}"
+
+        norm_N = scipy.sparse.linalg.norm(N_red)
+        if not np.isclose(norm_N, 0.0, atol=atol):
+            warnings.warn(f"There are circular forces that will be neglected! {norm_N}")
+
+        # compute eigenvalues and eigenvectors
+        las_ud_squared, Vs_ud = [
+            np.real_if_close(i)
+            for i in scipy.linalg.eigh(-K_red.toarray(), M_red.toarray())
+        ]
+
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_ud_squared)
+        las_ud_squared = las_ud_squared[sort_idx]
+        Vs_ud = Vs_ud[:, sort_idx]
+
+        # compute omegas
+        omegas = np.zeros([len(las_ud_squared)])
+        modes_dq = B_red @ Vs_ud
+        for i, lai in enumerate(las_ud_squared):
+            if np.isclose(0.0, lai, atol=atol):
+                omegas[i] = 0.0
+            elif lai > 0:
+                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
+                warnings.warn(msg)
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+        # compose solution object with omegas and modes
+        sol = Solution(
+            self,
+            np.array([t]),
+            np.array([q]),
+            omegas=np.array([omegas]),
+            modes_dq=np.array([modes_dq]),
+        )
+
+        return omegas, modes_dq, sol
+
+    def eigenmodes(self, t, q, constraints="ComplianceProjection", ccic=True):
         u = np.zeros(self.nu)
-        MDK, B, _ = self.linearize(t, q, u, True, constraints)
+        MDK, B, _ = self.linearize(t, q, u, True, constraints, ccic=ccic)
 
         # get eigenvalues and eigenvectors of the undamped system
         M = MDK[0]
