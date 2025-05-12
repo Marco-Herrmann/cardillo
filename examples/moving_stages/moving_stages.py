@@ -43,7 +43,7 @@ if __name__ == "__main__":
     A_IB0_y = np.eye(3, dtype=float)
     q0_y = RigidBody.pose2q(r_OP0_y, A_IB0_y)
     u0_y = np.zeros(6, dtype=float)
-    stage_y = Box(RigidBody)(dim_y, rho_block*3, q0=q0_y, u0=u0_y, name="stage_y")
+    stage_y = Box(RigidBody)(dim_y, rho_block * 3, q0=q0_y, u0=u0_y, name="stage_y")
 
     ####################
     # disturbing force #
@@ -165,9 +165,9 @@ if __name__ == "__main__":
     ###############################
     prismatic_x = Prismatic(system.origin, stage_x, 0)
     prismatic_y = Prismatic(stage_x, stage_y, 1)
-    
-    prismatic_x.name="prismatic_x"
-    prismatic_y.name="prismatic_y"
+
+    prismatic_x.name = "prismatic_x"
+    prismatic_y.name = "prismatic_y"
 
     system.remove(constraint_x, constraint_y)
     system.remove(frame_x, frame_y)
@@ -180,9 +180,7 @@ if __name__ == "__main__":
     ######################
     # compute eigenmodes #
     ######################
-    omegas, modes_dq, sol_modes = system.eigenmodes(
-        system.t0, system.q0
-    )
+    omegas, modes_dq, sol_modes = system.eigenmodes(system.t0, system.q0)
 
     print(omegas)
     print(len(omegas))
