@@ -1097,14 +1097,31 @@ class System:
         ), f"Mass matrix is not symmetric! {norm_M}"
 
         norm_N = scipy.sparse.linalg.norm(N_red)
-        if not np.isclose(norm_N, 0.0, atol=atol):
-            warnings.warn(f"There are circular forces that will be neglected! {norm_N}")
+        if not (norm_N == 0.0):
+            warnings.warn(
+                f"There is skewsymmetric stiffness ({norm_N:.2e}). 'scipy.linalg.eig' is used instead of 'scipy.linalg.eigh'."
+            )
+            # compute eigenvalues and eigenvectors with eig
+            eig_fct = scipy.linalg.eig
+            _K_red = K0_red
 
-        # compute eigenvalues and eigenvectors
+        else:
+            # compute eigenvalues and eigenvectors with eigh and therefore with symmetric matrices
+            eig_fct = scipy.linalg.eigh
+            _K_red = K_red
+
         las_ud_squared, Vs_ud = [
-            np.real_if_close(i)
-            for i in scipy.linalg.eigh(-K_red.toarray(), M_red.toarray())
+            np.real_if_close(i) for i in eig_fct(-_K_red.toarray(), M_red.toarray())
         ]
+
+        for v in [las_ud_squared, Vs_ud]:
+            if v.dtype == complex:
+                imag_norm = np.linalg.norm(np.imag(v))
+                total_norm = np.linalg.norm(v)
+                ratio = imag_norm / total_norm
+                print(
+                    f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
+                )
 
         # sort eigenvalues such that rigid body modes are first
         sort_idx = np.argsort(-las_ud_squared)
