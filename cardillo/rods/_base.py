@@ -1338,7 +1338,7 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
     ############
     def la_c(self, t, q, u):
         # TODO: implement affine part independently and invert matrix element wise
-        return spsolve(self.c_la_c().tocsr(), self.c(t, q, u, np.zeros(self.nla_c)))
+        return spsolve(self.c_la_c().tocsr(), -self.c(t, q, u, np.zeros(self.nla_c)))
 
     def c(self, t, q, u, la_c):
         c = np.zeros(self.nla_c, dtype=np.common_type(q, u, la_c))
