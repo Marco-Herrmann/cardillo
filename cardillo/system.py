@@ -1110,18 +1110,18 @@ class System:
             eig_fct = scipy.linalg.eigh
             _K_red = K_red
 
-        las_ud_squared, Vs_ud = [
-            np.real_if_close(i) for i in eig_fct(-_K_red.toarray(), M_red.toarray())
-        ]
-
-        for v in [las_ud_squared, Vs_ud]:
-            if v.dtype == complex:
-                imag_norm = np.linalg.norm(np.imag(v))
-                total_norm = np.linalg.norm(v)
-                ratio = imag_norm / total_norm
+        res = list(eig_fct(-_K_red.toarray(), M_red.toarray()))
+        for i, v in enumerate(res):
+            imag_norm = np.linalg.norm(np.imag(v))
+            total_norm = np.linalg.norm(v)
+            ratio = imag_norm / total_norm
+            if ratio >= 1e-5:
                 print(
                     f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
                 )
+            res[i] = np.real(v)
+
+        las_ud_squared, Vs_ud = res
 
         # sort eigenvalues such that rigid body modes are first
         sort_idx = np.argsort(-las_ud_squared)
