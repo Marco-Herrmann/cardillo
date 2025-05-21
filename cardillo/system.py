@@ -1153,7 +1153,7 @@ class System:
         ########################################
         # A: constraints inside a contribution #
         ########################################
-        nla_g_intern = np.sum([c.nla_g for c in internal_contr])
+        nla_g_intern = int(np.sum([c.nla_g for c in internal_contr]))
         T_int, col = CooMatrix((self.nu, self.nu - nla_g_intern)), 0
         removed_laDOFs, changing_uDOFs = [], []
         for contr in internal_contr:
@@ -1203,14 +1203,17 @@ class System:
             # print error to the original set
             # equation of motion
             zero0 = T_bil.T @ T_int.T @ Wg0
+            e0 = scipy.sparse.linalg.norm(zero0)
 
             # constraint equation
             zero1 = g_q0 @ B0 @ T_int @ T_bil
+            e1 = scipy.sparse.linalg.norm(zero1)
 
-            print(f"Constraint projection errors:")
-            print(f"norm(T_bil.T @ T_int.T @ W_g) : {scipy.sparse.linalg.norm(zero0)}")
-            print(f"norm(g_q @ B @ T_int @ T_bil) : {scipy.sparse.linalg.norm(zero1)}")
-            print()
+            if e0 + e1 > 1e-9:
+                print(f"Constraint projection errors:")
+                print(f"norm(T_bil.T @ T_int.T @ W_g) : {e0}")
+                print(f"norm(g_q @ B @ T_int @ T_bil) : {e1}")
+                print()
 
         if False:
             # remove the other constrained DOFs
@@ -1284,7 +1287,7 @@ class System:
             total_norm = np.linalg.norm(v)
             if total_norm > 0.0:
                 ratio = imag_norm / total_norm
-                if ratio >= 1e-5:
+                if ratio >= 1e-2:
                     print(
                         f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
                     )
@@ -1304,8 +1307,9 @@ class System:
             if np.isclose(0.0, lai):
                 omegas[i] = 0.0
             elif lai > 0:
-                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
-                warnings.warn(msg)
+                if lai > 1e-5:
+                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
+                    warnings.warn(msg)
                 omegas[i] = np.sqrt(lai)
             else:
                 omegas[i] = np.sqrt(-lai)
@@ -1322,6 +1326,7 @@ class System:
         return omegas, modes_dq, sol
 
     def eigenmodes(self, t, q, constraints="ComplianceProjection", ccic=True):
+        DeprecationWarning("Old function, use new_eigenvalues instead!")
         u = np.zeros(self.nu)
         MDK, B, _ = self.linearize(t, q, u, True, constraints, ccic=ccic)
 

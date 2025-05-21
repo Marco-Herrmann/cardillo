@@ -132,15 +132,11 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     ######################
     # compute eigenmodes #
     ######################
-    for c in [None, "NullSpace", "ComplianceProjection"]:
-        omegas, modes_dq, sol_modes = system.eigenmodes(
-            system.t0,
-            system.q0,
-            constraints=c,
-        )
-
-        print(omegas)
-        print(len(omegas))
+    n_steps = 1
+    sol = Newton(system, n_steps).solve()
+    omegas, modes_dq, sol_modes = system.new_eigenmodes(sol, n_steps)
+    print(omegas)
+    print(len(omegas))
 
     # vtk-export
     rod._export_dict["level"] = "NodalVolume"
