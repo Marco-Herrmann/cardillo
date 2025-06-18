@@ -487,3 +487,7 @@ class CrossSectionInertias:
         else:
             self.A_rho0 = density * cross_section.area
             self.B_I_rho0 = density * cross_section.second_moment
+
+        self.generalized_inertia = np.zeros((6, 6), dtype=float)
+        self.generalized_inertia[:3, :3] = np.eye(3, dtype=float) * self.A_rho0
+        self.generalized_inertia[3:, 3:] = self.B_I_rho0

@@ -70,6 +70,8 @@ class Simo1986(RodMaterialModel):
         self.C_n_inv = np.linalg.inv(self.C_n)
         self.C_m_inv = np.linalg.inv(self.C_m)
 
+        self.C_inv = np.diag(1 / np.concatenate([Ei, Fi]))
+
     def potential(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         dG = B_Gamma - B_Gamma0
         dK = B_Kappa - B_Kappa0
