@@ -190,6 +190,36 @@ class Mesh1D:
         elif self.basis == "Lagrange_Disc":
             return self.lagrange_basis1D(xi, el, squeeze=False)
 
+    def eval_basis_matrix_q(self, xi, el):
+        return self._eval_basis_matrix(xi, el)[0]
+
+    def eval_basis_matrix_u(self, xi, el):
+        return self._eval_basis_matrix(xi, el)[1]
+
+    # TODO: cache this
+    def _eval_basis_matrix(self, xi, el):
+        interval = self.knot_vector.element_interval(el)
+        self.lagrangebasis.set_interval(interval)
+
+        # TODO: make switching between q and u more easy!
+        N_q = np.zeros((self.derivative_order + 1, self.dim_q, self.nq_per_element))
+        N_u = np.zeros((self.derivative_order + 1, self.dim_u, self.nu_per_element))
+
+        eye_q = np.eye(self.dim_q, dtype=float)
+        eye_u = np.eye(self.dim_u, dtype=float)
+        for node in range(self.nnodes_per_element):
+            qDOF = self.nodalDOF_element[node]
+            uDOF = self.nodalDOF_element_u[node]
+            Ni = self.lagrangebasis(xi)
+            N_q[0, qDOF[:, None], qDOF] = eye_q * Ni
+            N_u[0, uDOF[:, None], uDOF] = eye_u * Ni
+            for j in range(1, self.derivative_order + 1):
+                Ni_deriv = self.lagrangebasis.deriv(xi, n=j)
+                N_q[j, qDOF[:, None], qDOF] = eye_q * Ni_deriv
+                N_u[j, uDOF[:, None], uDOF] = eye_u * Ni_deriv
+
+        return N_q, N_u
+
     def quadrature_points(self, nquadrature):
         qp = np.zeros((self.nelement, nquadrature))
         wp = np.zeros((self.nelement, nquadrature))

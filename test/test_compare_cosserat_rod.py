@@ -142,25 +142,45 @@ properties.extend(["c", "c_q", "c_u"])
 
 
 # function name - arguments - sparse
-funcs_args = [
-    ["M", ["t", "q"], True],
-    ["q_dot", ["t", "q", "u"], False],
-    ["h", ["t", "q", "u"], False],
-    ["h_u", ["t", "q", "u"], True],
-    ["g_S", ["t", "q"], False],
-    ["g_S_q", ["t", "q"], True],
-    ["c_la_c", [], True],
-    ["la_c", ["t", "q", "u"], False],
-    ["W_c", ["t", "q"], True],
-    ["c", ["t", "q", "u", "la_c"], False],
-    ["c_q", ["t", "q", "u", "la_c"], True],
+# grouped for testing the speedup with same arguments
+funcs_args_grouped = [
+    [
+        ["M", ["t", "q"], True],
+    ],
+    [
+        ["q_dot", ["t", "q", "u"], False],
+    ],
+    [
+        ["h", ["t", "q", "u"], False],
+        ["h_u", ["t", "q", "u"], True],
+    ],
+    [
+        ["g_S", ["t", "q"], False],
+        ["g_S_q", ["t", "q"], True],
+    ],
+    [
+        ["c_la_c", [], True],
+        ["la_c", ["t", "q", "u"], False],
+        ["W_c", ["t", "q"], True],
+        ["c", ["t", "q", "u", "la_c"], False],
+        ["c_q", ["t", "q", "u", "la_c"], True],
+        # TODO: add W_g, g, g_q also here
+    ],
 ]
 
-args_dict = {
-    "t": lambda rod: 0.0,
-    "q": lambda rod: q0[rod.qDOF],
-    "u": lambda rod: u0[rod.uDOF],
-    "la_c": lambda rod: np.zeros(rod.nla_c),
+funcs_args = [v for group in funcs_args_grouped for v in group]
+
+args_dict = lambda rod: {
+    "t": 0.0,
+    "q": q0[rod.qDOF],
+    "u": u0[rod.uDOF],
+    "la_c": np.zeros(rod.nla_c),
+}
+args_dict_random = lambda rod: {
+    "t": np.random.rand(),
+    "q": q0[rod.qDOF] + np.random.rand(rod.nq),
+    "u": u0[rod.uDOF] + np.random.rand(rod.nu),
+    "la_c": np.zeros(rod.nla_c) + np.random.rand(rod.nla_c),
 }
 
 
@@ -170,7 +190,7 @@ def test_cardillo_core(name, args, sparse):
     for rod in rods:
         assert hasattr(rod, name)
         fct = getattr(rod, name)
-        a = [args_dict[ai](rod) for ai in args]
+        a = [args_dict(rod)[ai] for ai in args]
         res.append(fct(*a))
 
     if sparse:
@@ -180,16 +200,23 @@ def test_cardillo_core(name, args, sparse):
     assert np.isclose(n, 0.0, atol=1e-5), n
 
 
-def performance_cardillo_core(name, args, sparse):
+def performance_cardillo_core(group):
+    name = ", ".join([p[0] for p in group])
     print(f"{name}")
+
     # test time result
+    def wrapper(rod):
+        args_ = args_dict_random(rod)
+        for name, args, sparse in group:
+            fct = getattr(rod, name)
+            a = [args_[ai] for ai in args]
+            fct(*a)
+
     num = 500
     tmts = []
     for i, rod in enumerate(rods):
-        fct = getattr(rod, name)
-        a = [args_dict[ai](rod) for ai in args]
         globals().update(locals())
-        tmt = timeit("fct(*a)", globals=globals(), number=num)
+        tmt = timeit("wrapper(rod)", globals=globals(), number=num)
         print(f"    {rod.name}: {tmt:.5e}")
         tmts.append(tmt)
 
@@ -202,5 +229,5 @@ if __name__ == "__main__":
     # test_nodalValues_elementwise()
     # compliance and constraints
 
-    for name, args, sparse in funcs_args:
-        performance_cardillo_core(name, args, sparse)
+    for group in funcs_args_grouped:
+        performance_cardillo_core(group)

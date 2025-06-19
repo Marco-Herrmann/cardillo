@@ -1,6 +1,7 @@
 import numpy as np
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
+from warnings import warn
 
 
 from abc import ABC, abstractmethod
@@ -139,6 +140,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # evaluate shape functions at specific xi
         self.basis_functions = mesh_kin.eval_basis
+        self.N_q = mesh_kin.eval_basis_matrix_q
+        self.N_u = mesh_kin.eval_basis_matrix_u
 
         #####################
         # quadrature points #
@@ -235,6 +238,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         self.set_reference_strains(self.Q)
 
+        # caches
+        self._cache_f_gyr = LRUCache(self.nquadrature_dyn * nelement)
+        self._cache_internal = LRUCache(self.nquadrature_int * nelement)
+
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
 
@@ -253,7 +260,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
             for i in range(self.nquadrature_int):
                 # evaluate required quantities
-                _, _, epsilon_bar = self._eval_qp_int(el, i, qe)
+                qpi = self.qp_int[el, i]
+                N = self.N_int_q[el, i]
+                N_xi = self.N_int_q_xi[el, i]
+                epsilon_bar = self._eval(qpi, N, N_xi, qe)[0][2]
 
                 # save length of reference tangential vector and strain
                 self.J_int[el, i] = norm(epsilon_bar[:3])
@@ -262,7 +272,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
             for i in range(self.nquadrature_dyn):
                 # evaluate required quantities
-                _, _, epsilon_bar = self._eval_qp_dyn(el, i, qe)
+                qpi = self.qp_dyn[el, i]
+                N = self.N_dyn_q[el, i]
+                N_xi = self.N_dyn_q_xi[el, i]
+                epsilon_bar = self._eval(qpi, N, N_xi, qe)[0][2]
 
                 # length of reference tangential vector
                 self.J_dyn[el, i] = norm(epsilon_bar[:3])
@@ -370,63 +383,33 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##################
     # eval functions #
     ##################
-    def _eval_qp_dyn(self, el, i, qe):
-        """For dynamical virtual work:
-        Cheap evaluation at i-th quadrature point of el with qe"""
-        rP = self.N_dyn_q[el, i] @ qe
-        rP_xi = self.N_dyn_q_xi[el, i] @ qe
-        P = rP[3:]
-        A_IB = Exp_SO3_quat(P, normalize=True)
-        B_kappa_bar = T_SO3_quat(P, normalize=True) @ rP_xi[3:]
-        return rP[:3], A_IB, np.concatenate([A_IB.T @ rP_xi[:3], B_kappa_bar])
+    # TODO: cache this
+    def _eval_r_A(self, xi, qe, el, N):
+        rP = N @ qe
+        A_IB = Exp_SO3_quat(rP[3:])
+        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ N[3:]
+        return (rP[:3], A_IB), (N[:3], A_IB_qe)
 
-    def _eval_qp_int(self, el, i, qe):
-        """For internal virtual work:
-        Cheap evaluation at i-th quadrature point of el with qe"""
-        rP = self.N_int_q[el, i] @ qe
-        rP_xi = self.N_int_q_xi[el, i] @ qe
-        P = rP[3:]
-        A_IB = Exp_SO3_quat(P, normalize=True)
-        B_kappa_bar = T_SO3_quat(P, normalize=True) @ rP_xi[3:]
-        return rP[:3], A_IB, np.concatenate([A_IB.T @ rP_xi[:3], B_kappa_bar])
+    # TODO: cache this, not sure if we need to ...
+    def _eval(self, xi, N, N_xi, qe):
+        # eval
+        rP = N @ qe
+        rP_xi = N_xi @ qe
+        A_IB = Exp_SO3_quat(rP[3:])
+        T = T_SO3_quat(rP[3:], normalize=True)
+        B_gamma = A_IB.T @ rP_xi[:3]
+        B_kappa = T @ rP_xi[3:]
+        eps = np.array([*B_gamma, *B_kappa])
 
-    def _eval(self, xi, qe):
-        """For arbitrary xi:
-        Most expensive function, should only be called in postprocessing!"""
-        from warnings import warn
-
-        warn("Never use this function!")
-
-    # corresponding _devals
-    def _deval_qp_int(self, el, i, qe):
-        """For internal virtual work:
-        Cheap evaluation at i-th quadrature point of el with qe"""
-        rP = self.N_int_q[el, i] @ qe
-        rP_xi = self.N_int_q_xi[el, i] @ qe
-        P = rP[3:]
-        P_qe = self.N_int_q[el, i, 3:]
-        A_IB = Exp_SO3_quat(P, normalize=True)
-        A_IB_qe = Exp_SO3_quat_p(P, normalize=True) @ P_qe
-        T = T_SO3_quat(P, normalize=True)
-
-        B_gamma_bar = A_IB.T @ rP_xi[:3]
-        B_kappa_bar = T @ rP_xi[3:]
-        epsilon_bar = np.concatenate([B_gamma_bar, B_kappa_bar])
-
+        # deval
+        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ N[3:]
         # TODO: think of implementing (T_SO3_quat(P) @ Q)_P for kappa
         # (ca. 10% speed up per call)
-        B_gamma_bar_qe = (
-            ax2skew(B_gamma_bar) @ T @ P_qe + A_IB.T @ self.N_int_q_xi[el, i, :3]
-        )
-        B_kappa_bar_qe = (
-            rP_xi[3:] @ T_SO3_quat_P(P, normalize=True) @ P_qe
-            + T @ self.N_int_q_xi[el, i, 3:]
-        )
-        epsilon_bar_qe = np.vstack([B_gamma_bar_qe, B_kappa_bar_qe])
-
-        _eval = (rP[:3], A_IB, epsilon_bar)
-        _deval = (self.N_int_q[el, i, :3], A_IB_qe, epsilon_bar_qe)
-        return _eval, _deval
+        TP_xi_P = rP_xi[3:] @ T_SO3_quat_P(rP[3:], normalize=True)
+        B_gamma_bar_qe = ax2skew(B_gamma) @ T @ N[3:] + A_IB.T @ N_xi[:3]
+        B_kappa_bar_qe = TP_xi_P @ N[3:] + T @ N_xi[3:]
+        eps_qe = np.vstack([B_gamma_bar_qe, B_kappa_bar_qe])
+        return (rP[:3], A_IB, eps), (N[:3], A_IB_qe, eps_qe)
 
     #########################################
     # equations of motion
@@ -449,7 +432,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         for i in range(self.nquadrature_dyn):
             # extract reference state variables
-            Mi = self.cross_section_inertias.generalized_inertia * self.qw_dyn[el, i] * self.J_dyn[el, i]
+            Mi = (
+                self.cross_section_inertias.generalized_inertia
+                * self.qw_dyn[el, i]
+                * self.J_dyn[el, i]
+            )
             N_dyn = self.N_dyn_u[el, i]
             M_el += N_dyn.T @ Mi @ N_dyn
 
@@ -459,18 +446,23 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         h = np.zeros(self.nu, dtype=u.dtype)
         for el in range(self.nelement):
             elDOF_u = self.elDOF_u[el]
-            h[elDOF_u] -= self.f_gyr_el(u[elDOF_u], el)
+            h[elDOF_u] -= self.f_gyr_master(u[elDOF_u], el)[0]
         return h
 
     def h_u(self, t, q, u):
         coo = CooMatrix((self.nu, self.nu))
         for el in range(self.nelement):
             elDOF_u = self.elDOF_u[el]
-            coo[elDOF_u, elDOF_u] = -self.f_gyr_el_ue(u[elDOF_u], el)
+            coo[elDOF_u, elDOF_u] = -self.f_gyr_master(u[elDOF_u], el)[1]
         return coo
 
-    def f_gyr_el(self, ue, el):
+    @cachedmethod(
+        lambda self: self._cache_f_gyr,
+        key=lambda self, ue, el: hashkey(*ue, el),
+    )
+    def f_gyr_master(self, ue, el):
         f_gyr_el = np.zeros(self.nu_element, dtype=ue.dtype)
+        f_gyr_el_ue = np.zeros((self.nu_element, self.nu_element), dtype=ue.dtype)
 
         for i in range(self.nquadrature_dyn):
             # interpoalte angular velocity
@@ -483,21 +475,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 * self.J_dyn[el, i]
                 * self.qw_dyn[el, i]
             )
-
-            # multiply vector of gyroscopic forces with nodal virtual rotations
-            f_gyr_el += N_dyn.T @ f_gyr_el_p
-
-        return f_gyr_el
-
-    def f_gyr_el_ue(self, ue, el):
-        f_gyr_el_ue = np.zeros((self.nu_element, self.nu_element), dtype=ue.dtype)
-
-        for i in range(self.nquadrature_dyn):
-            # interpoalte angular velocity
-            N_dyn = self.N_dyn_omega[el, i]
-            B_Omega = N_dyn @ ue
-
-            # vector of gyroscopic forces
             # TODO: is there a speed-up if we just use the part of N on the omega DOFs?
             f_gyr_u_el_p = (
                 (
@@ -511,21 +488,21 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             )
 
             # multiply vector of gyroscopic forces with nodal virtual rotations
+            f_gyr_el += N_dyn.T @ f_gyr_el_p
             f_gyr_el_ue += N_dyn.T @ f_gyr_u_el_p @ N_dyn
 
-        return f_gyr_el_ue
-        return approx_fprime(ue, lambda ue_: self.f_gyr_el(ue_, el))
+        return f_gyr_el, f_gyr_el_ue
 
     ###########################
     # unit-quaternion condition
     ###########################
     def g_S(self, t, q):
-        # TODO: this must be rewritten and maybe optimized
+        # TODO: Can this be optimized?
         P = q[self.nq_r :].reshape(4, -1)
         return np.sum(P**2, axis=0) - 1
 
     def g_S_q(self, t, q):
-        # TODO: this must be rewritten and maybe optimized
+        # TODO: Can this be optimized?
         coo = CooMatrix((self.nla_S, self.nq))
         coo.data = 2 * q[self.nq_r :]
         coo.row = np.tile(np.arange(self.nla_S), 4)
@@ -586,9 +563,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if node := self.node_number(xi):
             r_OC, A_IB = self._r_A_nodal(qe, node)
         else:
-            # TODO: don't use eval here
-            N, N_xi = self.basis_functions(xi)
-            r_OC, A_IB, _ = self._eval(qe, xi, N, N_xi)
+            N, N_xi = self.N_q(xi)
+            r_OC, A_IB = self._eval_r_A(qe, xi, N, N_xi)[0]
 
         return r_OC if B_r_CP is None else r_OC + A_IB @ B_r_CP
 
@@ -629,8 +605,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if node := self.node_number(xi):
             _, A_IB = self._r_A_nodal(qe, node)
         else:
-            P = self.N_p(xi) @ qe
-            A_IB = Exp_SO3_quat(P, normalize=True)
+            N, N_xi = self.N_q(xi)
+            _, A_IB = self._eval_r_A(qe, xi, N, N_xi)[0]
         return A_IB
 
     def A_IB_q(self, t, qe, xi): ...
@@ -661,79 +637,57 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ####################################################
     # element functions for compliance and constraints #
     ####################################################
-    # TODO: cache this function when constrained!
-    def l_c_el(self, qe, el):
-        c_el = np.zeros(self.nla_c_element, dtype=qe.dtype)
-
-        for i in range(self.nquadrature_int):
-            # extract reference state variables
-            qwi = self.qw_int[el, i]
-            epsilon0_bar = self.epsilon0_bar[el, i]
-
-            N_compliance = self.N_int_c[el, i]
-            _, _, epsilon_bar = self._eval_qp_int(el, i, qe)
-
-            c_el += N_compliance.T @ ((epsilon0_bar - epsilon_bar) * qwi)
-
-        return c_el
-
-    # TODO: cache this function when constrained!
-    def l_c_el_qe(self, qe, el):
+    @cachedmethod(
+        lambda self: self._cache_internal,
+        key=lambda self, qe, el: hashkey(*qe, el),
+    )
+    def internal_master(self, qe, el):
         c_el = np.zeros(self.nla_c_element, dtype=qe.dtype)
         c_el_qe = np.zeros((self.nla_c_element, self.nq_element), dtype=qe.dtype)
-
-        for i in range(self.nquadrature_int):
-            # extract reference state variables
-            qwi = self.qw_int[el, i]
-            epsilon0_bar = self.epsilon0_bar[el, i]
-
-            N_compliance = self.N_int_c[el, i]
-            _eval, _deval = self._deval_qp_int(el, i, qe)
-            epsilon_bar = _eval[2]
-            epsilon_bar_qe = _deval[2]
-
-            c_el += N_compliance.T @ ((epsilon0_bar - epsilon_bar) * qwi)
-            c_el_qe -= N_compliance.T @ epsilon_bar_qe * qwi
-
-        return c_el_qe
-
-    # TODO: cache this function when constrained!
-    def W_compliance_el(self, qe, el):
         W_c_el = np.zeros((self.nu_element, self.nla_c_element), dtype=qe.dtype)
 
         for i in range(self.nquadrature_int):
             # extract reference state variables
+            qpi = self.qp_int[el, i]
             qwi = self.qw_int[el, i]
+            epsilon0_bar = self.epsilon0_bar[el, i]
 
-            # evaluate required quantities
-            _, A_IB, epsilon_bar = self._eval_qp_int(el, i, qe)
-            B_Gamma_bar = epsilon_bar[:3]
-            B_Kappa_bar = epsilon_bar[3:]
+            # get shape functions
+            N_q = self.N_int_q[el, i]
+            N_q_xi = self.N_int_q_xi[el, i]
+            N_u = self.N_int_u[el, i]
+            N_u_xi = self.N_int_u_xi[el, i]
+            N_compliance = self.N_int_c[el, i]
 
+            # get stretches
+            _eval, _deval = self._eval(qpi, N_q, N_q_xi, qe)
+            epsilon_bar = _eval[2]
+            epsilon_bar_qe = _deval[2]
+
+            # constributions to W
             mtx1 = np.zeros((6, 6), dtype=float)
-            mtx1[:3, :3] = A_IB * qwi
+            mtx1[:3, :3] = _eval[1] * qwi
             mtx1[3:, 3:] = eye3 * qwi
 
-            mtx2 = np.hstack([ax2skew(B_Gamma_bar * qwi), ax2skew(B_Kappa_bar * qwi)])
-            mtx2b = np.vstack(
+            mtx2 = np.vstack(
                 [
                     np.zeros((3, 6)),
-                    np.hstack([ax2skew(B_Gamma_bar * qwi), ax2skew(B_Kappa_bar * qwi)]),
+                    np.hstack(
+                        [
+                            ax2skew(epsilon_bar[:3] * qwi),
+                            ax2skew(epsilon_bar[3:] * qwi),
+                        ]
+                    ),
                 ]
             )
 
-            N = self.N_int_omega[el, i]
-            N_b = self.N_int_u[el, i]
-            N_xi = self.N_int_u_xi[el, i]
-            N_compliance = self.N_int_c[el, i]
+            # compose vector and matrices
+            c_el += N_compliance.T @ ((epsilon0_bar - epsilon_bar) * qwi)
+            c_el_qe -= N_compliance.T @ epsilon_bar_qe * qwi
+            W_c_el -= N_u_xi.T @ mtx1 @ N_compliance
+            W_c_el += N_u.T @ mtx2 @ N_compliance
 
-            W_c_el -= N_xi.T @ mtx1 @ N_compliance
-
-            # TODO: test second implementation and check which one is faster
-            # W_c_el[omega_DOFs] +=  N.T @ mtx2 @ N_compliance
-            W_c_el += N_b.T @ mtx2b @ N_compliance
-
-        return W_c_el
+        return c_el, c_el_qe, W_c_el
 
     def Wla_compliance_qe(self, qe, la, el): ...
 
@@ -776,8 +730,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return la_c
 
     def la_c_el(self, qe, ue, el):
-        # TODO: check for p/m
-        return np.linalg.solve(self.K_c_inv[el], self.l_c_el(qe, el)[self.cDOF_el])
+        l_c = self.internal_master(qe, el)[0][self.cDOF_el]
+        return np.linalg.solve(self.K_c_inv[el], l_c)
 
     # c = l_c - K_c^{-1} @ la_c
     def c(self, t, q, u, la_c):
@@ -786,10 +740,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             elDOF = self.elDOF[el]
             elDOF_la_c = self.elDOF_la_c[el]
             # TODO: is there a faster version?
-            c[elDOF_la_c] = (
-                self.l_c_el(q[elDOF], el)[self.cDOF_el]
-                - self.K_c_inv[el] @ la_c[elDOF_la_c]
-            )
+            l_c = self.internal_master(q[elDOF], el)[0][self.cDOF_el]
+            c[elDOF_la_c] = l_c - self.K_c_inv[el] @ la_c[elDOF_la_c]
         return c
 
     def c_q(self, t, q, u, la_c):
@@ -797,7 +749,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         for el in range(self.nelement):
             elDOF = self.elDOF[el]
             elDOF_la_c = self.elDOF_la_c[el]
-            coo[elDOF_la_c, elDOF] = self.l_c_el_qe(q[elDOF], el)[self.cDOF_el]
+            coo[elDOF_la_c, elDOF] = self.internal_master(q[elDOF], el)[1][self.cDOF_el]
         return coo
 
     def c_el_qe(self, t, q, u, la_c): ...
@@ -809,9 +761,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             elDOF = self.elDOF[el]
             elDOF_u = self.elDOF_u[el]
             elDOF_la_c = self.elDOF_la_c[el]
-            coo[elDOF_u, elDOF_la_c] = self.W_compliance_el(q[elDOF], el)[
-                :, self.cDOF_el
-            ]
+            W_compliance_el = self.internal_master(q[elDOF], el)[2]
+            coo[elDOF_u, elDOF_la_c] = W_compliance_el[:, self.cDOF_el]
         return coo
 
     def Wla_c_q(self, t, q, la_c): ...
@@ -972,27 +923,5 @@ def make_BoostedCosseratRod(
 
         # TODO: also copy&paste the other configurations
         # The order is the same!
-
-        # TODO: MOVE TO differnt class
-        def _eval(self, qe, xi, N, N_xi):
-            # TODO: this needs a speed up!
-            # interpolate
-            rP = np.zeros(7, dtype=qe.dtype)
-            rP_xi = np.zeros(7, dtype=qe.dtype)
-            for node in range(self.nnodes_element):
-                rP_node = qe[self.nodalDOF_element[node]]
-                rP += N[node] * rP_node
-                rP_xi += N_xi[node] * rP_node
-
-            # transformation matrix
-            A_IB = Exp_SO3_quat(rP[3:], normalize=True)
-
-            # dilatation and shear strains
-            B_Gamma_bar = A_IB.T @ rP_xi[:3]
-
-            # curvature, Rucker2018 (17)
-            B_Kappa_bar = T_SO3_quat(rP[3:], normalize=True) @ rP_xi[3:]
-
-            return rP[:3], A_IB, np.concatenate([B_Gamma_bar, B_Kappa_bar])
 
     return BoostedCosseratRod_PetrovGalerkin
