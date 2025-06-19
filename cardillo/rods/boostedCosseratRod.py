@@ -110,6 +110,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nq_element = mesh_kin.nq_per_element
         self.nu_element = mesh_kin.nu_per_element
 
+        self.nq_element_r = int(self.nq_element / 7 * 3)
+        self.nu_element_r = int(self.nu_element / 6 * 3)
+
         # global element connectivity
         # qe = q[elDOF[e]] "q^e = C_q,e q"
         self.elDOF = mesh_kin.elDOF
@@ -158,14 +161,14 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_int_q, self.N_int_q_xi = N_mtx_q
         self.N_int_u, self.N_int_u_xi = N_mtx_u
 
-        self.N_int_omega = self.N_int_u[:, :, 3:, :]
+        self.N_int_omega = self.N_int_u[:, :, 3:, self.nu_element_r :]
 
         # for quadrature points of dynamic virtual work
         N_mtx_q, N_mtx_u = mesh_kin.shape_functions_matrix(self.nquadrature_dyn)
         self.N_dyn_q, self.N_dyn_q_xi = N_mtx_q
         self.N_dyn_u, self.N_dyn_u_xi = N_mtx_u
 
-        self.N_dyn_omega = self.N_dyn_u[:, :, 3:, :]
+        self.N_dyn_omega = self.N_dyn_u[:, :, 3:, self.nu_element_r :]
 
         # referential generalized position coordinates, initial generalized
         # position and velocity coordinates
@@ -445,47 +448,39 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def h(self, t, q, u):
         h = np.zeros(self.nu, dtype=u.dtype)
         for el in range(self.nelement):
-            elDOF_u = self.elDOF_u[el]
+            elDOF_u = self.elDOF_u[el][self.nu_element_r :]
             h[elDOF_u] -= self.f_gyr_master(u[elDOF_u], el)[0]
         return h
 
     def h_u(self, t, q, u):
         coo = CooMatrix((self.nu, self.nu))
         for el in range(self.nelement):
-            elDOF_u = self.elDOF_u[el]
+            elDOF_u = self.elDOF_u[el][self.nu_element_r :]
             coo[elDOF_u, elDOF_u] = -self.f_gyr_master(u[elDOF_u], el)[1]
         return coo
 
     @cachedmethod(
         lambda self: self._cache_f_gyr,
-        key=lambda self, ue, el: hashkey(*ue, el),
+        key=lambda self, ue_red, el: hashkey(*ue_red, el),
     )
-    def f_gyr_master(self, ue, el):
-        f_gyr_el = np.zeros(self.nu_element, dtype=ue.dtype)
-        f_gyr_el_ue = np.zeros((self.nu_element, self.nu_element), dtype=ue.dtype)
+    def f_gyr_master(self, ue_red, el):
+        # only compute part with omega
+        dim_red = self.nu_element - self.nu_element_r
+        f_gyr_el = np.zeros(dim_red, dtype=ue_red.dtype)
+        f_gyr_el_ue = np.zeros((dim_red, dim_red), dtype=ue_red.dtype)
 
         for i in range(self.nquadrature_dyn):
             # interpoalte angular velocity
             N_dyn = self.N_dyn_omega[el, i]
-            B_Omega = N_dyn @ ue
+            B_Omega = N_dyn @ ue_red
+            weight = self.J_dyn[el, i] * self.qw_dyn[el, i]
 
             # vector of gyroscopic forces
-            f_gyr_el_p = (
-                cross3(B_Omega, self.cross_section_inertias.B_I_rho0 @ B_Omega)
-                * self.J_dyn[el, i]
-                * self.qw_dyn[el, i]
-            )
-            # TODO: is there a speed-up if we just use the part of N on the omega DOFs?
+            B_I_rho0 = self.cross_section_inertias.B_I_rho0
+            f_gyr_el_p = cross3(B_Omega, B_I_rho0 @ B_Omega) * weight
             f_gyr_u_el_p = (
-                (
-                    (
-                        ax2skew(B_Omega) @ self.cross_section_inertias.B_I_rho0
-                        - ax2skew(self.cross_section_inertias.B_I_rho0 @ B_Omega)
-                    )
-                )
-                * self.J_dyn[el, i]
-                * self.qw_dyn[el, i]
-            )
+                (ax2skew(B_Omega) @ B_I_rho0 - ax2skew(B_I_rho0 @ B_Omega))
+            ) * weight
 
             # multiply vector of gyroscopic forces with nodal virtual rotations
             f_gyr_el += N_dyn.T @ f_gyr_el_p
@@ -655,7 +650,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             # get shape functions
             N_q = self.N_int_q[el, i]
             N_q_xi = self.N_int_q_xi[el, i]
-            N_u = self.N_int_u[el, i]
+            N_omega = self.N_int_omega[el, i]
             N_u_xi = self.N_int_u_xi[el, i]
             N_compliance = self.N_int_c[el, i]
 
@@ -669,23 +664,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             mtx1[:3, :3] = _eval[1] * qwi
             mtx1[3:, 3:] = eye3 * qwi
 
-            mtx2 = np.vstack(
-                [
-                    np.zeros((3, 6)),
-                    np.hstack(
-                        [
-                            ax2skew(epsilon_bar[:3] * qwi),
-                            ax2skew(epsilon_bar[3:] * qwi),
-                        ]
-                    ),
-                ]
+            mtx2_omega = np.hstack(
+                [ax2skew(epsilon_bar[:3] * qwi), ax2skew(epsilon_bar[3:] * qwi)]
             )
 
             # compose vector and matrices
             c_el += N_compliance.T @ ((epsilon0_bar - epsilon_bar) * qwi)
             c_el_qe -= N_compliance.T @ epsilon_bar_qe * qwi
             W_c_el -= N_u_xi.T @ mtx1 @ N_compliance
-            W_c_el += N_u.T @ mtx2 @ N_compliance
+            W_c_el[self.nu_element_r :] += N_omega.T @ (mtx2_omega @ N_compliance)
 
         return c_el, c_el_qe, W_c_el
 
