@@ -20,8 +20,10 @@ from ._cross_section import CrossSectionInertias
 from .discretization.lagrange import LagrangeKnotVector
 from .discretization.mesh1D import Mesh1D
 
+zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
 eye4 = np.eye(4, dtype=float)
+eye6 = np.eye(6, dtype=float)
 
 
 from cardillo.math import (
@@ -161,6 +163,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_int_q, self.N_int_q_xi = N_mtx_q
         self.N_int_u, self.N_int_u_xi = N_mtx_u
 
+        self.N_int_v_P = self.N_int_u[:, :, :3, : self.nu_element_r]
         self.N_int_omega = self.N_int_u[:, :, 3:, self.nu_element_r :]
 
         # for quadrature points of dynamic virtual work
@@ -168,6 +171,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_dyn_q, self.N_dyn_q_xi = N_mtx_q
         self.N_dyn_u, self.N_dyn_u_xi = N_mtx_u
 
+        self.N_dyn_v_P = self.N_dyn_u[:, :, :3, : self.nu_element_r]
         self.N_dyn_omega = self.N_dyn_u[:, :, 3:, self.nu_element_r :]
 
         # referential generalized position coordinates, initial generalized
@@ -266,7 +270,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 qpi = self.qp_int[el, i]
                 N = self.N_int_q[el, i]
                 N_xi = self.N_int_q_xi[el, i]
-                epsilon_bar = self._eval(qpi, N, N_xi, qe)[0][2]
+                epsilon_bar = self._eval_internal(qpi, N, N_xi, qe)[0][2]
 
                 # save length of reference tangential vector and strain
                 self.J_int[el, i] = norm(epsilon_bar[:3])
@@ -278,16 +282,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 qpi = self.qp_dyn[el, i]
                 N = self.N_dyn_q[el, i]
                 N_xi = self.N_dyn_q_xi[el, i]
-                epsilon_bar = self._eval(qpi, N, N_xi, qe)[0][2]
+                epsilon_bar = self._eval_internal(qpi, N, N_xi, qe)[0][2]
 
                 # length of reference tangential vector
                 self.J_dyn[el, i] = norm(epsilon_bar[:3])
 
     # TODO: When are these functions called? Do we need and can we speed them up?
-    def element_number(self, xi):
-        """Compute element number from given xi."""
-        return self.knot_vector.element_number(xi)[0]
-
     def element_interval(self, el):
         return self.knot_vector.element_interval(el)
 
@@ -386,15 +386,25 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##################
     # eval functions #
     ##################
-    # TODO: cache this
-    def _eval_r_A(self, xi, qe, el, N):
+    # TODO: cache this, not sure if we need to
+    def _eval_r_A(self, xi, N, qe):
         rP = N @ qe
         A_IB = Exp_SO3_quat(rP[3:])
         A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ N[3:]
         return (rP[:3], A_IB), (N[:3], A_IB_qe)
 
+    # TODO: cache this, not sure if we need to
+    def _veval_v_Om(self, xi, N, ue):
+        vOm = N @ ue
+        return vOm[:3], vOm[3:]
+
     # TODO: cache this, not sure if we need to ...
-    def _eval(self, xi, N, N_xi, qe):
+    def _eval_Jacobians(self, xi, Nu):
+        warn("Don't use this, slice directly!")
+        return Nu[:3].T, Nu[3:].T
+
+    # TODO: cache this, not sure if we need to ...
+    def _eval_internal(self, xi, N, N_xi, qe):
         # eval
         rP = N @ qe
         rP_xi = N_xi @ qe
@@ -435,11 +445,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         for i in range(self.nquadrature_dyn):
             # extract reference state variables
-            Mi = (
-                self.cross_section_inertias.generalized_inertia
-                * self.qw_dyn[el, i]
-                * self.J_dyn[el, i]
-            )
+            weight = self.qw_dyn[el, i] * self.J_dyn[el, i]
+            Mi = self.cross_section_inertias.generalized_inertia * weight
             N_dyn = self.N_dyn_u[el, i]
             M_el += N_dyn.T @ Mi @ N_dyn
 
@@ -532,58 +539,196 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         else:
             return False
 
+    # TODO: cache me!
     def element_number(self, xi):
-        return np.where(self.xis_element_boundaries >= xi)[0][0]
+        return np.where(self.xis_element_boundaries[:-1] <= xi)[0][-1]
 
-    def _r_A_nodal(self, qe, node):
-        rP = qe[self.nodalDOF_element[node]]
-        return rP[:3], Exp_SO3_quat(rP[3:], normalize=False)
-
-    def _r_A_nodal_qe(self, qe, node):
+    def _eval_nodal(self, qe, node):
+        """returns (r_OC, A_IB), (r_OC_qe, A_IB_qe), (J_C, B_J_R)"""
+        # split up nodalDOF
         nodalDOF = self.nodalDOF_element[node]
-        rP = qe[nodalDOF]
-        r_OP_qe = np.zeros((3, self.nq_element), dtype=qe.dtype)
+        nodalDOF_u = self.nodalDOF_element_u[node]
+        nodalDOF_r = nodalDOF[:3]
+        nodalDOF_P = nodalDOF[3:]
+        # transformation matrix
+        P = qe[nodalDOF_P]
+        A_IB = Exp_SO3_quat(P, normalize=True)
         A_IB_qe = np.zeros((3, 3, self.nq_element), dtype=qe.dtype)
-        r_OP_qe[:, nodalDOF[:3]] = eye3
-        A_IB_qe[:, :, nodalDOF[3:]] = Exp_SO3_quat_p(rP[3:], normalize=False)
-        return r_OP_qe, A_IB_qe
+        A_IB_qe[:, :, nodalDOF_P] = Exp_SO3_quat_p(P, normalize=True)
+        # centerline
+        r_OC_qe = np.zeros((3, self.nq_element), dtype=qe.dtype)
+        r_OC_qe[:, nodalDOF_r] = eye3
 
-    def _v_Om_nodal(self, ue, node):
-        vo = ue[self.nodalDOF_element_u[node]]
-        return vo[:3], vo[3:]
+        # Jacobians
+        J_total = np.zeros((6, self.nu_element), dtype=float)
+        J_total[:, nodalDOF_u] = eye6
+        return (qe[nodalDOF_r], A_IB), (r_OC_qe, A_IB_qe), (J_total[:3], J_total[3:])
+
+    def _veval_nodal(self, ue, node):
+        """if argument is ue:\n
+        returns (v_C, B_Omega_IB), (J_C, B_J_R) \n
+        if argument is ue_dot:\n
+        returns (a_C, B_Psi_IB), (J_C, B_J_R)"""
+        nodalDOF_u = self.nodalDOF_element_u[node]
+        v = ue[nodalDOF_u]
+        return v[:3], v[3:]
+
+    # TODO: cache this with *qe, *B_r_CP, xi
+    def positional(self, qe, xi, B_r_CP=zeros3):
+        """returns (r_OP, J_P), (r_OP_qe, J_P_qe)"""
+        # do the eval, based on node or somewhere inbetween
+        if (node := self.node_number(xi)) is not False:
+            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_q, N_q_xi = self.N_q(xi, el)
+            _eval, _deval = self._eval_r_A(xi, N_q, qe)
+            J_total = self.N_u(xi, el)[0]
+            Jacobians = (J_total[:3], J_total[3:])
+
+        # extract later used positional quantities
+        r_OC = _eval[0]
+        r_OC_qe = _deval[0]
+        J_C = Jacobians[0]
+
+        # TODO: is it worth to make this if statement already above?
+        if B_r_CP @ B_r_CP > 0.0:
+            # extract quantities
+            A_IB = _eval[1]
+            # J_P = J_C - A_IB @ ax2skew(B_r_CP) @ B_J_R = J_C + A_IB @ B_J_CP
+            B_J_CP = ax2skew(-B_r_CP) @ Jacobians[1]
+
+            # compute r_OP and J_P
+            r_OP = r_OC + A_IB @ B_r_CP
+            J_P = J_C + A_IB @ B_J_CP
+            # compute derivatives
+            # TODO: accelerate this
+            r_OP_qe = r_OC_qe + np.einsum("ijk,j->ik", _deval[1], B_r_CP)
+            J_P_qe = np.einsum("ijk, jl -> ilk", _deval[1], B_J_CP)
+            return (r_OP, J_P), (r_OP_qe, J_P_qe)
+        else:
+            J_C_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
+            return (r_OC, J_C), (r_OC_qe, J_C_qe)
+
+    # TODO: cache this with *qe, xi
+    def rotational(self, qe, xi):
+        """returns (A_IB, B_J_R), (A_IB_qe, B_J_R_qe)"""
+        # do the eval, based on node or somewhere inbetween
+        if (node := self.node_number(xi)) is not False:
+            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_q, N_q_xi = self.N_q(xi, el)
+            _eval, _deval = self._eval_r_A(xi, N_q, qe)
+            N_u, N_u_xi = self.N_u(xi, el)
+            Jacobians = self._eval_Jacobians(xi, N_u)
+
+        # TODO: can we pre-create this?
+        B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
+        return (_eval[1], Jacobians[1]), (_deval[1], B_J_R_qe)
+
+    # TODO: cache this with *ue, xi
+    def velocity_rotational(self, ue, xi):
+        """returns (B_Omega_IB, B_Omega_IB_qe)"""
+        if (node := self.node_number(xi)) is not False:
+            _veval = self._veval_nodal(ue, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_u, N_u_xi = self.N_u(xi, el)
+            _veval = self._veval_v_Om(xi, N_u, ue)
+
+        # TODO: this is always zeros, make use of it later
+        B_Omega_IB_qe = np.zeros((3, self.nq_element), dtype=float)
+        return _veval[1], B_Omega_IB_qe
+
+    # TODO: cache this with *qe, *ue, *B_r_CP, xi
+    def velocity_translational(self, qe, ue, xi, B_r_CP=zeros3):
+        """returns (v_P, v_P_qe)"""
+        if (node := self.node_number(xi)) is not False:
+            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
+            _veval = self._veval_nodal(ue, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_q, N_q_xi = self.N_q(xi, el)
+            _eval, _deval = self._eval_r_A(xi, N_q, qe)
+            N_u, N_u_xi = self.N_u(xi, el)
+            _veval = self._veval_v_Om(xi, N_u, ue)
+
+        if B_r_CP @ B_r_CP > 0.0:
+            B_v_CP = cross3(_veval[1], B_r_CP)
+            v_P = _veval[0] + _eval[1] @ B_v_CP
+            # TODO: accelerate this
+            v_P_qe = np.einsum("ijk,j->ik", _deval[1], B_v_CP)
+            return v_P, v_P_qe
+        else:
+            v_C_qe = np.zeros((3, self.nq_element), dtype=float)
+            return _veval[0], v_C_qe
+
+    # TODO: cache this with *qe, *ue, *ue_dot, *B_r_CP, xi
+    def acceleration_translational(self, qe, ue, ue_dot, xi, B_r_CP=zeros3):
+        """returns (a_P, a_P_qe, a_P_ue)"""
+        if (node := self.node_number(xi)) is not False:
+            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
+            _veval = self._veval_nodal(ue, node)
+            _aeval = self._veval_nodal(ue_dot, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_q, N_q_xi = self.N_q(xi, el)
+            _eval, _deval = self._eval_r_A(xi, N_q, qe)
+            N_u, N_u_xi = self.N_u(xi, el)
+            _veval = self._veval_v_Om(xi, N_u, ue)
+            _aeval = self._veval_v_Om(xi, N_u, ue_dot)
+
+        if B_r_CP @ B_r_CP > 0.0:
+            B_Omega_IB = _veval[1]
+            B_a_CP = cross3(B_Omega_IB, cross3(B_Omega_IB, B_r_CP)) + cross3(
+                _aeval[1], B_r_CP
+            )
+            a_P = _aeval[0] + _eval[1] @ B_a_CP
+            # TODO: accelerate this
+            a_P_qe = np.einsum("ijk,j->ik", _deval[1], B_a_CP)
+            a_P_ue = np.einsum("")
+            return a_P, a_P_qe, a_P_ue
+        else:
+            a_C_qe = np.zeros((3, self.nq_element), dtype=float)
+            a_C_ue = np.zeros((3, self.nu_element), dtype=float)
+            return _aeval[0], a_C_qe, a_C_ue
 
     # cardillo functions
-    def r_OP(self, t, qe, xi, B_r_CP=None):
-        # TODO: think of a good way to get B_r_CP incorporated here
-        if node := self.node_number(xi):
-            r_OC, A_IB = self._r_A_nodal(qe, node)
-        else:
-            N, N_xi = self.N_q(xi)
-            r_OC, A_IB = self._eval_r_A(qe, xi, N, N_xi)[0]
+    def r_OP(self, t, qe, xi, B_r_CP=zeros3):
+        return self.positional(qe, xi, B_r_CP)[0][0]
 
-        return r_OC if B_r_CP is None else r_OC + A_IB @ B_r_CP
+    def r_OP_q(self, t, qe, xi, B_r_CP=zeros3):
+        return self.positional(qe, xi, B_r_CP)[1][0]
 
-    def r_OP_q(self, t, qe, xi, B_r_CP=None): ...
-    def v_P(self, t, qe, ue, xi, B_r_CP=None):
-        if node := self.node_number(xi):
-            # TODO: we don't need A_IB always!
-            _, A_IB = self._r_A_nodal(qe, node)
-            v_C, B_Omega = self._v_Om_nodal(ue, node)
-        else:
-            pass
+    def J_P(self, t, qe, xi, B_r_CP=zeros3):
+        return self.positional(qe, xi, B_r_CP)[0][1]
 
-        return v_C if B_r_CP is None else v_C + A_IB @ cross3(B_Omega, B_r_CP)
+    def J_P_q(self, t, qe, xi, B_r_CP=zeros3):
+        return self.positional(qe, xi, B_r_CP)[1][1]
 
-    def v_P_q(self, t, qe, ue, xi, B_r_CP=None): ...
-    def J_P(self, t, qe, xi, B_r_CP=None): ...
-    def J_P_q(self, t, qe, xi, B_r_CP=None): ...
-    def a_P(self, t, qe, ue, ue_dot, xi, B_r_CP=None):
-        if node := self.node_number(xi):
+    def v_P(self, t, qe, ue, xi, B_r_CP=zeros3):
+        return self.velocity_translational(qe, ue, xi, B_r_CP)[0]
+
+    def v_P_q(self, t, qe, ue, xi, B_r_CP=zeros3):
+        return self.velocity_translational(qe, ue, xi, B_r_CP)[1]
+
+    def a_P(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
+        # TODO: make this new
+        warn("Make this new!")
+        if (node := self.node_number(xi)) is not False:
             # TODO: we don't need A_IB and B_Omega always!
-            _, A_IB = self._r_A_nodal(qe, node)
+            _, A_IB = self._eval_r_A_nodal(qe, node)
             _, B_Omega = self._v_Om_nodal(ue, node)
             a_C, B_Psi = self._v_Om_nodal(ue_dot, node)
         else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
             pass
 
         if B_r_CP is None:
@@ -593,25 +738,38 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 cross3(B_Psi, B_r_CP) + cross3(B_Omega, cross3(B_Omega, B_r_CP))
             )
 
-    def a_P_q(self, t, qe, ue, ue_dot, xi, B_r_CP=None): ...
-    def a_P_u(self, t, qe, ue, ue_dot, xi, B_r_CP=None): ...
+    def a_P_q(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3): ...
+    def a_P_u(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3): ...
 
     def A_IB(self, t, qe, xi):
-        if node := self.node_number(xi):
-            _, A_IB = self._r_A_nodal(qe, node)
-        else:
-            N, N_xi = self.N_q(xi)
-            _, A_IB = self._eval_r_A(qe, xi, N, N_xi)[0]
-        return A_IB
+        return self.rotational(qe, xi)[0][0]
 
-    def A_IB_q(self, t, qe, xi): ...
-    def B_Omega(self, t, qe, ue, xi): ...
-    def B_Omega_q(self, t, qe, ue, xi): ...
-    def B_J_R(self, t, qe, xi): ...
-    def B_J_R_q(self, t, qe, xi): ...
-    def B_Psi(self, t, qe, ue, ue_dot, xi): ...
-    def B_Psi_q(self, t, qe, ue, ue_dot, xi): ...
-    def B_Psi_u(self, t, qe, ue, ue_dot, xi): ...
+    def A_IB_q(self, t, qe, xi):
+        return self.rotational(qe, xi)[1][0]
+
+    def B_J_R(self, t, qe, xi):
+        return self.rotational(qe, xi)[0][1]
+
+    def B_J_R_q(self, t, qe, xi):
+        return self.rotational(qe, xi)[1][1]
+
+    def B_Omega(self, t, qe, ue, xi):
+        return self.velocity_rotational(ue, xi)[0]
+
+    def B_Omega_q(self, t, qe, ue, xi):
+        # TODO: this is zero
+        return self.velocity_rotational(ue, xi)[1]
+
+    def B_Psi(self, t, qe, ue, ue_dot, xi):
+        return self.velocity_rotational(ue_dot, xi)[0]
+
+    def B_Psi_q(self, t, qe, ue, ue_dot, xi):
+        # TODO: this is zero
+        return self.velocity_rotational(ue_dot, xi)[1]
+
+    def B_Psi_u(self, t, qe, ue, ue_dot, xi):
+        # TODO: this is zero
+        return self.velocity_rotational(ue_dot, xi)[1]
 
     ##############
     # compliance #
@@ -655,7 +813,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             N_compliance = self.N_int_c[el, i]
 
             # get stretches
-            _eval, _deval = self._eval(qpi, N_q, N_q_xi, qe)
+            _eval, _deval = self._eval_internal(qpi, N_q, N_q_xi, qe)
             epsilon_bar = _eval[2]
             epsilon_bar_qe = _deval[2]
 
@@ -856,35 +1014,6 @@ def make_BoostedCosseratRod(
                 u0,
                 name,
             )
-
-        @staticmethod
-        def qu_order(
-            q=None,
-            u=None,
-            old_to_new=True,
-        ):
-            if q is not None:
-                nnodes = len(q) / 7
-                assert int(nnodes) == nnodes
-                nnodes = int(nnodes)
-                if old_to_new:
-                    r = q[: 3 * nnodes].reshape((3, nnodes))
-                    p = q[3 * nnodes :].reshape((4, nnodes))
-
-                    rP = np.array(
-                        [np.concatenate([r[:, i], p[:, i]]) for i in range(nnodes)]
-                    )
-                    q = rP.reshape(-1, order="C")
-                else:
-                    print("not implemented yet!")
-
-                if u is None:
-                    return q
-
-            if u is not None:
-                print("not implemented yet")
-
-            return q, u
 
         @staticmethod
         def straight_configuration(
