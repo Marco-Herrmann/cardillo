@@ -359,6 +359,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             # quaternion time derivative from angular velocities
             nodalDOF_p = self.nodalDOF_p[node]
             q_dot[nodalDOF_p] = (
+                # TODO: the old implementation uses normalize=False
                 T_SO3_inv_quat(q[nodalDOF_p], normalize=True)
                 @ u[self.nodalDOF_u_o[node]]
             )
@@ -611,39 +612,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             J_C_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
             return (r_OC, J_C), (r_OC_qe, J_C_qe)
 
-    # TODO: cache this with *qe, xi
-    def rotational(self, qe, xi):
-        """returns (A_IB, B_J_R), (A_IB_qe, B_J_R_qe)"""
-        # do the eval, based on node or somewhere inbetween
-        if (node := self.node_number(xi)) is not False:
-            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
-        else:
-            # TODO: can we avoid to evaluate the derivatives?
-            el = self.element_number(xi)
-            N_q, N_q_xi = self.N_q(xi, el)
-            _eval, _deval = self._eval_r_A(xi, N_q, qe)
-            N_u, N_u_xi = self.N_u(xi, el)
-            Jacobians = self._eval_Jacobians(xi, N_u)
-
-        # TODO: can we pre-create this?
-        B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
-        return (_eval[1], Jacobians[1]), (_deval[1], B_J_R_qe)
-
-    # TODO: cache this with *ue, xi
-    def velocity_rotational(self, ue, xi):
-        """returns (B_Omega_IB, B_Omega_IB_qe)"""
-        if (node := self.node_number(xi)) is not False:
-            _veval = self._veval_nodal(ue, node)
-        else:
-            # TODO: can we avoid to evaluate the derivatives?
-            el = self.element_number(xi)
-            N_u, N_u_xi = self.N_u(xi, el)
-            _veval = self._veval_v_Om(xi, N_u, ue)
-
-        # TODO: this is always zeros, make use of it later
-        B_Omega_IB_qe = np.zeros((3, self.nq_element), dtype=float)
-        return _veval[1], B_Omega_IB_qe
-
     # TODO: cache this with *qe, *ue, *B_r_CP, xi
     def velocity_translational(self, qe, ue, xi, B_r_CP=zeros3):
         """returns (v_P, v_P_qe)"""
@@ -675,6 +643,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             _eval, _deval, Jacobians = self._eval_nodal(qe, node)
             _veval = self._veval_nodal(ue, node)
             _aeval = self._veval_nodal(ue_dot, node)
+            B_J_R = Jacobians[1]
         else:
             # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
@@ -683,21 +652,63 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             N_u, N_u_xi = self.N_u(xi, el)
             _veval = self._veval_v_Om(xi, N_u, ue)
             _aeval = self._veval_v_Om(xi, N_u, ue_dot)
+            B_J_R = N_u[3:]
 
         if B_r_CP @ B_r_CP > 0.0:
+            A_IB = _eval[1]
             B_Omega_IB = _veval[1]
             B_a_CP = cross3(B_Omega_IB, cross3(B_Omega_IB, B_r_CP)) + cross3(
                 _aeval[1], B_r_CP
             )
-            a_P = _aeval[0] + _eval[1] @ B_a_CP
+            a_P = _aeval[0] + A_IB @ B_a_CP
             # TODO: accelerate this
             a_P_qe = np.einsum("ijk,j->ik", _deval[1], B_a_CP)
-            a_P_ue = np.einsum("")
+            a_P_ue = (
+                -A_IB
+                @ (
+                    ax2skew(cross3(B_Omega_IB, B_r_CP))
+                    + ax2skew(B_Omega_IB) @ ax2skew(B_r_CP)
+                )
+            ) @ B_J_R
             return a_P, a_P_qe, a_P_ue
         else:
             a_C_qe = np.zeros((3, self.nq_element), dtype=float)
             a_C_ue = np.zeros((3, self.nu_element), dtype=float)
             return _aeval[0], a_C_qe, a_C_ue
+
+    # TODO: cache this with *qe, xi
+    def rotational(self, qe, xi):
+        """returns (A_IB, B_J_R), (A_IB_qe, B_J_R_qe)"""
+        # do the eval, based on node or somewhere inbetween
+        if (node := self.node_number(xi)) is not False:
+            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
+            B_J_R = Jacobians[1]
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_q, N_q_xi = self.N_q(xi, el)
+            _eval, _deval = self._eval_r_A(xi, N_q, qe)
+            N_u, N_u_xi = self.N_u(xi, el)
+            B_J_R = N_u[3:]
+
+        # TODO: can we pre-create this?
+        B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
+        return (_eval[1], B_J_R), (_deval[1], B_J_R_qe)
+
+    # TODO: cache this with *ue, xi
+    def velocity_rotational(self, ue, xi):
+        """returns (B_Omega_IB, B_Omega_IB_qe)"""
+        if (node := self.node_number(xi)) is not False:
+            _veval = self._veval_nodal(ue, node)
+        else:
+            # TODO: can we avoid to evaluate the derivatives?
+            el = self.element_number(xi)
+            N_u, N_u_xi = self.N_u(xi, el)
+            _veval = self._veval_v_Om(xi, N_u, ue)
+
+        # TODO: this is always zeros, make use of it later
+        B_Omega_IB_qe = np.zeros((3, self.nq_element), dtype=float)
+        return _veval[1], B_Omega_IB_qe
 
     # cardillo functions
     def r_OP(self, t, qe, xi, B_r_CP=zeros3):
@@ -719,27 +730,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.velocity_translational(qe, ue, xi, B_r_CP)[1]
 
     def a_P(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
-        # TODO: make this new
-        warn("Make this new!")
-        if (node := self.node_number(xi)) is not False:
-            # TODO: we don't need A_IB and B_Omega always!
-            _, A_IB = self._eval_r_A_nodal(qe, node)
-            _, B_Omega = self._v_Om_nodal(ue, node)
-            a_C, B_Psi = self._v_Om_nodal(ue_dot, node)
-        else:
-            # TODO: can we avoid to evaluate the derivatives?
-            el = self.element_number(xi)
-            pass
+        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[0]
 
-        if B_r_CP is None:
-            return a_C
-        else:
-            return a_C + A_IB @ (
-                cross3(B_Psi, B_r_CP) + cross3(B_Omega, cross3(B_Omega, B_r_CP))
-            )
+    def a_P_q(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
+        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[1]
 
-    def a_P_q(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3): ...
-    def a_P_u(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3): ...
+    def a_P_u(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
+        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[2]
 
     def A_IB(self, t, qe, xi):
         return self.rotational(qe, xi)[0][0]
@@ -886,7 +883,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             elDOF_la_c = self.elDOF_la_c[el]
             # TODO: is there a faster version?
             l_c = self.internal_master(q[elDOF], el)[0][self.cDOF_el]
-            c[elDOF_la_c] = l_c - self.K_c_inv[el] @ la_c[elDOF_la_c]
+            c[elDOF_la_c] = l_c + self.K_c_inv[el] @ la_c[elDOF_la_c]
         return c
 
     def c_q(self, t, q, u, la_c):
@@ -896,8 +893,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             elDOF_la_c = self.elDOF_la_c[el]
             coo[elDOF_la_c, elDOF] = self.internal_master(q[elDOF], el)[1][self.cDOF_el]
         return coo
-
-    def c_el_qe(self, t, q, u, la_c): ...
 
     # generalized force direction
     def W_c(self, t, q):

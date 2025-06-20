@@ -86,11 +86,6 @@ sys = System()
 sys.add(*rods)
 sys.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
-q0, u0 = sys.step_callback(0.0, sys.q0, sys.u0)  # normalize quaternions
-t = 0.0
-sys.q0 = q0
-sys.u0 = u0
-
 
 def args_dict_random(random):
     qRand = np.random.rand(int(sys.nq / 2))
@@ -99,14 +94,19 @@ def args_dict_random(random):
     la_cRand = np.random.rand(int(sys.nla_c / 2))
 
     t = 0.0 + random * np.random.rand()
-    q = sys.q0 + random * np.concatenate([qRand, qRand])
-    u = sys.u0 + random * np.concatenate([uRand, uRand])
+    q_ = sys.q0 + random * np.concatenate([qRand, qRand])
+    u_ = sys.u0 + random * np.concatenate([uRand, uRand])
     u_dot = sys.u_dot0 + random * np.concatenate([u_dotRand, u_dotRand])
     la_c = sys.la_c0 + random * np.concatenate([la_cRand, la_cRand])
 
     zeros3 = np.zeros(3, dtype=float)
 
-    def args_dict(rod, xi=0.0, B_r_CP=zeros3):
+    def args_dict(rod, step_callback=False, xi=0.0, B_r_CP=zeros3):
+        if step_callback:
+            q, u = sys.step_callback(t, q_, u_)
+        else:
+            q, u = q_, u_
+
         qRod = q[rod.qDOF]
         qeRod = qRod[rod.elDOF_P(xi)]
 
@@ -222,9 +222,9 @@ funcs_interaction = [
     ["v_P", ["t", "qe", "ue", "xi", "B_r_CP"]],
     ["v_P_q", ["t", "qe", "ue", "xi", "B_r_CP"]],
     #
-    # ["a_P", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
-    # ["a_P_q", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
-    # ["a_P_u", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
+    ["a_P", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
+    ["a_P_q", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
+    ["a_P_u", ["t", "qe", "ue", "ue_dot", "xi", "B_r_CP"]],
     #
     #
     ["A_IB", ["t", "qe", "xi"]],
@@ -235,9 +235,9 @@ funcs_interaction = [
     ["B_Omega", ["t", "qe", "ue", "xi"]],
     ["B_Omega_q", ["t", "qe", "ue", "xi"]],
     #
-    # ["B_Psi", ["t", "qe", "ue", "ue_dot", "xi"]],
-    # ["B_Psi_q", ["t", "qe", "ue", "ue_dot", "xi"]],
-    # ["B_Psi_u", ["t", "qe", "ue", "ue_dot", "xi"]],
+    ["B_Psi", ["t", "qe", "ue", "ue_dot", "xi"]],
+    ["B_Psi_q", ["t", "qe", "ue", "ue_dot", "xi"]],
+    ["B_Psi_u", ["t", "qe", "ue", "ue_dot", "xi"]],
 ]
 
 cases_interaction = np.array(
