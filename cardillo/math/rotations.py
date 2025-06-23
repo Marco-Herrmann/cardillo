@@ -651,6 +651,24 @@ def T_SO3_quat_P(P, normalize=True):
     return T_P
 
 
+def T_SO3_quat_Q_P(P, Q, normalize=True):
+    p0, p = P[0, None], P[1:]
+    P2 = P @ P
+    if normalize:
+        factor = 2 / P2
+        factor_P = -4 * P / P2**2
+    else:
+        factor = 2 * P2
+        factor_P = 4 * P
+
+    mtx_Q = -p * Q[0] + p0 * Q[1:] - cross3(p, Q[1:])
+    TQ_P = np.outer(mtx_Q, factor_P)
+    TQ_P[:, 1:] -= factor * eye3 * Q[0]
+    TQ_P[:, 0] += factor * Q[1:]
+    TQ_P[:, 1:] += factor * ax2skew(Q[1:])
+    return TQ_P
+
+
 def T_SO3_inv_quat_P(P, normalize=True):
     if normalize:
         T_inv_P = np.zeros((4, 3, 4), dtype=float)
@@ -689,3 +707,32 @@ def quatprod(P, Q):
 def axis_angle2quat(axis, angle):
     n = axis / norm(axis)
     return np.concatenate([[np.cos(angle / 2)], np.sin(angle / 2) * n])
+
+
+if __name__ == "__main__":
+    from timeit import timeit
+
+    num = 50_000
+
+    P = np.random.rand(4)
+    Q = np.random.rand(4)
+
+    # globals().update(locals())
+
+    def old():
+        T_P = T_SO3_quat_P(P, normalize=True)
+        return Q @ T_P
+        return np.einsum("ijk, j -> ik", T_P, Q)
+
+    def new():
+        return T_SO3_quat_Q_P(P, Q, normalize=True)
+
+    n = np.linalg.norm(old() - new())
+    print(n)
+
+    tmt_old = timeit("old()", globals=globals(), number=num)
+    tmt_new = timeit("new()", globals=globals(), number=num)
+
+    print(f"{tmt_old = :.5f}")
+    print(f"{tmt_new = :.5f}")
+    print(f"speed up: {(1 - tmt_new / tmt_old ) * 100:.3}%")

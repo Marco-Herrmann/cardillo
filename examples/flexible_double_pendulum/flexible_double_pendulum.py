@@ -103,7 +103,7 @@ def flexible_double_pendulum(Rod, show_plots, name):
     system.add(floor)  # (only for visualization purposes)
 
     for i in range(1, 2):
-        for xi in np.linspace(0, 1, nelements + 1)[1:]:
+        for xi in np.linspace(0, 1, nelements + 1)[-1:]:
             system.add(
                 Sphere2Plane(
                     floor,
@@ -150,10 +150,10 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
 if __name__ == "__main__":
     flexible_double_pendulum(
-        make_BoostedCosseratRod(polynomial_degree=2), show_plots=False, name="boosted"
+        make_BoostedCosseratRod(polynomial_degree=2), show_plots=True, name="boosted"
     )
     flexible_double_pendulum(
         make_CosseratRod(interpolation="Quaternion", mixed=True, polynomial_degree=2),
-        show_plots=False,
+        show_plots=True,
         name="default",
     )

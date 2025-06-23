@@ -5,7 +5,16 @@ from warnings import warn
 
 from cardillo.math.algebra import norm, cross3, ax2skew
 from cardillo.math.approx_fprime import approx_fprime
-from cardillo.math.rotations import Exp_SO3_quat, T_SO3_inv_quat, T_SO3_inv_quat_P
+from cardillo.math.rotations import (
+    Exp_SO3_quat,
+    Exp_SO3_quat_p,
+    Log_SO3_quat,
+    T_SO3_quat,
+    T_SO3_quat_P,
+    T_SO3_quat_Q_P,
+    T_SO3_inv_quat,
+    T_SO3_inv_quat_P,
+)
 from cardillo.utility.coo_matrix import CooMatrix
 
 from ._base_export import RodExportBase
@@ -17,27 +26,6 @@ zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
 eye4 = np.eye(4, dtype=float)
 eye6 = np.eye(6, dtype=float)
-
-
-from cardillo.math import (
-    norm,
-    cross3,
-    T_SO3_quat,
-    T_SO3_quat_P,
-    Exp_SO3_quat,
-    Exp_SO3_quat_p,
-    Log_SO3_quat,
-)
-from cardillo.utility.check_time_derivatives import check_time_derivatives
-
-from ._base_export import RodExportBase
-
-from ._base import (
-    CosseratRodDisplacementBased,
-    CosseratRodMixed,
-    make_CosseratRodConstrained,
-)
-from ._cross_section import CrossSectionInertias
 
 
 class CosseratRod_PetrovGalerkin(RodExportBase):
@@ -253,6 +241,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self._cache_velocity_translational = LRUCache(ninteractions)
         self._cache_velocity_rotational = LRUCache(ninteractions)
 
+        # pre-evaluated zeros
+        self.zero_3_nue_nqe = np.zeros(
+            (3, self.nu_element, self.nq_element), dtype=float
+        )
+        self.zero_3_nqe = np.zeros((3, self.nq_element), dtype=float)
+        self.zero_3_nue = np.zeros((3, self.nu_element), dtype=float)
+
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
 
@@ -456,7 +451,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ Nq[3:]
         # TODO: think of implementing (T_SO3_quat(P) @ Q)_P for kappa
         # (ca. 10% speed up per call)
-        TP_xi_P = rP_xi[3:] @ T_SO3_quat_P(rP[3:], normalize=True)
+        # TP_xi_P = rP_xi[3:] @ T_SO3_quat_P(rP[3:], normalize=True)
+        TP_xi_P = T_SO3_quat_Q_P(rP[3:], rP_xi[3:], normalize=True)
         B_gamma_bar_qe = ax2skew(B_gamma) @ T @ Nq[3:] + A_IB.T @ Nq_xi[:3]
         B_kappa_bar_qe = TP_xi_P @ Nq[3:] + T @ Nq_xi[3:]
         eps_qe = np.vstack([B_gamma_bar_qe, B_kappa_bar_qe])
@@ -659,8 +655,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             J_P_qe = np.einsum("ijk, jl -> ilk", _deval[1], B_J_CP)
             return (r_OP, J_P), (r_OP_qe, J_P_qe)
         else:
-            J_C_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
-            return (r_OC, J_C), (r_OC_qe, J_C_qe)
+            return (r_OC, J_C), (r_OC_qe, self.zero_3_nue_nqe)
 
     @cachedmethod(
         lambda self: self._cache_velocity_translational,
@@ -685,8 +680,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             v_P_qe = np.einsum("ijk,j->ik", _deval[1], B_v_CP)
             return v_P, v_P_qe
         else:
-            v_C_qe = np.zeros((3, self.nq_element), dtype=float)
-            return _veval[0], v_C_qe
+            return _veval[0], self.zero_3_nqe
 
     # TODO: cache this with *qe, *ue, *ue_dot, *B_r_CP, xi
     # TODO: cache for integrators with acceleration level
@@ -724,9 +718,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             ) @ B_J_R
             return a_P, a_P_qe, a_P_ue
         else:
-            a_C_qe = np.zeros((3, self.nq_element), dtype=float)
-            a_C_ue = np.zeros((3, self.nu_element), dtype=float)
-            return _aeval[0], a_C_qe, a_C_ue
+            return _aeval[0], self.zero_3_nqe, self.zero_3_nue
 
     @cachedmethod(
         lambda self: self._cache_rotational,
@@ -745,9 +737,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             Nu = self.Nu(xi, el, 0)
             B_J_R = Nu[3:]
 
-        # TODO: can we pre-create this?
-        B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
-        return (_eval[1], B_J_R), (_deval[1], B_J_R_qe)
+        return (_eval[1], B_J_R), (_deval[1], self.zero_3_nue_nqe)
 
     @cachedmethod(
         lambda self: self._cache_velocity_rotational,
@@ -762,9 +752,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             Nu = self.Nu(xi, el, 0)
             _veval = self._veval_v_Om(xi, Nu, ue)
 
-        # TODO: this is always zeros, make use of it later
-        B_Omega_IB_qe = np.zeros((3, self.nq_element), dtype=float)
-        return _veval[1], B_Omega_IB_qe
+        return _veval[1]
 
     # cardillo functions
     def r_OP(self, t, qe, xi, B_r_CP=zeros3):
@@ -807,22 +795,19 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.rotational(qe, xi)[1][1]
 
     def B_Omega(self, t, qe, ue, xi):
-        return self.velocity_rotational(ue, xi)[0]
+        return self.velocity_rotational(ue, xi)
 
     def B_Omega_q(self, t, qe, ue, xi):
-        # TODO: this is zero
-        return self.velocity_rotational(ue, xi)[1]
+        return self.zero_3_nqe
 
     def B_Psi(self, t, qe, ue, ue_dot, xi):
-        return self.velocity_rotational(ue_dot, xi)[0]
+        return self.velocity_rotational(ue_dot, xi)
 
     def B_Psi_q(self, t, qe, ue, ue_dot, xi):
-        # TODO: this is zero
-        return self.velocity_rotational(ue_dot, xi)[1]
+        return self.zero_3_nqe
 
     def B_Psi_u(self, t, qe, ue, ue_dot, xi):
-        # TODO: this is zero
-        return np.zeros((3, self.nu_element), dtype=float)
+        return self.zero_3_nue
 
     ##############
     # compliance #
