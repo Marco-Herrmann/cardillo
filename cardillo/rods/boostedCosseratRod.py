@@ -3,13 +3,6 @@ from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from warnings import warn
 
-
-from abc import ABC, abstractmethod
-from cachetools import cachedmethod, LRUCache
-from cachetools.keys import hashkey
-import numpy as np
-from scipy.sparse.linalg import spsolve
-
 from cardillo.math.algebra import norm, cross3, ax2skew
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.math.rotations import Exp_SO3_quat, T_SO3_inv_quat, T_SO3_inv_quat_P
@@ -69,8 +62,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # rod properties
         self.material_model = material_model
         self.cross_section_inertias = cross_section_inertias
-        self.idx_constrained = np.atleast_1d(constraints)
-        self.idx_impressed = np.setdiff1d(np.arange(6), self.idx_constrained)
+        self.idx_impressed = np.setdiff1d(np.arange(6), np.atleast_1d(constraints))
+        self.idx_constrained = np.setdiff1d(
+            np.arange(6), np.atleast_1d(self.idx_impressed)
+        )
 
         self.n_constrained = len(self.idx_constrained)
         self.n_impressed = len(self.idx_impressed)
@@ -83,9 +78,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nquadrature_int = nquadrature_int
         self.nquadrature_dyn = nquadrature_dyn
 
+        self.nquadrature = nquadrature_dyn
+
         self.knot_vector = LagrangeKnotVector(polynomial_degree, nelement)
-        self.xis_nodes = self.knot_vector.data
-        self.xis_element_boundaries = self.knot_vector.data[:: polynomial_degree - 1]
 
         # mesh for interpolation of (r, P) and (v, omega)
         mesh_kin = Mesh1D(
@@ -96,10 +91,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             basis="Lagrange",
             dim_u=6,
         )
+        self.mesh_kin = mesh_kin
 
         # total number of nodes and per element
         self.nnodes = mesh_kin.nnodes
         self.nnodes_element = mesh_kin.nnodes_per_element
+
+        # TODO: this should be in the knot vector!
+        self.xis_nodes = np.linspace(0, 1, self.nnodes)
+        self.xis_element_boundaries = self.xis_nodes[::polynomial_degree]
 
         # total number of generalized position and velocity coordinates
         self.nq = mesh_kin.nq
@@ -202,26 +202,23 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             dim_u=6,
         )
 
-        self.nnodes_compliance = mesh_rcs.nnodes_per_element
-
-        # total number of compliance coordinates
-        self.nla_compliance = mesh_rcs.nq
-        self.nla_c = int(mesh_rcs.nq / 6 * self.n_impressed)
-        self.nla_g = int(mesh_rcs.nq / 6 * self.n_constrained)
-
         # TODO: check what actually is used from here and prepare for hard constraint
 
         # total number of nodes
-        self.nnodes_la_c = mesh_rcs.nnodes
+        self.nnodes_sigma = mesh_rcs.nnodes
 
         # number of nodes per element
-        self.nnodes_element_la_c = mesh_rcs.nnodes_per_element
+        self.nnodes_element_sigma = mesh_rcs.nnodes_per_element
 
         # total number of compliance coordinates
-        self.nla_c = mesh_rcs.nq
+        self.nla_sigma = mesh_rcs.nq
+        if (nla_c := int(mesh_rcs.nq / 6 * self.n_impressed)) > 0:
+            self.nla_c = nla_c
+        if (nla_g := int(mesh_rcs.nq / 6 * self.n_constrained)) > 0:
+            self.nla_g = nla_g
 
         # number of compliance coordinates per element
-        self.nla_c_element = mesh_rcs.nq_per_element
+        self.nla_sigma_element = mesh_rcs.nq_per_element
 
         # global element connectivity for compliance coordinates
         self.elDOF_la_c = mesh_rcs.elDOF
@@ -241,13 +238,19 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_int_c, _ = mesh_rcs.shape_functions_matrix(self.nquadrature_int)
 
         # TODO: this splits c and g from l_c_el
-        self.cDOF_el = np.arange(self.nla_c_element)
+        self.cDOF_el = np.arange(self.nla_sigma_element)
 
         self.set_reference_strains(self.Q)
 
         # caches
+        ninteractions = 2
+        # TODO: get this number based on the number of interactions
         self._cache_f_gyr = LRUCache(self.nquadrature_dyn * nelement)
         self._cache_internal = LRUCache(self.nquadrature_int * nelement)
+        self._cache_positional = LRUCache(ninteractions)
+        self._cache_rotational = LRUCache(ninteractions)
+        self._cache_velocity_translational = LRUCache(ninteractions)
+        self._cache_velocity_rotational = LRUCache(ninteractions)
 
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
@@ -282,10 +285,18 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 qpi = self.qp_dyn[el, i]
                 N = self.N_dyn_q[el, i]
                 N_xi = self.N_dyn_q_xi[el, i]
-                epsilon_bar = self._eval_internal(qpi, N, N_xi, qe)[0][2]
+                self.J_dyn[el, i] = self.compute_J(qpi, N, N_xi, qe)
 
-                # length of reference tangential vector
-                self.J_dyn[el, i] = norm(epsilon_bar[:3])
+    # TODO: maybe it is more practical to set up a function to return
+    # qp, qw, J, [(Nq, Nq_xi) or (Nu, Nu_xi)] for given number of quadrature points
+    def get_quadrature(self, nquadrature, deriv, field):
+        '''Number of quadrature point, how many derivatives, and what filed (r, P, q, v, Om, u, n, m, la_c)'''
+
+    def compute_J(self, xi, N, N_xi, qe):
+        epsilon_bar = self._eval_internal(xi, N, N_xi, qe)[0][2]
+
+        # length of reference tangential vector
+        return norm(epsilon_bar[:3])
 
     # TODO: When are these functions called? Do we need and can we speed them up?
     def element_interval(self, el):
@@ -360,17 +371,46 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             nodalDOF_p = self.nodalDOF_p[node]
             q_dot[nodalDOF_p] = (
                 # TODO: the old implementation uses normalize=False
-                T_SO3_inv_quat(q[nodalDOF_p], normalize=True)
+                T_SO3_inv_quat(q[nodalDOF_p], normalize=False)
                 @ u[self.nodalDOF_u_o[node]]
             )
 
         return q_dot
 
     def q_dot_q(self, t, q, u):
-        return approx_fprime(q, lambda q_: self.q_dot(t, q_, u))
+        coo = CooMatrix((self.nq, self.nq))
 
-    def q_dot_u(self, t, q, u):
-        return approx_fprime(u, lambda u_: self.q_dot(t, q, u_))
+        # orientation part
+        for node in range(self.nnodes):
+            nodalDOF_p = self.nodalDOF_p[node]
+            nodalDOF_p_u = self.nodalDOF_u_o[node]
+            p = q[nodalDOF_p]
+            B_omega_IB = u[nodalDOF_p_u]
+
+            coo[nodalDOF_p, nodalDOF_p] = np.einsum(
+                "ijk,j->ik",
+                T_SO3_inv_quat_P(p, normalize=False),
+                B_omega_IB,
+            )
+
+        return coo
+
+    def q_dot_u(self, t, q):
+        coo = CooMatrix((self.nq, self.nu))
+
+        # centerline part
+        coo[range(self.nq_r), range(self.nu_r)] = np.eye(self.nq_r)
+
+        # orientation part
+        for node in range(self.nnodes):
+            nodalDOF_p = self.nodalDOF_p[node]
+            nodalDOF_p_u = self.nodalDOF_u_o[node]
+
+            p = q[nodalDOF_p]
+            p = p / norm(p)
+            coo[nodalDOF_p, nodalDOF_p_u] = T_SO3_inv_quat(p, normalize=False)
+
+        return coo
 
     def step_callback(self, t, q, u):
         """ "Quaternion normalization after each time step."""
@@ -388,27 +428,22 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     # eval functions #
     ##################
     # TODO: cache this, not sure if we need to
-    def _eval_r_A(self, xi, N, qe):
-        rP = N @ qe
+    def _eval_r_A(self, xi, Nq, qe):
+        rP = Nq @ qe
         A_IB = Exp_SO3_quat(rP[3:])
-        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ N[3:]
-        return (rP[:3], A_IB), (N[:3], A_IB_qe)
+        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ Nq[3:]
+        return (rP[:3], A_IB), (Nq[:3], A_IB_qe)
 
     # TODO: cache this, not sure if we need to
-    def _veval_v_Om(self, xi, N, ue):
-        vOm = N @ ue
+    def _veval_v_Om(self, xi, Nu, ue):
+        vOm = Nu @ ue
         return vOm[:3], vOm[3:]
 
     # TODO: cache this, not sure if we need to ...
-    def _eval_Jacobians(self, xi, Nu):
-        warn("Don't use this, slice directly!")
-        return Nu[:3].T, Nu[3:].T
-
-    # TODO: cache this, not sure if we need to ...
-    def _eval_internal(self, xi, N, N_xi, qe):
+    def _eval_internal(self, xi, Nq, Nq_xi, qe):
         # eval
-        rP = N @ qe
-        rP_xi = N_xi @ qe
+        rP = Nq @ qe
+        rP_xi = Nq_xi @ qe
         A_IB = Exp_SO3_quat(rP[3:])
         T = T_SO3_quat(rP[3:], normalize=True)
         B_gamma = A_IB.T @ rP_xi[:3]
@@ -416,14 +451,14 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         eps = np.array([*B_gamma, *B_kappa])
 
         # deval
-        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ N[3:]
+        A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ Nq[3:]
         # TODO: think of implementing (T_SO3_quat(P) @ Q)_P for kappa
         # (ca. 10% speed up per call)
         TP_xi_P = rP_xi[3:] @ T_SO3_quat_P(rP[3:], normalize=True)
-        B_gamma_bar_qe = ax2skew(B_gamma) @ T @ N[3:] + A_IB.T @ N_xi[:3]
-        B_kappa_bar_qe = TP_xi_P @ N[3:] + T @ N_xi[3:]
+        B_gamma_bar_qe = ax2skew(B_gamma) @ T @ Nq[3:] + A_IB.T @ Nq_xi[:3]
+        B_kappa_bar_qe = TP_xi_P @ Nq[3:] + T @ Nq_xi[3:]
         eps_qe = np.vstack([B_gamma_bar_qe, B_kappa_bar_qe])
-        return (rP[:3], A_IB, eps), (N[:3], A_IB_qe, eps_qe)
+        return (rP[:3], A_IB, eps), (Nq[:3], A_IB_qe, eps_qe)
 
     #########################################
     # equations of motion
@@ -536,7 +571,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         """For given xi in I = [0.0, 1.0], returns element node number if xi is a node, otherwise False"""
         idx = np.where(self.xis_nodes == xi)[0]
         if len(idx) == 1:
-            return idx[0] % self.polynomial_degree
+            idx = idx[0]
+            if idx == self.nnodes - 1:
+                return self.polynomial_degree
+            else:
+                return idx % self.polynomial_degree
         else:
             return False
 
@@ -574,7 +613,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         v = ue[nodalDOF_u]
         return v[:3], v[3:]
 
-    # TODO: cache this with *qe, *B_r_CP, xi
+    @cachedmethod(
+        lambda self: self._cache_positional,
+        key=lambda self, qe, xi, B_r_CP: hashkey(*qe, *B_r_CP, xi),
+    )
     def positional(self, qe, xi, B_r_CP=zeros3):
         """returns (r_OP, J_P), (r_OP_qe, J_P_qe)"""
         # do the eval, based on node or somewhere inbetween
@@ -612,7 +654,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             J_C_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
             return (r_OC, J_C), (r_OC_qe, J_C_qe)
 
-    # TODO: cache this with *qe, *ue, *B_r_CP, xi
+    @cachedmethod(
+        lambda self: self._cache_velocity_translational,
+        key=lambda self, qe, ue, xi, B_r_CP: hashkey(*qe, *ue, *B_r_CP, xi),
+    )
     def velocity_translational(self, qe, ue, xi, B_r_CP=zeros3):
         """returns (v_P, v_P_qe)"""
         if (node := self.node_number(xi)) is not False:
@@ -676,7 +721,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             a_C_ue = np.zeros((3, self.nu_element), dtype=float)
             return _aeval[0], a_C_qe, a_C_ue
 
-    # TODO: cache this with *qe, xi
+    @cachedmethod(
+        lambda self: self._cache_rotational,
+        key=lambda self, qe, xi: hashkey(*qe, xi),
+    )
     def rotational(self, qe, xi):
         """returns (A_IB, B_J_R), (A_IB_qe, B_J_R_qe)"""
         # do the eval, based on node or somewhere inbetween
@@ -695,7 +743,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
         return (_eval[1], B_J_R), (_deval[1], B_J_R_qe)
 
-    # TODO: cache this with *ue, xi
+    @cachedmethod(
+        lambda self: self._cache_velocity_rotational,
+        key=lambda self, ue, xi: hashkey(*ue, xi),
+    )
     def velocity_rotational(self, ue, xi):
         """returns (B_Omega_IB, B_Omega_IB_qe)"""
         if (node := self.node_number(xi)) is not False:
@@ -766,7 +817,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
     def B_Psi_u(self, t, qe, ue, ue_dot, xi):
         # TODO: this is zero
-        return self.velocity_rotational(ue_dot, xi)[1]
+        return np.zeros((3, self.nu_element), dtype=float)
 
     ##############
     # compliance #
@@ -792,9 +843,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         key=lambda self, qe, el: hashkey(*qe, el),
     )
     def internal_master(self, qe, el):
-        c_el = np.zeros(self.nla_c_element, dtype=qe.dtype)
-        c_el_qe = np.zeros((self.nla_c_element, self.nq_element), dtype=qe.dtype)
-        W_c_el = np.zeros((self.nu_element, self.nla_c_element), dtype=qe.dtype)
+        c_el = np.zeros(self.nla_sigma_element, dtype=qe.dtype)
+        c_el_qe = np.zeros((self.nla_sigma_element, self.nq_element), dtype=qe.dtype)
+        W_c_el = np.zeros((self.nu_element, self.nla_sigma_element), dtype=qe.dtype)
 
         for i in range(self.nquadrature_int):
             # extract reference state variables
@@ -843,7 +894,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def _c_la_c_coo(self):
         self.__c_la_c = CooMatrix((self.nla_c, self.nla_c))
         self.K_c_inv = np.zeros(
-            (self.nelement, self.nla_c_element, self.nla_c_element), dtype=float
+            (self.nelement, self.nla_sigma_element, self.nla_sigma_element), dtype=float
         )
         for el in range(self.nelement):
             elDOF_la_c = self.elDOF_la_c[el]
@@ -852,7 +903,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             self.K_c_inv[el] = K_c_inv_el
 
     def c_la_c_el(self, el):
-        c_la_c_el = np.zeros((self.nla_c_element, self.nla_c_element))
+        c_la_c_el = np.zeros((self.nla_sigma_element, self.nla_sigma_element))
         for i in range(self.nquadrature_int):
             Ci_inv = self.material_model.C_inv * self.qw_int[el, i] * self.J_int[el, i]
             N_c = self.N_int_c[el, i][self.idx_impressed[:, None], self.cDOF_el]
@@ -905,7 +956,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             coo[elDOF_u, elDOF_la_c] = W_compliance_el[:, self.cDOF_el]
         return coo
 
-    def Wla_c_q(self, t, q, la_c): ...
+    # def Wla_c_q(self, t, q, la_c):
+    #     return approx_fprime(q, lambda q_: self.W_c(t, q_) @ la_c)
 
     ###############
     # constraints #
