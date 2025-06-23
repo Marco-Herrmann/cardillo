@@ -145,8 +145,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # evaluate shape functions at specific xi
         self.basis_functions = mesh_kin.eval_basis
-        self.N_q = mesh_kin.eval_basis_matrix_q
-        self.N_u = mesh_kin.eval_basis_matrix_u
+        self.Nq = mesh_kin.eval_basis_matrix_q
+        self.Nu = mesh_kin.eval_basis_matrix_u
 
         #####################
         # quadrature points #
@@ -159,20 +159,20 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         #####
         # shape functions and their first derivatives
         # for quadrature points of internal virtual work
-        N_mtx_q, N_mtx_u = mesh_kin.shape_functions_matrix(self.nquadrature_int)
-        self.N_int_q, self.N_int_q_xi = N_mtx_q
-        self.N_int_u, self.N_int_u_xi = N_mtx_u
+        N_mtx_q, N_mtx_u = mesh_kin.shape_functions_matrix(self.nquadrature_int, 1)
+        self.Nq_int, self.Nq_xi_int = N_mtx_q
+        self.Nu_int, self.Nu_xi_int = N_mtx_u
 
-        self.N_int_v_P = self.N_int_u[:, :, :3, : self.nu_element_r]
-        self.N_int_omega = self.N_int_u[:, :, 3:, self.nu_element_r :]
+        self.Nv_int = self.Nu_int[:, :, :3, : self.nu_element_r]
+        self.No_int = self.Nu_int[:, :, 3:, self.nu_element_r :]
 
         # for quadrature points of dynamic virtual work
-        N_mtx_q, N_mtx_u = mesh_kin.shape_functions_matrix(self.nquadrature_dyn)
-        self.N_dyn_q, self.N_dyn_q_xi = N_mtx_q
-        self.N_dyn_u, self.N_dyn_u_xi = N_mtx_u
+        Nq_dyn, Nu_dyn = mesh_kin.shape_functions_matrix(self.nquadrature_dyn, 1)
+        self.Nq_dyn, self.Nq_xi_dyn = Nq_dyn
+        self.Nu_dyn = Nu_dyn[0]
 
-        self.N_dyn_v_P = self.N_dyn_u[:, :, :3, : self.nu_element_r]
-        self.N_dyn_omega = self.N_dyn_u[:, :, 3:, self.nu_element_r :]
+        self.Nv_dyn = self.Nu_dyn[:, :, :3, : self.nu_element_r]
+        self.No_dyn = self.Nu_dyn[:, :, 3:, self.nu_element_r :]
 
         # referential generalized position coordinates, initial generalized
         # position and velocity coordinates
@@ -229,13 +229,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # nodal connectivity on element level
         self.nodalDOF_element_la_c = mesh_rcs.nodalDOF_element
 
-        # shape functions and their first derivatives
-        self.N_la_c = mesh_rcs.N
-
         # evaluate shape functions at specific xi
         self.basis_functions_la_c = mesh_rcs.eval_basis
 
-        self.N_int_c, _ = mesh_rcs.shape_functions_matrix(self.nquadrature_int)
+        self.Nc = mesh_rcs.shape_functions_matrix(self.nquadrature_int, 0)[0][0]
 
         # TODO: this splits c and g from l_c_el
         self.cDOF_el = np.arange(self.nla_sigma_element)
@@ -247,6 +244,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # TODO: get this number based on the number of interactions
         self._cache_f_gyr = LRUCache(self.nquadrature_dyn * nelement)
         self._cache_internal = LRUCache(self.nquadrature_int * nelement)
+
+        self._cache_node_number = LRUCache(50 * ninteractions)
+        self._cache_element_number = LRUCache(50 * ninteractions)
+        self._cache_eval_r_A = LRUCache(ninteractions)
         self._cache_positional = LRUCache(ninteractions)
         self._cache_rotational = LRUCache(ninteractions)
         self._cache_velocity_translational = LRUCache(ninteractions)
@@ -271,8 +272,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             for i in range(self.nquadrature_int):
                 # evaluate required quantities
                 qpi = self.qp_int[el, i]
-                N = self.N_int_q[el, i]
-                N_xi = self.N_int_q_xi[el, i]
+                N = self.Nq_int[el, i]
+                N_xi = self.Nq_xi_int[el, i]
                 epsilon_bar = self._eval_internal(qpi, N, N_xi, qe)[0][2]
 
                 # save length of reference tangential vector and strain
@@ -283,14 +284,14 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             for i in range(self.nquadrature_dyn):
                 # evaluate required quantities
                 qpi = self.qp_dyn[el, i]
-                N = self.N_dyn_q[el, i]
-                N_xi = self.N_dyn_q_xi[el, i]
+                N = self.Nq_dyn[el, i]
+                N_xi = self.Nq_xi_dyn[el, i]
                 self.J_dyn[el, i] = self.compute_J(qpi, N, N_xi, qe)
 
     # TODO: maybe it is more practical to set up a function to return
     # qp, qw, J, [(Nq, Nq_xi) or (Nu, Nu_xi)] for given number of quadrature points
     def get_quadrature(self, nquadrature, deriv, field):
-        '''Number of quadrature point, how many derivatives, and what filed (r, P, q, v, Om, u, n, m, la_c)'''
+        """Number of quadrature point, how many derivatives, and what filed (r, P, q, v, Om, u, n, m, la_c)"""
 
     def compute_J(self, xi, N, N_xi, qe):
         epsilon_bar = self._eval_internal(xi, N, N_xi, qe)[0][2]
@@ -427,19 +428,20 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##################
     # eval functions #
     ##################
-    # TODO: cache this, not sure if we need to
+    @cachedmethod(
+        lambda self: self._cache_eval_r_A,
+        key=lambda self, xi, Nq, qe: hashkey(xi, *qe),
+    )
     def _eval_r_A(self, xi, Nq, qe):
         rP = Nq @ qe
         A_IB = Exp_SO3_quat(rP[3:])
         A_IB_qe = Exp_SO3_quat_p(rP[3:], normalize=True) @ Nq[3:]
         return (rP[:3], A_IB), (Nq[:3], A_IB_qe)
 
-    # TODO: cache this, not sure if we need to
     def _veval_v_Om(self, xi, Nu, ue):
         vOm = Nu @ ue
         return vOm[:3], vOm[3:]
 
-    # TODO: cache this, not sure if we need to ...
     def _eval_internal(self, xi, Nq, Nq_xi, qe):
         # eval
         rP = Nq @ qe
@@ -483,8 +485,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             # extract reference state variables
             weight = self.qw_dyn[el, i] * self.J_dyn[el, i]
             Mi = self.cross_section_inertias.generalized_inertia * weight
-            N_dyn = self.N_dyn_u[el, i]
-            M_el += N_dyn.T @ Mi @ N_dyn
+            Nu = self.Nu_dyn[el, i]
+            M_el += Nu.T @ Mi @ Nu
 
         return M_el
 
@@ -514,8 +516,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         for i in range(self.nquadrature_dyn):
             # interpoalte angular velocity
-            N_dyn = self.N_dyn_omega[el, i]
-            B_Omega = N_dyn @ ue_red
+            No = self.No_dyn[el, i]
+            B_Omega = No @ ue_red
             weight = self.J_dyn[el, i] * self.qw_dyn[el, i]
 
             # vector of gyroscopic forces
@@ -526,8 +528,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             ) * weight
 
             # multiply vector of gyroscopic forces with nodal virtual rotations
-            f_gyr_el += N_dyn.T @ f_gyr_el_p
-            f_gyr_el_ue += N_dyn.T @ f_gyr_u_el_p @ N_dyn
+            f_gyr_el += No.T @ f_gyr_el_p
+            f_gyr_el_ue += No.T @ f_gyr_u_el_p @ No
 
         return f_gyr_el, f_gyr_el_ue
 
@@ -567,6 +569,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##########################
     # r_OP / A_IB contribution
     ##########################
+    @cachedmethod(
+        lambda self: self._cache_node_number,
+        key=lambda self, xi: hashkey(xi),
+    )
     def node_number(self, xi):
         """For given xi in I = [0.0, 1.0], returns element node number if xi is a node, otherwise False"""
         idx = np.where(self.xis_nodes == xi)[0]
@@ -579,7 +585,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         else:
             return False
 
-    # TODO: cache me!
+    @cachedmethod(
+        lambda self: self._cache_element_number,
+        key=lambda self, xi: hashkey(xi),
+    )
     def element_number(self, xi):
         return np.where(self.xis_element_boundaries[:-1] <= xi)[0][-1]
 
@@ -623,11 +632,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if (node := self.node_number(xi)) is not False:
             _eval, _deval, Jacobians = self._eval_nodal(qe, node)
         else:
-            # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
-            N_q, N_q_xi = self.N_q(xi, el)
-            _eval, _deval = self._eval_r_A(xi, N_q, qe)
-            J_total = self.N_u(xi, el)[0]
+            Nq = self.Nq(xi, el, 0)
+            _eval, _deval = self._eval_r_A(xi, Nq, qe)
+            J_total = self.Nu(xi, el, 0)
             Jacobians = (J_total[:3], J_total[3:])
 
         # extract later used positional quantities
@@ -664,12 +672,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             _eval, _deval, Jacobians = self._eval_nodal(qe, node)
             _veval = self._veval_nodal(ue, node)
         else:
-            # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
-            N_q, N_q_xi = self.N_q(xi, el)
-            _eval, _deval = self._eval_r_A(xi, N_q, qe)
-            N_u, N_u_xi = self.N_u(xi, el)
-            _veval = self._veval_v_Om(xi, N_u, ue)
+            Nq = self.Nq(xi, el, 0)
+            _eval, _deval = self._eval_r_A(xi, Nq, qe)
+            Nu = self.Nu(xi, el, 0)
+            _veval = self._veval_v_Om(xi, Nu, ue)
 
         if B_r_CP @ B_r_CP > 0.0:
             B_v_CP = cross3(_veval[1], B_r_CP)
@@ -682,6 +689,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             return _veval[0], v_C_qe
 
     # TODO: cache this with *qe, *ue, *ue_dot, *B_r_CP, xi
+    # TODO: cache for integrators with acceleration level
     def acceleration_translational(self, qe, ue, ue_dot, xi, B_r_CP=zeros3):
         """returns (a_P, a_P_qe, a_P_ue)"""
         if (node := self.node_number(xi)) is not False:
@@ -690,14 +698,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             _aeval = self._veval_nodal(ue_dot, node)
             B_J_R = Jacobians[1]
         else:
-            # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
-            N_q, N_q_xi = self.N_q(xi, el)
-            _eval, _deval = self._eval_r_A(xi, N_q, qe)
-            N_u, N_u_xi = self.N_u(xi, el)
-            _veval = self._veval_v_Om(xi, N_u, ue)
-            _aeval = self._veval_v_Om(xi, N_u, ue_dot)
-            B_J_R = N_u[3:]
+            Nq = self.Nq(xi, el, 0)
+            _eval, _deval = self._eval_r_A(xi, Nq, qe)
+            Nu = self.Nu(xi, el, 0)
+            _veval = self._veval_v_Om(xi, Nu, ue)
+            _aeval = self._veval_v_Om(xi, Nu, ue_dot)
+            B_J_R = Nu[3:]
 
         if B_r_CP @ B_r_CP > 0.0:
             A_IB = _eval[1]
@@ -732,12 +739,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             _eval, _deval, Jacobians = self._eval_nodal(qe, node)
             B_J_R = Jacobians[1]
         else:
-            # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
-            N_q, N_q_xi = self.N_q(xi, el)
-            _eval, _deval = self._eval_r_A(xi, N_q, qe)
-            N_u, N_u_xi = self.N_u(xi, el)
-            B_J_R = N_u[3:]
+            Nq = self.Nq(xi, el, 0)
+            _eval, _deval = self._eval_r_A(xi, Nq, qe)
+            Nu = self.Nu(xi, el, 0)
+            B_J_R = Nu[3:]
 
         # TODO: can we pre-create this?
         B_J_R_qe = np.zeros((3, self.nu_element, self.nq_element), dtype=float)
@@ -752,10 +758,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if (node := self.node_number(xi)) is not False:
             _veval = self._veval_nodal(ue, node)
         else:
-            # TODO: can we avoid to evaluate the derivatives?
             el = self.element_number(xi)
-            N_u, N_u_xi = self.N_u(xi, el)
-            _veval = self._veval_v_Om(xi, N_u, ue)
+            Nu = self.Nu(xi, el, 0)
+            _veval = self._veval_v_Om(xi, Nu, ue)
 
         # TODO: this is always zeros, make use of it later
         B_Omega_IB_qe = np.zeros((3, self.nq_element), dtype=float)
@@ -854,14 +859,14 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             epsilon0_bar = self.epsilon0_bar[el, i]
 
             # get shape functions
-            N_q = self.N_int_q[el, i]
-            N_q_xi = self.N_int_q_xi[el, i]
-            N_omega = self.N_int_omega[el, i]
-            N_u_xi = self.N_int_u_xi[el, i]
-            N_compliance = self.N_int_c[el, i]
+            Nq = self.Nq_int[el, i]
+            Nq_xi = self.Nq_xi_int[el, i]
+            N_o = self.No_int[el, i]
+            Nu_xi = self.Nu_xi_int[el, i]
+            Nc = self.Nc[el, i]
 
             # get stretches
-            _eval, _deval = self._eval_internal(qpi, N_q, N_q_xi, qe)
+            _eval, _deval = self._eval_internal(qpi, Nq, Nq_xi, qe)
             epsilon_bar = _eval[2]
             epsilon_bar_qe = _deval[2]
 
@@ -875,10 +880,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             )
 
             # compose vector and matrices
-            c_el += N_compliance.T @ ((epsilon0_bar - epsilon_bar) * qwi)
-            c_el_qe -= N_compliance.T @ epsilon_bar_qe * qwi
-            W_c_el -= N_u_xi.T @ mtx1 @ N_compliance
-            W_c_el[self.nu_element_r :] += N_omega.T @ (mtx2_omega @ N_compliance)
+            c_el += Nc.T @ ((epsilon0_bar - epsilon_bar) * qwi)
+            c_el_qe -= Nc.T @ epsilon_bar_qe * qwi
+            W_c_el -= Nu_xi.T @ mtx1 @ Nc
+            W_c_el[self.nu_element_r :] += N_o.T @ (mtx2_omega @ Nc)
 
         return c_el, c_el_qe, W_c_el
 
@@ -906,7 +911,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         c_la_c_el = np.zeros((self.nla_sigma_element, self.nla_sigma_element))
         for i in range(self.nquadrature_int):
             Ci_inv = self.material_model.C_inv * self.qw_int[el, i] * self.J_int[el, i]
-            N_c = self.N_int_c[el, i][self.idx_impressed[:, None], self.cDOF_el]
+            N_c = self.Nc[el, i][self.idx_impressed[:, None], self.cDOF_el]
             c_la_c_el += N_c.T @ Ci_inv @ N_c
 
         return c_la_c_el

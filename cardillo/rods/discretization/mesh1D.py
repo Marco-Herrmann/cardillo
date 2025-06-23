@@ -132,31 +132,34 @@ class Mesh1D:
         )
 
         # transform quadrature points on element intervals
-        self.qp, self.wp = self.quadrature_points(self.nquadrature)
+        self.qp, self.wp = self.quadrature_points(nquadrature)
 
         # evaluate element shape functions at quadrature points
-        if self.derivative_order == 0:
-            self.N = self.shape_functions(self.nquadrature)
-        elif self.derivative_order == 1:
-            self.N, self.N_xi = self.shape_functions(self.nquadrature)
-        else:
-            self.N, self.N_xi, self.N_xixi = self.shape_functions(self.nquadrature)
+        shape_functions = self.shape_functions(nquadrature, derivative_order)
+        self.N = shape_functions[0]
+        if derivative_order >= 1:
+            self.N_xi = shape_functions[1]
+            if derivative_order >= 2:
+                self.N_xixi = shape_functions[2]
 
-    def basis1D(self, xis, el):
+    def basis1D(self, xis, el, derivative_order):
         if self.basis == "Lagrange":
             return self.lagrange_basis1D(
                 xis,
                 el,
+                derivative_order,
                 squeeze=False,
             )
         elif self.basis == "Lagrange_Disc":
             return self.lagrange_basis1D(
                 xis,
                 el,
+                derivative_order,
                 squeeze=False,
             )
 
-    def lagrange_basis1D(self, xis, els, squeeze=True):
+    def lagrange_basis1D(self, xis, els, derivative_order=None, squeeze=True):
+        derivative_order = derivative_order or self.derivative_order
         xis = np.atleast_1d(xis)
         els = np.atleast_1d(els)
         nxis = len(xis)
@@ -166,14 +169,14 @@ class Mesh1D:
             assert nels == 1, "Missmatch in lengths of given xi values and elements!"
             els = np.tile(els, nxis)
 
-        N = np.zeros((self.derivative_order + 1, nxis, self.degree + 1))
+        N = np.zeros((derivative_order + 1, nxis, self.degree + 1))
         for i, (xi, eli) in enumerate(zip(xis, els)):
             eli = self.knot_vector.element_number(xi)[0] if eli is None else eli
             interval = self.knot_vector.element_interval(eli)
             self.lagrangebasis.set_interval(interval)
             N[0, i] = self.lagrangebasis(xi)
-            if self.derivative_order:
-                for j in range(1, self.derivative_order + 1):
+            if derivative_order:
+                for j in range(1, derivative_order + 1):
                     N[j, i] = self.lagrangebasis.deriv(xi, n=j)
         if squeeze:
             return N.squeeze()
@@ -182,28 +185,30 @@ class Mesh1D:
 
     @cachedmethod(
         lambda self: self._eval_basis_cache,
-        key=lambda self, xi, el=None: hashkey(xi, el),
+        key=lambda self, xi, el=None, derivative_order=None: hashkey(
+            xi, el, derivative_order
+        ),
     )
-    def eval_basis(self, xi, el=None):
+    def eval_basis(self, xi, el=None, derivative_order=None):
         if self.basis == "Lagrange":
-            return self.lagrange_basis1D(xi, el, squeeze=True)
+            return self.lagrange_basis1D(xi, el, derivative_order, squeeze=True)
         elif self.basis == "Lagrange_Disc":
-            return self.lagrange_basis1D(xi, el, squeeze=False)
+            return self.lagrange_basis1D(xi, el, derivative_order, squeeze=False)
 
-    def eval_basis_matrix_q(self, xi, el):
-        return self._eval_basis_matrix(xi, el)[0]
+    def eval_basis_matrix_q(self, xi, el, derivative_order):
+        return self._eval_basis_matrix(xi, el, derivative_order)[0]
 
-    def eval_basis_matrix_u(self, xi, el):
-        return self._eval_basis_matrix(xi, el)[1]
+    def eval_basis_matrix_u(self, xi, el, derivative_order):
+        return self._eval_basis_matrix(xi, el, derivative_order)[1]
 
     # TODO: cache this
-    def _eval_basis_matrix(self, xi, el):
+    def _eval_basis_matrix(self, xi, el, derivative_order):
         interval = self.knot_vector.element_interval(el)
         self.lagrangebasis.set_interval(interval)
 
         # TODO: make switching between q and u more easy!
-        N_q = np.zeros((self.derivative_order + 1, self.dim_q, self.nq_per_element))
-        N_u = np.zeros((self.derivative_order + 1, self.dim_u, self.nu_per_element))
+        N_q = np.zeros((derivative_order + 1, self.dim_q, self.nq_per_element))
+        N_u = np.zeros((derivative_order + 1, self.dim_u, self.nu_per_element))
         Ni = self.lagrangebasis(xi)
 
         eye_q = np.eye(self.dim_q, dtype=float)
@@ -215,7 +220,7 @@ class Mesh1D:
             N_u[0, :, uDOF] = eye_u * Ni[0, node]
 
         # TODO: optimize this!
-        for j in range(1, self.derivative_order + 1):
+        for j in range(1, derivative_order + 1):
             Ni_deriv = self.lagrangebasis.deriv(xi, n=j)
             for node in range(self.nnodes_per_element):
                 qDOF = self.nodalDOF_element[node]
@@ -223,6 +228,8 @@ class Mesh1D:
                 N_q[j, :, qDOF] = eye_q * Ni_deriv[0, node]
                 N_u[j, :, uDOF] = eye_u * Ni_deriv[0, node]
 
+        if derivative_order == 0:
+            return N_q[0], N_u[0]
         return N_q, N_u
 
     def quadrature_points(self, nquadrature):
@@ -235,51 +242,37 @@ class Mesh1D:
 
         return qp, wp
 
-    def shape_functions(self, nquadrature):
+    def shape_functions(self, nquadrature, derivative_order):
         qp, _ = self.quadrature_points(nquadrature)
 
-        N = np.zeros((self.nelement, nquadrature, self.nbasis_element))
-        if self.derivative_order > 0:
-            N_xi = np.zeros((self.nelement, nquadrature, self.nbasis_element))
-            if self.derivative_order > 1:
-                N_xixi = np.zeros((self.nelement, nquadrature, self.nbasis_element))
+        N = [np.zeros((self.nelement, nquadrature, self.nbasis_element))]
+        if derivative_order > 0:
+            N.append(np.zeros((self.nelement, nquadrature, self.nbasis_element)))
+            if derivative_order > 1:
+                N.append(np.zeros((self.nelement, nquadrature, self.nbasis_element)))
 
         for el in range(self.nelement):
-            NN = self.basis1D(qp[el], el)
+            NN = self.basis1D(qp[el], el, derivative_order)
             # expression = "self.N"
             # for i in range(self.derivative_order):
             #     expression += ", self.N_" + (i + 1) * "xi"
             # eval(expression) = NN
-            N[el] = NN[0]
-            if self.derivative_order > 0:
-                N_xi[el] = NN[1]
-                if self.derivative_order > 1:
-                    N_xixi[el] = NN[2]
+            N[0][el] = NN[0]
+            if derivative_order > 0:
+                N[1][el] = NN[1]
+                if derivative_order > 1:
+                    N[2][el] = NN[2]
 
-        if self.derivative_order == 0:
-            return N
-        elif self.derivative_order == 1:
-            return N, N_xi
-        else:
-            return N, N_xi, N_xixi
+        return N
 
-    def shape_functions_matrix(self, nquadrature):
+    def shape_functions_matrix(self, nquadrature, derivative_order):
         shape_q = (self.nelement, nquadrature, self.dim_q, self.nq_per_element)
         shape_u = (self.nelement, nquadrature, self.dim_u, self.nu_per_element)
 
-        Nq = np.zeros(shape_q, dtype=float)
-        Nu = np.zeros(shape_u, dtype=float)
+        Nq = [np.zeros(shape_q, dtype=float) for _ in range(derivative_order + 1)]
+        Nu = [np.zeros(shape_u, dtype=float) for _ in range(derivative_order + 1)]
 
-        if self.derivative_order > 0:
-            Nq_xi = np.zeros(shape_q, dtype=float)
-            Nu_xi = np.zeros(shape_u, dtype=float)
-            N, N_xi = self.shape_functions(nquadrature)
-            if self.derivative_order > 1:
-                Nq_xixi = np.zeros(shape_q, dtype=float)
-                Nu_xixi = np.zeros(shape_u, dtype=float)
-                N, N_xi, N_xixi = self.shape_functions(nquadrature)
-        else:
-            N = self.shape_functions(nquadrature)
+        shape_functions = self.shape_functions(nquadrature, derivative_order)
 
         eye_q = np.eye(self.dim_q, dtype=float)
         eye_u = np.eye(self.dim_u, dtype=float)
@@ -289,21 +282,11 @@ class Mesh1D:
                     qDOF = self.nodalDOF_element[node]
                     uDOF = self.nodalDOF_element_u[node]
 
-                    Nq[el, i, :, qDOF] = N[el, i, node] * eye_q
-                    Nu[el, i, :, uDOF] = N[el, i, node] * eye_u
-                    if self.derivative_order > 0:
-                        Nq_xi[el, i, :, qDOF] = N_xi[el, i, node] * eye_q
-                        Nu_xi[el, i, :, uDOF] = N_xi[el, i, node] * eye_u
-                        if self.derivative_order > 1:
-                            Nq_xixi[el, i, :, qDOF] = N_xixi[el, i, node] * eye_q
-                            Nu_xixi[el, i, :, uDOF] = N_xixi[el, i, node] * eye_u
+                    for d in range(derivative_order + 1):
+                        Nq[d][el, i, :, qDOF] = shape_functions[d][el, i, node] * eye_q
+                        Nu[d][el, i, :, uDOF] = shape_functions[d][el, i, node] * eye_u
 
-        if self.derivative_order == 0:
-            return Nq, Nu
-        elif self.derivative_order == 1:
-            return (Nq, Nq_xi), (Nu, Nu_xi)
-        else:
-            return (Nq, Nq_xi, Nq_xixi), (Nu, Nu_xi, Nu_xixi)
+        return Nq, Nu
 
 
 if __name__ == "__main__":

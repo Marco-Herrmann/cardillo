@@ -41,7 +41,7 @@ class Force_line_distributed:
             self.h = self.h_new
 
             # TODO: think of a convenient way to get all the stuff
-            Nq_, Nu_ = mesh.shape_functions_matrix(self.nquadrature)
+            Nq_, Nu_ = mesh.shape_functions_matrix(self.nquadrature, 1)
             Nq, Nq_xi = Nq_
             self.Nu = Nu_[0][:, :, :3, : self.rod.nu_element_r]
 
