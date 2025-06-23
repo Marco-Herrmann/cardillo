@@ -1,6 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from cardillo import System
+from cardillo.solver import BackwardEuler, Newton, SolverOptions
+
 
 from cardillo.math.rotations import (
     A_IB_basic,
@@ -133,6 +136,13 @@ class TorsionSpring:
 
         return q
 
+    def g_S(self, q):
+        for i in range(2):
+            DOF = range(2 * i, 2 * i + 2)
+            q[DOF] /= np.sqrt(q[DOF] @ q[DOF])
+
+        return q
+
     @staticmethod
     def twisted_configuration(alpha0, alpha1):
         return np.concatenate(
@@ -144,11 +154,46 @@ class TorsionSpring:
         ca = A_IB[1, 1]
         sa = A_IB[2, 1]
         return np.atan2(sa, ca)
+    
+    def c_la_c(self):
+        return np.array([self.L / self.GI])
 
+
+def cardillo_linearize():
+    nquadrature = 1  # reduced integration
+    nquadrature = 8
+    spring = TorsionSpring(GI=1.0, nquadrature=nquadrature)
+    t = 0.0
+
+    # without twist
+    q = np.array([1.0, 0.0, 1.0, 0.0])
+
+    # twist by an angle
+    angle = np.pi / 4
+
+    q = spring.twisted_configuration(0.0, angle)
+
+    spring.q0 = q
+
+
+    # create system
+    system = System()
+    system.add(spring)
+    
+    system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    
+    
+    n_steps = 1
+    sol = Newton(system, n_steps, verbose=False).solve()
+    omegas, modes_dq, sol_modes = system.new_eigenmodes(sol, n_steps)
 
 if __name__ == "__main__":
+    # cardillo_linearize()
+    # exit()
+
+
     nquadrature = 1  # reduced integration
-    nquadrature = 2
+    nquadrature = 20
     spring = TorsionSpring(GI=1.0, nquadrature=nquadrature)
     t = 0.0
 
