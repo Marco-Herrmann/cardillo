@@ -180,6 +180,8 @@ funcs_args_grouped = [
     ],
     [
         ["q_dot", ["t", "q", "u"], False],
+        ["q_dot_q", ["t", "q", "u"], True],
+        ["q_dot_u", ["t", "q"], True],
     ],
     [
         ["h", ["t", "q", "u"], False],
@@ -290,6 +292,9 @@ def test_cardillo_interaction(name_args, xi, B_r_CP):
         ddict = args_dict(rod, xi=xi, B_r_CP=B_r_CP)
         a = [ddict[ai] for ai in args]
         res.append(fct(*a))
+
+    n = np.linalg.norm(res[0] - res[1])
+    assert np.isclose(n, 0.0, atol=1e-5), n
 
 
 def performance_cardillo_core(group):
