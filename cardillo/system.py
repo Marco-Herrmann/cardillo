@@ -1108,10 +1108,12 @@ class System:
         Kc_inv = self.c_la_c("csc")
         c0 = self.c(t, q, u, la_c)
         c_q0 = self.c_q(t, q, u, la_c)
-        if self.nla_c > 0:
-            K0_c_bar = Wc0 @ scipy.sparse.linalg.inv(Kc_inv) @ c_q0
-        else:
+        if self.nla_c == 0:
             K0_c_bar = CooMatrix((self.nu, self.nq)).asformat("csr")
+        elif self.nla_c == 1:
+            K0_c_bar = Wc0 @ c_q0 / Kc_inv[0, 0]
+        else:
+            K0_c_bar = Wc0 @ scipy.sparse.linalg.inv(Kc_inv) @ c_q0
 
         # bilateral constraints, position level
         Wg0 = self.W_g(t, q, format="csr")
@@ -1162,7 +1164,10 @@ class System:
                 T = contr.T(t, q, format="csc")
             else:
                 # project numerically using W_g
-                W_g_contrT = contr.W_g(t, q[contr.qDOF]).toarray().T
+                W_g = contr.W_g(t, q[contr.qDOF])
+                if not isinstance(W_g, np.ndarray):
+                    W_g = W_g.toarray()
+                W_g_contrT = W_g.T
                 T = scipy.sparse.csc_array(scipy.linalg.null_space(W_g_contrT))
 
             ni_contr = contr.nu - contr.nla_g
