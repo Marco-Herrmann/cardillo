@@ -18,6 +18,26 @@ from cardillo.rods.discretization import gauss
 from cardillo.math.approx_fprime import approx_fprime
 
 
+def quat2angle(P):
+    return np.atan2(2 * P[0] * P[1], P[0] ** 2 - P[1] ** 2)
+
+
+def quat2angle_P(P):
+    fct = 2 / (P[0] ** 2 + P[1] ** 2)
+    return fct * np.array([-P[1], P[0]], dtype=float)
+
+
+def quat2angle_PP(P):
+    fct = 2 / (P[0] ** 2 + P[1] ** 2) ** 2
+    diag = 2 * P[0] * P[1]
+    off_diag = P[1] ** 2 - P[0] ** 2
+    return fct * np.array([[diag, off_diag], [off_diag, -diag]], dtype=float)
+
+
+def B_quat(P):
+    return 1 / 2 * np.array([[-P[1], P[0]]], dtype=float)
+
+
 class TorsionSpring:
     def __init__(
         self,
@@ -60,7 +80,7 @@ class TorsionSpring:
         # save
         self.polynomial_degree = polynomial_degree
         self.nnodes = nnodes
-        self.Q = Q
+        self.Q = self.q0.copy() if Q is None else Q
 
         # clamping on the left side
         self.nla_g = 1
@@ -166,9 +186,9 @@ class TorsionSpring:
     def q_dot_u(self, t, q):
         q_dot_u = np.zeros((self.nq, self.nu), dtype=float)
         for i in range(self.nnodes):
-            Pi = np.array([*(self.Nq(self.nodes[i]) @ q), 0.0, 0.0])
-            qDOF = range(2 * i, 2 * (i + 1))
-            q_dot_u[qDOF, i] = T_SO3_inv_quat(Pi, normalize=self.normalize)[:2, 0]
+            qDOF = np.array([2 * i, 2 * i + 1])
+            q_dot_u[qDOF, i] = B_quat(self.Nq(self.nodes[i]) @ q)
+
         return q_dot_u
 
     # mass matrix
@@ -176,10 +196,10 @@ class TorsionSpring:
         M = np.zeros((self.nu, self.nu), dtype=float)
         for i in range(self.nquadrature):
             qpi = self.qp[i]
-            wpi = self.qw[i]
+            qwi = self.qw[i]
 
             Nu = self.Nu(qpi)
-            M += Nu.T @ Nu * (self.Irho0 * wpi * self.L)
+            M += Nu.T @ Nu * (self.Irho0 * qwi * self.L)
 
         return M
 
@@ -194,28 +214,18 @@ class TorsionSpring:
 
         for i in range(self.nquadrature):
             qpi = self.qp[i]
-            wpi = self.qw[i]
+            qwi = self.qw[i]
+
             kappa_bar0_x = self.kappa(qpi, self.Q)
+            kappa_bar_x = self.kappa(qpi, q)
+            kappa_bar_x_q = self.kappa_q(qpi, q)
 
-            Nq = self.Nq(qpi)
-            Nq_xi = self.Nq_xi(qpi)
+            epsilon_T = np.atleast_1d(kappa_bar_x - kappa_bar0_x)
+            epsilon_T_q = np.atleast_2d(kappa_bar_x_q)
+
             Nla_c = self.Nla_c(qpi)
-
-            Pi = np.array([*(Nq @ q), 0.0, 0.0])
-            Pi_xi = Nq_xi @ q
-
-            T = T_SO3_quat(Pi, normalize=True)[0, :2]
-            T_P = T_SO3_quat_P(Pi, normalize=True)[0, :2, :2]
-
-            B_kappa_IB_bar = T @ Pi_xi
-            B_kappa_IB_bar_q = T @ Nq_xi + Pi_xi @ T_P @ Nq
-
-            kappa_bar_x = np.array([B_kappa_IB_bar])
-            kappa_bar_x_q = np.array([B_kappa_IB_bar_q])
-
-            # no need to multiply/divide by the length (objective torsion is integrated with J dxi)
-            l_c += Nla_c.T @ (kappa_bar_x - kappa_bar0_x) * wpi
-            l_c_q += Nla_c.T @ kappa_bar_x_q * wpi
+            l_c += Nla_c.T @ epsilon_T * (self.L * qwi)
+            l_c_q += Nla_c.T @ epsilon_T_q * (self.L * qwi)
 
         return l_c, l_c_q
 
@@ -223,17 +233,16 @@ class TorsionSpring:
         return self.c_la_c() @ la_c - self.l_c_master(q)[0]
 
     def c_q(self, t, q, u=None, la_c=None):
-        return approx_fprime(q, lambda q_: self.c(t, q_, u, la_c))
         return -self.l_c_master(q)[1]
 
     def c_la_c(self):
         c_la_c = np.zeros((self.nla_c, self.nla_c), dtype=float)
         for i in range(self.nquadrature):
             qpi = self.qp[i]
-            wpi = self.qw[i]
+            qwi = self.qw[i]
 
             Nla_c = self.Nla_c(qpi)
-            c_la_c += Nla_c.T @ Nla_c * (wpi * self.L / self.GI)
+            c_la_c += Nla_c.T @ Nla_c * (qwi * self.L / self.GI)
 
         return c_la_c
 
@@ -241,12 +250,12 @@ class TorsionSpring:
         W_c = np.zeros((self.nu, self.nla_c), dtype=float)
         for i in range(self.nquadrature):
             qpi = self.qp[i]
-            wpi = self.qw[i]
+            qwi = self.qw[i]
 
             # no need to multiply/divide by the length
             Nu_xi = self.Nu_xi(qpi)
             Nla_c = self.Nla_c(qpi)
-            W_c -= Nu_xi.T @ Nla_c * wpi
+            W_c -= Nu_xi.T @ Nla_c * qwi
 
         return W_c
 
@@ -302,26 +311,21 @@ class TorsionSpring:
     ##################
     # eval functions #
     ##################
-    def quat2angle(self, Pi):
-        return np.atan2(2 * Pi[0] * Pi[1], Pi[0] ** 2 - Pi[1] ** 2)
-
     def angle(self, xi, q):
         Pi = self.Nq(xi) @ q
-        return self.quat2angle(Pi)
+        return quat2angle(Pi)
 
     def kappa(self, xi, q):
-        Pi = self.Nq(xi) @ q
-        Pi_xi = self.Nq_xi(xi) @ q
+        P = self.Nq(xi) @ q
+        P_xi = self.Nq_xi(xi) @ q
+        return quat2angle_P(P) @ P_xi / self.L
 
-        kappa_bar = 2 / (Pi @ Pi) * (Pi[0] * Pi_xi[1] - Pi[1] * Pi_xi[0])
-
-        # using cardillo function
-        # kappa_bar_quat = T_SO3_quat(np.array([*Pi, 0.0, 0.0]), normalize=True)[0, :2] @ Pi_xi
-
-        return kappa_bar / self.L
-
-    def epsilon(self, xi, q):
-        return self.kappa(xi, q) - self.kappa(xi, self.Q)
+    def kappa_q(self, xi, q):
+        Nq = self.Nq(xi)
+        Nq_xi = self.Nq_xi(xi)
+        P = Nq @ q
+        P_xi = Nq_xi @ q
+        return (quat2angle_P(P) @ Nq_xi + P_xi @ quat2angle_PP(P) @ Nq) / self.L
 
     # Lagrange function
     def angle_Lagrange(self, xi, q):
@@ -343,7 +347,7 @@ class TorsionSpring:
 
 
 def cardillo_linearize(start_angle, end_angle, moment_angle, G, rho, L):
-    polynomial_degree = 2
+    polynomial_degree = 6
     nquadrature = polynomial_degree  # reduced integration
     nquadrature = 2 * polynomial_degree
 
@@ -417,8 +421,6 @@ def give_me_results(spring: TorsionSpring, q: np.ndarray):
     kappas_qp_ref = np.array([spring.kappa(qpi, spring.Q) for qpi in spring.qp])
     kappas_rI_ref = np.array([spring.kappa_reinterpolate(xi, spring.Q) for xi in xis])
 
-    # alphas_Lagrange = xis * angle
-
     fig, ax = plt.subplots(4, 2)
     # plot quaternion values
     ax[0, 0].plot(xis, P[:, 0], label="p0")
@@ -457,32 +459,32 @@ def give_me_results(spring: TorsionSpring, q: np.ndarray):
 
 
 if __name__ == "__main__":
-    G = 3200.0
-    rho = 1.0
-    L = 0.1
-    angles = np.linspace(-2 * np.pi, 2 * np.pi, 3)
-    omegas = np.zeros_like(angles)
-    for i, angle in enumerate(angles):
-        omegas[i] = cardillo_linearize(angle, angle, 0.0, G=G, rho=rho, L=L)
+    # G = 3200.0
+    # rho = 1.0
+    # L = 0.1
+    # angles = np.linspace(-2 * np.pi, 2 * np.pi, 3)
+    # omegas = np.zeros_like(angles)
+    # for i, angle in enumerate(angles):
+    #     omegas[i] = cardillo_linearize(0.0, 0.0, angle, G=G, rho=rho, L=L)
 
-    omega0_analytic = (2 * 0 + 1) / 2 * np.pi / L * np.sqrt(G / rho)
+    # omega0_analytic = (2 * 0 + 1) / 2 * np.pi / L * np.sqrt(G / rho)
 
-    fig, ax = plt.subplots(1, 1)
-    ax = np.array([[ax]])
-    ax[0, 0].plot(angles, omegas, label="numerical")
-    ax[0, 0].plot(
-        [angles[0], angles[-1]], [omega0_analytic] * 2, "--", label="analytical"
-    )
+    # fig, ax = plt.subplots(1, 1)
+    # ax = np.array([[ax]])
+    # ax[0, 0].plot(angles, omegas, label="numerical")
+    # ax[0, 0].plot(
+    #     [angles[0], angles[-1]], [omega0_analytic] * 2, "--", label="analytical"
+    # )
 
-    [[(axii.grid(), axii.legend()) for axii in axi] for axi in ax]
-    plt.show()
+    # [[(axii.grid(), axii.legend()) for axii in axi] for axi in ax]
+    # plt.show()
 
-    exit()
+    # exit()
 
     polynomial_degree = 2
 
     nquadrature = polynomial_degree  # reduced integration
-    # nquadrature = 2 * polynomial_degree
+    # nquadrature = 2 * polynomial_degree * 2
 
     spring = TorsionSpring(
         GI=1.0, nquadrature=nquadrature, polynomial_degree=polynomial_degree
@@ -497,6 +499,6 @@ if __name__ == "__main__":
     q = spring.twisted_configuration(
         *[i * angle / polynomial_degree for i in range(polynomial_degree + 1)]
     )
-    q = spring.step_callback(0, q, 0)
+    q = spring.step_callback(0, q, 0)[0]
     print(f"q: {q}")
     give_me_results(spring, q)
