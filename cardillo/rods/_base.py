@@ -1263,6 +1263,54 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
     ########################################
     # TODO: If there is a demand, add it to system.
     # TODO: shall we also compute the potential energy by the E_pot = eps.T @ la_c - E_comp_pot?
+    def E_pot_c(self, t, q, la_c):
+        E_pot_c = 0.0
+        for el in range(self.nelement):
+            elDOF = self.elDOF[el]
+            elDOF_la_c = self.elDOF_la_c[el]
+            E_pot_c += self.E_pot_c_el(q[elDOF], la_c[elDOF_la_c], el)
+        return E_pot_c
+
+    def E_pot_c_el(self, qe, la_ce, el):
+        E_pot_c_el = 0.0
+
+        for i in range(self.nquadrature):
+            # extract reference state variables
+            qpi = self.qp[el, i]
+            qwi = self.qw[el, i]
+            Ji = self.J[el, i]
+            B_Gamma0 = self.B_Gamma0[el, i]
+            B_Kappa0 = self.B_Kappa0[el, i]
+
+            # evaluate required quantities
+            _, _, B_Gamma_bar, B_Kappa_bar = self._eval(
+                qe, qpi, N=self.N_r[el, i], N_xi=self.N_r_xi[el, i]
+            )
+
+            eps_Ga = B_Gamma_bar / Ji - B_Gamma0
+            eps_Ka = B_Kappa_bar / Ji - B_Kappa0
+
+            la_c = np.zeros(self.mesh_la_c.dim_q, dtype=la_ce.dtype)
+            # interpolation of internal forces and moments
+            for node in range(self.nnodes_element_la_c):
+                la_c_node = la_ce[self.nodalDOF_element_la_c[node]]
+                la_c += self.N_la_c[el, i, node] * la_c_node
+
+            B_n = np.zeros(3, dtype=la_ce.dtype)
+            B_m = np.zeros(3, dtype=la_ce.dtype)
+            B_n[self.mixed_n] = la_c[: self.nmixed_n]
+            B_m[self.mixed_m] = la_c[self.nmixed_n :]
+
+            # evaluate complementary strain energy function
+            E_pot_c_qp = (
+                eps_Ga @ B_n
+                + eps_Ka @ B_m
+                - self.material_model.complementary_potential(B_n, B_m)
+            )
+            E_pot_c_el += E_pot_c_qp * Ji * qwi
+
+        return E_pot_c_el
+
     def E_comp_pot(self, t, la_c):
         E_comp_pot = 0.0
         for el in range(self.nelement):
@@ -1320,7 +1368,7 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
             qe = q[self.elDOF[el]]
             elDOF_la_c = self.elDOF_la_c[el]
             la_c[elDOF_la_c] = -self.__c_la_c_el_inv[el] @ self.c_el(
-                qe, np.zeros(self.nla_c_element)
+                qe, np.zeros(self.nla_c_element), el
             )
         return la_c
 

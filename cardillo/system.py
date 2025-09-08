@@ -11,7 +11,7 @@ from cardillo.visualization import Export
 
 properties = []
 
-properties.extend(["E_kin", "E_pot"])
+properties.extend(["E_kin", "E_pot", "E_comp_pot", "E_pot_c"])
 
 properties.extend(["M", "Mu_q"])
 
@@ -377,6 +377,18 @@ class System:
         for contr in self.__E_pot_contr:
             E_pot += contr.E_pot(t, q[contr.qDOF])
         return E_pot
+
+    def E_pot_c(self, t, q, la_c):
+        E_pot_c = 0
+        for contr in self.__E_pot_c_contr:
+            E_pot_c += contr.E_pot_c(t, q[contr.qDOF], la_c[contr.la_cDOF])
+        return E_pot_c
+
+    def E_comp_pot(self, t, la_c):
+        E_comp_pot = 0
+        for contr in self.__E_comp_pot_contr:
+            E_comp_pot += contr.E_comp_pot(t, la_c[contr.la_cDOF])
+        return E_comp_pot
 
     def E_kin(self, t, q, u):
         E_kin = 0
