@@ -245,6 +245,17 @@ class RigidBody:
         J_P_q[:, 3:, :] = np.einsum("ijk,jl->ilk", self.A_IB_q(t, q), -ax2skew(B_r_CP))
         return J_P_q
 
+    def J2_P(self, t, q, xi=None, B_r_CP=np.zeros(3, dtype=float)):
+        J2_P = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        A_IB = self.A_IB(t, q)
+        for i in range(3):
+            B_ei = A_IB[i]
+            J2_P[i, 3:, 3:] = (
+                np.outer(B_ei, B_r_CP) + np.outer(B_r_CP, B_ei)
+            ) / 2 - np.eye(3) * (B_r_CP @ B_ei)
+
+        return J2_P
+
     def kappa_P(self, t, q, u, xi=None, B_r_CP=np.zeros(3)):
         return self.A_IB(t, q) @ (cross3(u[3:], cross3(u[3:], B_r_CP)))
 

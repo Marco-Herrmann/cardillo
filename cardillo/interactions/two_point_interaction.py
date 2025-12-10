@@ -87,6 +87,9 @@ class TwoPointInteraction:
         self.v_P1_q = lambda t, q, u: self.subsystem1.v_P_q(
             t, q[: self._nq1], u[: self._nu1], self.xi1, self.B_r_CP1
         )
+        self.J2_P1 = lambda t, q: self.subsystem1.J2_P(
+            t, q[: self._nq1], self.xi1, self.B_r_CP1
+        )
 
         self.r_OP2 = lambda t, q: self.subsystem2.r_OP(
             t, q[self._nq1 :], self.xi2, self.B_r_CP2
@@ -105,6 +108,9 @@ class TwoPointInteraction:
         )
         self.v_P2_q = lambda t, q, u: self.subsystem2.v_P_q(
             t, q[self._nq1 :], u[self._nu1 :], self.xi2, self.B_r_CP2
+        )
+        self.J2_P2 = lambda t, q: self.subsystem2.J2_P(
+            t, q[self._nq1 :], self.xi2, self.B_r_CP2
         )
 
         l0 = norm(self.r_OP2(self.t0, self.q0) - self.r_OP1(self.t0, self.q0))
@@ -189,6 +195,25 @@ class TwoPointInteraction:
         W_q[nu1:, nq1:] = J_P2.T @ n_q2 + np.einsum("i,ijk->jk", n, J_P2_q)
         return W_q
 
+    def W2_l(self, t, q):
+        nu1 = self._nu1
+        l = self.l(t, q)
+        n = self._n(t, q)
+        P = (np.eye(3) - np.outer(n, n)) / l
+
+        J_P1 = self.J_P1(t, q)
+        J_P2 = self.J_P2(t, q)
+
+        J2_P1 = self.J2_P1(t, q)
+        J2_P2 = self.J2_P2(t, q)
+
+        W2 = np.zeros((self._nu, self._nu))
+        W2[:nu1, :nu1] = J_P1.T @ P @ J_P1 + np.einsum("i, ijk -> ij", -n, J2_P1)
+        W2[:nu1, nu1:] = -J_P1.T @ P @ J_P2
+        W2[nu1:, :nu1] = J_P2.T @ P @ J_P1
+        W2[nu1:, nu1:] = J_P2.T @ P @ J_P2 + np.einsum("i, ijk -> ij", n, J2_P2)
+        return W2
+
     def export(self, sol_i, **kwargs):
         points = [
             self.r_OP1(sol_i.t, sol_i.q[self.qDOF]),
@@ -196,4 +221,21 @@ class TwoPointInteraction:
         ]
         cells = [(VTK_LINE, [0, 1])]
 
-        return points, cells, None, None
+        point_data = {}
+
+        if hasattr(sol_i, "omegas") and hasattr(sol_i, "modes_dq"):
+            # export modes
+            omegas = sol_i.omegas
+            modes_dq = sol_i.modes_dq
+            fmt = len(str(len(omegas)))
+
+            r_OP1_q = self.r_OP1_q(sol_i.t, sol_i.q[self.qDOF])
+            r_OP2_q = self.r_OP2_q(sol_i.t, sol_i.q[self.qDOF])
+            for i, mode_dq in enumerate(modes_dq.T):
+                dq = mode_dq[self.qDOF]
+                dr_OP1 = r_OP1_q @ dq[: self._nq1]
+                dr_OP2 = r_OP2_q @ dq[self._nq1 :]
+                mode_str = f"mode {i:{fmt}d}, omega {omegas[i]:+.2f}"
+                point_data[mode_str] = [dr_OP1, dr_OP2]
+
+        return points, cells, point_data, None

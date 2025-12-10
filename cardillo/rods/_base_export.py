@@ -564,10 +564,6 @@ class RodExportBase(ABC):
                 np.array([r_OPs]), np.array([d2s]), np.array([d3s]), vtk_lagrange
             )
 
-            # get some values for shortcuts
-            ppl = self.cross_section.vtk_points_per_layer
-            p_zeta = self._export_dict["p_zeta"]
-
             ##################
             # compute points #
             ##################

@@ -62,6 +62,14 @@ class ScalarForceLawBase(ABC):
             self.subsystem.W_l(t, q).reshape(self.subsystem._nu), self.la_c_u(t, q, u)
         )
 
+    def _KN_h(self, t, q, u):
+        print(f"ScalarForceLaw: KN_h Not fully implemented!")
+        la_c_l = self._la_c_l(t, self.l(t, q), self.l_dot(t, q, u))
+        W_l = self.subsystem.W_l(t, q).reshape(self.subsystem._nu)
+        W2_l = self.subsystem.W2_l(t, q).reshape(self.subsystem._nu, self.subsystem._nu)
+        K = self.la_c(t, q, u) * W2_l + np.outer(W_l, la_c_l * W_l)
+        return K, np.zeros((self.subsystem._nu, self.subsystem._nu))
+
     def export(self, sol_i, **kwargs):
         return self.subsystem.export(sol_i, **kwargs)
 
@@ -72,6 +80,7 @@ class ScalarForceLaw(ScalarForceLawBase):
         self.h = self._h
         self.h_q = self._h_q
         self.h_u = self._h_u
+        self.KN_h = self._KN_h
 
 
 class ScalarForceLawComplianceForm(ScalarForceLawBase):

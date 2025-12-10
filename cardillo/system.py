@@ -336,6 +336,19 @@ class System:
             self.la_F0,
         ) = consistent_initial_conditions(self, *args, **kwargs)
 
+        self.sol0 = Solution(
+            self,
+            [self.t0],
+            [self.q0],
+            [self.u0],
+            [self.u_dot0],
+            [self.la_g0],
+            [self.la_gamma0],
+            [self.la_c0],
+            [self.la_N0],
+            [self.la_F0],
+        )
+
     def assembler_callback(self):
         for contr in self.__assembler_callback_contr:
             contr.assembler_callback()
@@ -420,6 +433,15 @@ class System:
         for contr in self.__h_u_contr:
             coo[contr.uDOF, contr.uDOF] = contr.h_u(t, q[contr.qDOF], u[contr.uDOF])
         return coo.asformat(format)
+
+    def KN_h(self, t, q, u, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__h_q_contr:
+            K, N = contr.KN_h(t, q[contr.qDOF], u[contr.uDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
 
     ############
     # compliance
@@ -838,658 +860,52 @@ class System:
     #########################
     # general linearization #
     #########################
-    def D_bar(self, t, q, u):
-        return -self.h_u(t, q, u)
-
-    def K_bar(self, t, q, u, u_dot, la_g, la_gamma, la_c):
-        part_mass = self.Mu_q(t, q, u_dot)
-        part_h = -self.h_q(t, q, u)
-        part_g = -self.Wla_g_q(t, q, la_g)
-        part_gamma = -self.Wla_gamma_q(t, q, la_gamma)
-        part_c = -self.Wla_c_q(t, q, la_c)
-        return part_mass + part_h + part_g + part_gamma + part_c
-
-    #################################################
-    # projection of constraint of non-holonimc type #
-    #################################################
-    def G(self, t, q, u, format="coo"):
-        coo = CooMatrix((self.nu, self.nu))
-        for contr in self.__q_dot_u_contr:
-            Gi = contr.G(t, q[contr.qDOF], u[contr.uDOF])
-            coo[contr.uDOF, contr.uDOF] = Gi
-        return coo.asformat(format)
-
-    def G_dot(self, t, q, u, u_dot, format="coo"):
-        coo = CooMatrix((self.nu, self.nu))
-        for contr in self.__q_dot_u_contr:
-            Gi_dot = contr.G_dot(t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF])
-            coo[contr.uDOF, contr.uDOF] = Gi_dot
-        return coo.asformat(format)
-
-    def linearize(
-        self, t, q, u, static_eq=False, constraints=None, debug=False, ccic=True
-    ):
-        # ccic: compute_consistent_initial_conditions
-        if ccic:
-            # save state
-            t0_ = self.t0
-            q0_ = self.q0
-            u0_ = self.u0
-
-            # set stuff for consistent initial condition
-            self.t0 = t
-            self.q0 = q
-            self.u0 = u
-
-            # get consistent initial conditions
-            t, q, u, q_dot, u_dot, la_g, la_gamma, la_c, la_N, la_F = (
-                consistent_initial_conditions(self)
-            )
-
-            # use old initial state again
-            self.t0 = t0_
-            self.q0 = q0_
-            self.u0 = u0_
-
-        else:
-            # TODO: may get them from kwargs
-            u_dot = np.zeros([self.nu], dtype=float)
-            la_g = np.zeros([self.nla_g], dtype=float)
-            la_gamma = np.zeros([self.nla_gamma], dtype=float)
-            la_c = np.zeros([self.nla_c], dtype=float)
-
-        # continue with linearization
-        M0 = self.M(t, q)
-        D0_bar = self.D_bar(t, q, u)
-        K0_bar = self.K_bar(t, q, u, u_dot, la_g, la_gamma, la_c)
-
-        # project out the contraints g_S
-        if static_eq:
-            G0 = CooMatrix((self.nu, self.nu)).asformat("coo")
-            G0_dot = CooMatrix((self.nu, self.nu)).asformat("coo")
-            assert constraints in [None, "NullSpace", "ComplianceProjection"]
-        else:
-            G0 = self.G(t, q, u)
-            G0_dot = self.G_dot(t, q, u, u_dot)
-            # TODO: I still don't know how to handle constraints for a general solution
-            assert constraints in [None, "NullSpace", "ComplianceProjection"]
-        B0 = self.q_dot_u(t, q)
-
-        # handle compliance form
-        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
-        c_la_c = self.c_la_c("csc")
-        if c_la_c.shape[0] > 0:
-            K0_c = (
-                self.W_c(t, q)
-                @ scipy.sparse.linalg.inv(c_la_c)
-                @ self.c_q(t, q, u, la_c)
-            )
-        else:
-            K0_c = CooMatrix((self.nu, self.nq)).asformat("csr")
-
-        D0 = D0_bar + M0 @ G0
-        K0 = (K0_bar + K0_c) @ B0 + D0_bar @ G0 + M0 @ G0_dot
-
-        # # from a M-D-G-K-N system
-        # M = M0
-        # D = 0.5 * (D0 + D0.T)
-        # G = 0.5 * (D0 - D0.T)
-        # K = 0.5 * (K0 + K0.T)
-        # N = 0.5 * (K0 - K0.T)
-
-        if (constraints is None) or (self.nla_g + self.nla_gamma == 0):
-            return (M0, D0, K0), B0, None
-
-        W_g = self.W_g(t, q)
-        W_gamma = self.W_gamma(t, q)
-        W = scipy.sparse.hstack([W_g, W_gamma])
-        g_q = self.g_q(t, q)
-        if constraints == "NullSpace":
-            # project out the contraints g
-            # as W_g is sparse, maybe something from here could be helpfull to get a sparse matrix
-            # https://stackoverflow.com/questions/33410146/how-can-i-compute-the-null-space-kernel-x-m-x-0-of-a-sparse-matrix-in-pytho
-
-            Bg_proj_dense = scipy.linalg.null_space(W.T.toarray())
-            Bg_proj = scipy.sparse.csr_matrix(Bg_proj_dense)
-
-            las_p = None
-
-            if debug:
-                print(f"W_g.T @ Nullspace: {scipy.sparse.linalg.norm(W.T @ Bg_proj)}")
-
-        elif constraints == "ComplianceProjection":
-            W_gamma = self.W_gamma(t, q)
-            # TODO: what K0_g matrix to use?
-            # TODO: do we even have to use M0?
-            K0_g = W_g @ W_g.T + W_gamma @ W_gamma.T
-
-            # TODO: maybe choose different 'stiffnesses' for g and gamma
-            K_compliant = K0_g * 1e9
-
-            M_arr = M0.toarray()
-            K_arr = K_compliant.toarray()
-            las_g, Vs_g = [
-                np.real_if_close(i) for i in scipy.linalg.eigh(-K_arr, M_arr)
-            ]
-
-            sort_idx = np.argsort(-las_g)
-            las_g = las_g[sort_idx]
-            Vs_g = Vs_g[:, sort_idx]
-
-            # modify projecting matrices
-            M_proj = np.eye(self.nu, dtype=float)
-            # M_proj = M0.toarray()
-            K_proj = np.diag(np.arange(self.nu, dtype=float) + 1)
-            # TODO: We can use a "negative stiffness" in K_proj. So that we can filter positive and negative eigenvalues
-            # K_proj = np.zeros((self.nu, self.nu))
-            l_p, V_p = [
-                np.real_if_close(i) for i in scipy.linalg.eigh(-K_proj - K_arr, M_proj)
-            ]
-
-            sort_idx = np.argsort(-l_p)
-            l_p = l_p[sort_idx]
-            V_p = V_p[:, sort_idx]
-
-            if debug:
-                np.set_printoptions(linewidth=300)
-                print(l_p)
-                print(V_p[:, 0])  # / V_p[0, 0])
-
-            las_g = l_p
-            Vs_g = V_p
-
-            n_min = self.nu - self.nla_g - self.nla_gamma
-            las_p = l_p[:n_min]
-            # debug prints
-            if False:
-                for i in range(n_min):
-                    if not np.isclose(las_g[i], 0.0):
-                        print(f"{i = }, la: {las_g[i]:.3e} (should be close to 0)")
-
-                    off = np.linalg.norm(W_g.T @ Vs_g[:, i])
-                    if not np.isclose(off, 0.0):
-                        print(f"{i = }, g_violation: {off:.3e} (should be close to 0)")
-
-                for i in range(n_min, self.nu):
-                    if np.isclose(las_g[i], 0.0):
-                        print(f"{i = }, la: {las_g[i]:.3e} (should not be close to 0)")
-
-                    off = np.linalg.norm(W_g.T @ Vs_g[:, i])
-                    if np.isclose(off, 0.0):
-                        print(
-                            f"{i = }, g_violation: {off:.3e} (should not be close to 0)"
-                        )
-
-            if debug:
-                # Nullspace violation of W
-                Nv_ad = W.T @ Vs_g[:, n_min - 1]
-                Nv_nad = W.T @ Vs_g[:, n_min]
-                r_la = 0 if n_min == 0 else las_g[n_min - 1] / las_g[n_min]
-                r_Nv = (
-                    0 if n_min == 0 else np.linalg.norm(Nv_ad) / np.linalg.norm(Nv_nad)
-                )
-                print(f"Projection ratio la: {r_la:.3e}")
-                print(f"Projection ratio NullSpace_violation (W): {r_Nv:.3e}")
-
-            Bg_proj = scipy.sparse.csr_matrix(Vs_g[:, :n_min])
-
-        # compute reduced matrices
-        Mg = Bg_proj.T @ M0 @ Bg_proj
-        Dg = Bg_proj.T @ D0 @ Bg_proj
-        Kg = Bg_proj.T @ K0 @ Bg_proj
-        Bg = B0 @ Bg_proj
-
-        # check if the reduced directions fulfill the constraints
-        for i, q_dir in enumerate(Bg.T):
-            off = np.linalg.norm(g_q @ q_dir.toarray())
-            if not np.isclose(off, 0.0):
-                print(f"{i = }, {off}")
-
-        return (Mg, Dg, Kg), Bg, las_p
-
-    def new_eigenmodes(self, solution, idx):
-        t = solution.t[idx]
-        q = solution.q[idx]
-        la_c = solution.la_c[idx]
-        la_g = solution.la_g[idx]
-
-        u = np.zeros([self.nu], dtype=float)
-        u_dot = np.zeros([self.nu], dtype=float)
-        la_gamma = np.zeros([self.nla_gamma], dtype=float)
-
-        # naming convention of generalized vectors:
-        # nonlinear vectors:
-        #   q
-        #   u
-        #
-        # after projection of g_S:
-        #   dq = B0 @ dz
-        #   du = dz_dot
-        #
-        # after projection of all bilateral constraints
-        #   dq = B0 @ T_hat @ dz_hat
-        #   dz = T_hat @ dz_hat
-        #        T_hat = T_bil @ T_int
-
-        # naming convention of matrices:
-        # 1st step, straight forward linearization:
-        #   M0 @ du_dot + D0_bar @ du + K0_bar @ dq = Wc0 @ dla_c + Wg0 @ dla_g
-        #   dq_dot = B0 @ du + H0 @ dq
-        #   Kc^-1 @ dla_c + lc_q @ dq = 0
-        #
-        # 2nd step, projection of g_S and solving of compliance:
-        #   M0 @ dz_ddot + D0 @ dz_dot + K0 @ dz = Wg0 @ dla_g
-        #   D0 = D0_bar + ... dynamic
-        #   K0 = (K0_bar + Wc0 @ Kc @ lc_q) @ B0 + ... dynamic
-        #
-        # 3rd step, projection of g
-        #   M_hat @ dz_hat_ddot + D_hat @ dz_hat_dot + K_hat @ dz_hat = 0
-        #       M_hat = T_hat.T @ M0 @ T_hat
-        #       D_hat = T_hat.T @ D0 @ T_hat
-        #       K_hat = T_hat.T @ K0 @ T_hat
-        #   B_hat = B0 @ T_hat, T_hat = T_int @ T_bil
-
-        ###############################################
-        # 1st: compute straight forward linearization #
-        ###############################################
-        # and check on the run for static equilibrium
-        # force equation
-        M0 = self.M(t, q)
-        # D0_bar =
-        K0_bar = self.K_bar(t, q, u, u_dot, la_g, la_gamma, la_c)
-        h0 = self.h(t, q, u)
-
-        # kinematics equation
-        B0 = self.q_dot_u(t, q, format="csc")
-        # H0 =
-
-        # compliance
-        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
-        Wc0 = self.W_c(t, q, format="csc")
-        Kc_inv = self.c_la_c("csc")
-        c0 = self.c(t, q, u, la_c)
-        c_q0 = self.c_q(t, q, u, la_c)
-        if self.nla_c == 0:
-            K0_c_bar = CooMatrix((self.nu, self.nq)).asformat("csr")
-        elif self.nla_c == 1:
-            K0_c_bar = Wc0 @ c_q0 / Kc_inv[0, 0]
-        else:
-            K0_c_bar = Wc0 @ scipy.sparse.linalg.inv(Kc_inv) @ c_q0
-
-        # bilateral constraints, position level
-        Wg0 = self.W_g(t, q, format="csr")
-        g0 = self.g(t, q)
-        g_q0 = self.g_q(t, q, format="csc")
-
-        # bilateral constraints, velocity level
-        # Wgamma0 =
-        # gamma0 =
-
-        # check for static equilibrium
-        f0 = h0 + Wc0 @ la_c + Wg0 @ la_g
-        assert np.isclose(np.linalg.norm(f0), 0.0), "No static equilibrium point!"
-        assert np.isclose(np.linalg.norm(c0), 0.0), "No static equilibrium point!"
-        assert np.isclose(np.linalg.norm(g0), 0.0), "No static equilibrium point!"
-        # gamma0
-
-        #############################################
-        # 2nd: project out g_S and solve compliance #
-        #############################################
-        # D0 =
-        K0 = (K0_bar + K0_c_bar) @ B0
-
-        ##########################################
-        # 3rd: project out bilateral constraints #
-        ##########################################
-        # get list of all contributions with bilateral constraints
-        # TODO: add constraints on velocity level
-
-        # check if contribution has own DOFs for q and u
-        internal_contr, non_internal_contr = [], []
-        for contr in self.__g_contr:
-            # TODO: maybe just check if there is a "T" attribute
-            if hasattr(contr, "nq") and hasattr(contr, "nu"):
-                internal_contr.append(contr)
-            else:
-                non_internal_contr.append(contr)
-
-        ########################################
-        # A: constraints inside a contribution #
-        ########################################
-        nla_g_intern = int(np.sum([c.nla_g for c in internal_contr]))
-        T_int, col = CooMatrix((self.nu, self.nu - nla_g_intern)), 0
-        removed_laDOFs, changing_uDOFs = [], []
-        for contr in internal_contr:
-            if hasattr(contr, "T"):
-                # if there is an implementation
-                T = contr.T(t, q, format="csc")
-            else:
-                # project numerically using W_g
-                W_g = contr.W_g(t, q[contr.qDOF])
-                if not isinstance(W_g, np.ndarray):
-                    W_g = W_g.toarray()
-                W_g_contrT = W_g.T
-                T = scipy.sparse.csc_array(scipy.linalg.null_space(W_g_contrT))
-
-            ni_contr = contr.nu - contr.nla_g
-            T_int[contr.uDOF, col : col + ni_contr] = T
-            col += ni_contr
-
-            removed_laDOFs.extend(contr.la_gDOF)
-            changing_uDOFs.extend(contr.uDOF)
-
-        # double check if no wrong DOF was touched
-        removed_laDOFs = np.array(removed_laDOFs)
-        changing_uDOFs = np.array(changing_uDOFs)
-        assert len(removed_laDOFs) == len(
-            np.unique(removed_laDOFs)
-        ), "Some contributions were working on the same laDOF."
-        assert len(changing_uDOFs) == len(
-            np.unique(changing_uDOFs)
-        ), "Some contributions were working on the same uDOF."
-
-        # these are uDOFs by rigid bodies, rods without constraints, ...
-        unchanging_uDOFs = np.setdiff1d(np.arange(self.nu), changing_uDOFs)
-        T_int[unchanging_uDOFs, unchanging_uDOFs] = scipy.sparse.eye_array(
-            len(unchanging_uDOFs), dtype=float
-        )
-        T_int = T_int.asformat("csc")
-
-        ######################################
-        # B: remaining bilateral constraints #
-        ######################################
-        # try straight forward Nullspace matrix on W_g.T
-        non_internal_laDOFs = np.setdiff1d(np.arange(self.nla_g), removed_laDOFs)
-        W_g_non_internalT = Wg0[:, non_internal_laDOFs].T.toarray()
-        T_bil = scipy.sparse.csc_array(
-            scipy.linalg.null_space(W_g_non_internalT @ T_int)
-        )
-
-        if True:
-            # print error to the original set
-            # equation of motion
-            zero0 = T_bil.T @ T_int.T @ Wg0
-            e0 = scipy.sparse.linalg.norm(zero0)
-
-            # constraint equation
-            zero1 = g_q0 @ B0 @ T_int @ T_bil
-            e1 = scipy.sparse.linalg.norm(zero1)
-
-            if e0 + e1 > 1e-9:
-                print(f"Constraint projection errors:")
-                print(f"norm(T_bil.T @ T_int.T @ W_g) : {e0}")
-                print(f"norm(g_q @ B @ T_int @ T_bil) : {e1}")
-                print()
-
-        if False:
-            # remove the other constrained DOFs
-            uDOFs = np.setdiff1d(np.arange(self.nu), remove_uDOFs)
-            B_red = B0[:, uDOFs]
-
-            # TODO: get this together with remove_uDOFs
-            d_uDOFs = dependent_uDOFs
-            i_uDOFs = np.setdiff1d(np.arange(self.nu), d_uDOFs)
-            assert self.nla_g == len(d_uDOFs)
-            ni = len(i_uDOFs)
-
-            # try it with W_g
-            Wg0 = self.W_g(t, q, format="csr")
-            W_gi = Wg0[i_uDOFs, :]
-            W_gd = Wg0[d_uDOFs, :]
-
-            T_W_g = CooMatrix((self.nu, ni))
-            T_W_g[i_uDOFs, :] = scipy.sparse.eye_array(ni, dtype=float)
-            T_W_g[d_uDOFs, :] = -scipy.sparse.linalg.inv(W_gd.T) @ W_gi.T
-            T_W_g = T_W_g.asformat("csc")
-
-            # try it with g_q @ B
-            g_q0 = self.g_q(t, q, format="csc")
-            Bi = B0[:, i_uDOFs]
-            Bd = B0[:, d_uDOFs]
-            T_g = CooMatrix((self.nu, ni))
-            T_g[i_uDOFs, :] = scipy.sparse.eye_array(ni, dtype=float)
-            T_g[d_uDOFs, :] = -scipy.sparse.linalg.inv(g_q0 @ Bd) @ g_q0 @ Bi
-            T_g = T_g.asformat("csc")
-
-            # try straight forward Nullspace matrix on W_g.T
-            T_N_W_g = scipy.sparse.csc_array(scipy.linalg.null_space(Wg0.toarray().T))
-
-            # try straight forward Nullspace matrix on g_q @ B
-            T_N_g = scipy.sparse.csc_array(scipy.linalg.null_space(g_q0 @ B0.toarray()))
-
-            print(f"{self.nq = }, {self.nu = }, {self.nla_g = }")
-
-            # check if T is the nullspace, such that T.T @ W_g = 0 and g_q @ T @ B = 0
-
-            T_matrices = [T_W_g, T_g, T_N_W_g, T_N_g]
-            T_names = ["inv W_g", "inv g_q", "N W_g", "N g_q"]
-            for T, name in zip(T_matrices, T_names):
-                # equation of motion
-                zero0 = T.T @ Wg0
-
-                # constraint equation
-                zero1 = g_q0 @ B0 @ T
-
-                print(f"\n   {name}")
-                print(f"norm(T.T @ W_g)   : {scipy.sparse.linalg.norm(zero0)}")
-                print(f"norm(g_q @ B @ T) : {scipy.sparse.linalg.norm(zero1)}")
-
-        # compose total projection matrices
-        # du = T @ dz
-        T_hat = T_int @ T_bil
-
-        # manipulate matrices
-        M_hat = T_hat.T @ M0 @ T_hat
-        # D_hat =
-        K_hat = T_hat.T @ K0 @ T_hat
-
-        ###########################
-        # 4th: compute eigenmodes #
-        ###########################
-        # compute squared eigenvalues and make them real
-        res = list(scipy.linalg.eig(-K_hat.toarray(), M_hat.toarray()))
-        for i, v in enumerate(res):
-            imag_norm = np.linalg.norm(np.imag(v))
-            total_norm = np.linalg.norm(v)
-            if total_norm > 0.0:
-                ratio = imag_norm / total_norm
-                if ratio >= 1e-2:
-                    print(
-                        f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
-                    )
-            res[i] = np.real(v)
-
-        las_ud_squared, Vs_ud = res
-
-        # sort eigenvalues such that rigid body modes are first
-        sort_idx = np.argsort(-las_ud_squared)
-        las_ud_squared = las_ud_squared[sort_idx]
-        Vs_ud = Vs_ud[:, sort_idx]
-
-        # compute omegas
-        omegas = np.zeros([len(las_ud_squared)])
-        modes_dq = B0 @ T_hat @ Vs_ud
-        for i, lai in enumerate(las_ud_squared):
-            if np.isclose(0.0, lai):
-                omegas[i] = 0.0
-            elif lai > 0:
-                if lai > 1e-5:
-                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
-                    warnings.warn(msg)
-                omegas[i] = np.sqrt(lai)
-            else:
-                omegas[i] = np.sqrt(-lai)
-
-        # compose solution object with omegas and modes
-        sol = Solution(
-            self,
-            np.array([t]),
-            np.array([q]),
-            omegas=np.array([omegas]),
-            modes_dq=np.array([modes_dq]),
-        )
-
-        return omegas, modes_dq, sol
-
-    def eigenmodes(self, t, q, constraints="ComplianceProjection", ccic=True):
-        DeprecationWarning("Old function, use new_eigenvalues instead!")
-        u = np.zeros(self.nu)
-        MDK, B, _ = self.linearize(t, q, u, True, constraints, ccic=ccic)
-
-        # get eigenvalues and eigenvectors of the undamped system
-        M = MDK[0]
-        D = 0.5 * (MDK[1] + MDK[1].T)
-        G = 0.5 * (MDK[1] - MDK[1].T)
-        K = 0.5 * (MDK[2] + MDK[2].T)
-        N = 0.5 * (MDK[2] - MDK[2].T)
-
-        d = M.shape[0]
-        atol = (
-            np.finfo(float).eps
-            * d
-            * np.max([1, scipy.sparse.linalg.norm(K) / scipy.sparse.linalg.norm(M)])
-        )
-        norm_M = scipy.sparse.linalg.norm(M - M.T)
-        assert np.isclose(
-            norm_M, 0.0, atol=atol * scipy.sparse.linalg.norm(M)
-        ), f"Mass matrix is not symmetric! {norm_M}"
-
-        norm_N = scipy.sparse.linalg.norm(N)
-        if not np.isclose(norm_N, 0.0, atol=atol):
-            warnings.warn(f"There are circular forces that will be neglected! {norm_N}")
-
-        # compute eigenvalues and eigenvectors
-        las_ud_squared, Vs_ud = [
-            np.real_if_close(i) for i in scipy.linalg.eigh(-K.toarray(), M.toarray())
+    def KN_c(self, t, q, la_c, format="coo"):
+        assert self.nla_c == 0
+        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
+            (self.nu, self.nu)
+        ).asformat(format)
+
+    def KN_tau(self, t, q, u, format="coo"): ...
+    def KN_g(self, t, q, la_g, format="coo"):
+        assert self.nla_g == 0
+        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
+            (self.nu, self.nu)
+        ).asformat(format)
+
+    def KN_gamma(self, t, q, la_gamma, format="coo"): ...
+    def KN_N(self, t, q, la_N, format="coo"):
+        assert self.nla_N == 0
+        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
+            (self.nu, self.nu)
+        ).asformat(format)
+
+    def KN_F(self, t, q, la_F, format="coo"): ...
+
+    def DG_h(self, t, q, u, format="coo"): ...
+    def DG_tau(self, t, q, u, format="coo"): ...
+
+    def KN(self, sol, format="coo"):
+        KNs = [
+            self.KN_h(sol.t, sol.q, sol.u, format=format),
+            self.KN_c(sol.t, sol.q, sol.la_c, format=format),
+            self.KN_tau(sol.t, sol.q, sol.u, format=format),
+            self.KN_g(sol.t, sol.q, sol.la_g, format=format),
+            self.KN_gamma(sol.t, sol.q, sol.la_gamma, format=format),
+            self.KN_N(sol.t, sol.q, sol.la_N, format=format),
+            self.KN_F(sol.t, sol.q, sol.la_F, format=format),
         ]
 
-        # TODO: check for proportional damped system, i.e.,
-        # Hint:
-        # turns out, that we can only visualize eigenmodes of undamped systems or proportional damped systems, i.e., if V diagonalizes M_inv@K (V.T @ M_inv @ K @ V is diagonal) V.T @ M_inv@D @ V is also diagonal
-        # otherwise there exists no alpha in C, such that alpha * dq is real, i.e., the eigenmode is not in sync.
+        K = sum([KNi[0] for KNi in KNs])
+        N = sum([KNi[1] for KNi in KNs])
+        return K, N
 
-        # sort eigenvalues such that rigid body modes are first
-        sort_idx = np.argsort(-las_ud_squared)
-        las_ud_squared = las_ud_squared[sort_idx]
-        Vs_ud = Vs_ud[:, sort_idx]
+    def DG(self, sol, format="coo"):
+        DGs = [
+            self.DG_h(sol.t, sol.q, sol.u, format=format),
+            self.DG_tau(sol.t, sol.q, sol.u, format=format),
+        ]
 
-        # compute omegas
-        omegas = np.zeros([len(las_ud_squared)])
-        modes_dq = B @ Vs_ud
-        for i, lai in enumerate(las_ud_squared):
-            if np.isclose(0.0, lai, atol=atol):
-                omegas[i] = 0.0
-            elif lai > 0:
-                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
-                warnings.warn(msg)
-                omegas[i] = np.sqrt(lai)
-            else:
-                omegas[i] = np.sqrt(-lai)
-
-        # compose solution object with omegas and modes
-        sol = Solution(
-            self,
-            np.array([t]),
-            np.array([q]),
-            omegas=np.array([omegas]),
-            modes_dq=np.array([modes_dq]),
-        )
-
-        return omegas, modes_dq, sol
-
-    def fundamental_perturbation_matrix(
-        self, sol, constraints="ComplianceProjection", debug=False
-    ):
-        nt = len(sol.t)
-        nz = self.nu - self.nla_g - self.nla_gamma
-
-        las_p = np.zeros([nt, nz])
-        Mii = np.zeros([nt, nz, nz])
-        Minvii = np.zeros([nt, nz, nz])
-        Dii = np.zeros([nt, nz, nz])
-        Kii = np.zeros([nt, nz, nz])
-
-        Phi = np.eye(2 * nz, dtype=float)
-        dt = sol.t[1] - sol.t[0]
-
-        B_last = None
-        for i in range(nt):
-            ti = sol.t[i]
-            qi = sol.q[i]
-            ui = sol.u[i]
-            MDK, B, l_p = self.linearize(ti, qi, ui, True, constraints)
-
-            las_p[i] = l_p
-
-            nz = B.shape[1]
-            p = np.ones(nz, dtype=float)
-            if B_last is not None:
-                # multiply directions with -1 if necessary
-                for j in range(nz):
-                    if B[:, [j]].T @ B_last[:, [j]] < 0:
-                        B[:, [j]] *= -1.0
-                        p[j] = -1.0
-
-            if constraints == "ComplianceProjection":
-                B_last = B
-
-            # apply multiplications with -1 to system matrices
-            P = scipy.sparse.diags(p)
-            M = P.T @ MDK[0] @ P
-            D = P.T @ MDK[1] @ P
-            K = P.T @ MDK[2] @ P
-
-            Mii[i] = M.toarray()
-            Minvii[i] = np.linalg.inv(M.toarray())
-            Dii[i] = D.toarray()
-            Kii[i] = K.toarray()
-
-            # midpoint rule
-            MinvK = np.linalg.solve(M.toarray(), K.toarray())
-            MinvD = np.linalg.solve(M.toarray(), D.toarray())
-            A = np.block([[np.zeros((nz, nz)), np.eye(nz)], [-MinvK, -MinvD]])
-            Phi += dt * A @ Phi * (0.5 if i in [0, nt - 1] else 1)
-
-        import matplotlib.pyplot as plt
-
-        t = sol.t
-        fig, ax = plt.subplots()
-        fig.suptitle("These values should be distinguishable apart!")
-        ax.plot(t, las_p)
-
-        if debug:
-            fig, ax_M = plt.subplots(3, 3)
-            fig, ax_Mi = plt.subplots(3, 3)
-            fig, ax_D = plt.subplots(3, 3)
-            fig, ax_K = plt.subplots(3, 3)
-            for i in range(nz):
-                for j in range(nz):
-                    ax_M[i, j].plot(t, Mii[:, i, j])
-                    ax_Mi[i, j].plot(t, Minvii[:, i, j])
-                    ax_D[i, j].plot(t, Dii[:, i, j])
-                    ax_K[i, j].plot(t, Kii[:, i, j])
-
-            plt.show()
-
-        return Phi
-
-    def eigenvalues(self, t, q, u):
-        MDK, B, _ = self.linearize(t, q, u, static_eq=False)
-        M0 = MDK[0]
-        D0 = MDK[1]
-        K0 = MDK[2]
-
-        A_hat = CooMatrix((2 * self.nu, 2 * self.nu))
-        A_hat[: self.nu, : self.nu] = -K0
-        A_hat[self.nu :, self.nu :] = M0
-
-        B_hat = CooMatrix((2 * self.nu, 2 * self.nu))
-        B_hat[: self.nu, : self.nu] = D0
-        B_hat[: self.nu, self.nu :] = M0
-        B_hat[self.nu :, : self.nu] = M0
-
-        # determine eigenvalues
-        A_hat = A_hat.toarray()
-        B_hat = B_hat.toarray()
-        las, Vs = [np.real_if_close(i) for i in scipy.linalg.eig(A_hat, B_hat)]
-        return las, Vs
+        D = sum([DGi[0] for DGi in DGs])
+        G = sum([DGi[1] for DGi in DGs])
+        return D, G

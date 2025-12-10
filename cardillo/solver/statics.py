@@ -1,10 +1,14 @@
 import numpy as np
+import warnings
 from scipy.sparse import lil_array, bmat
+from scipy.sparse.linalg import inv as sparse_inv
+from scipy.linalg import eigh
 from tqdm import tqdm
 
 from cardillo.math.fsolve import fsolve
 from cardillo.solver.solver_options import SolverOptions
 from cardillo.solver.solution import Solution
+from cardillo.utility.coo_matrix import CooMatrix
 
 
 class Newton:
@@ -491,3 +495,109 @@ class Riks:
             la_g=np.asarray(la_g),
             la_N=np.asarray(la_N),
         )
+
+
+class Eigenmodes:
+    def __init__(self, system, sol):
+        self.system = system
+        self.sol = sol
+
+        self.u = np.zeros(system.nu, dtype=float)
+
+        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
+        C = system.c_la_c("csc")
+        if system.nla_c > 1:
+            self.C_inv = sparse_inv(C)
+        else:
+            self.C_inv = CooMatrix((system.nla_c, system.nla_c)).asformat("csr")
+            if system.nla_c == 1:
+                self.C_inv[0, 0] = 1 / C[0, 0]
+
+    def solve(self, index=-1):
+        # TODO: check for static equilibrium
+
+        # extract values
+        t = self.sol.t[index]
+        q = self.sol.q[index]
+        la_c = self.sol.la_c[index] if self.sol.la_c is not None else None
+        la_g = self.sol.la_g[index] if self.sol.la_g is not None else None
+        la_N = self.sol.la_N[index] if self.sol.la_N is not None else None
+
+        ##################
+        # stiffness matrix
+        ##################
+        # Using h, c, g, N contributions for stiffness
+        K_h = self.system.KN_h(t, q, self.u)[0]
+        K_c = self.system.KN_c(t, q, la_c)[0]
+        K_g = self.system.KN_g(t, q, la_g)[0]
+        K_N = self.system.KN_N(t, q, la_N)[0]
+
+        # solve compliance equation
+        W_c = self.system.W_c(t, q, format="csc")
+        K0 = K_h + K_c + K_g + K_N + W_c @ self.C_inv @ W_c.T
+
+        #############
+        # mass matrix
+        #############
+        M0 = self.system.M(t, q)
+
+        #######################
+        # bilateral constraints
+        #######################
+        # TODO: first internal constraints
+        # TODO: second constraints between objects
+
+        B = self.system.q_dot_u(t, q, format="csc")
+        T = np.eye(self.system.nu)
+        K = K0
+        M = M0
+
+        ####################
+        # compute eigenmodes
+        ####################
+        # squared eigenvalues
+        res = list(eigh(-K.toarray(), M.toarray()))
+
+        # make everything real
+        for i, v in enumerate(res):
+            imag_norm = np.linalg.norm(np.imag(v))
+            total_norm = np.linalg.norm(v)
+            if total_norm > 0.0:
+                ratio = imag_norm / total_norm
+                if ratio >= 1e-2:
+                    print(
+                        f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
+                    )
+            res[i] = np.real(v)
+
+        las_ud_squared, Vs_ud = res
+
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_ud_squared)
+        las_ud_squared = las_ud_squared[sort_idx]
+        Vs_ud = Vs_ud[:, sort_idx]
+
+        # compute omegas
+        omegas = np.zeros([len(las_ud_squared)])
+        modes_dq = B @ T @ Vs_ud
+        for i, lai in enumerate(las_ud_squared):
+            if np.isclose(0.0, lai):
+                omegas[i] = 0.0
+            elif lai > 0:
+                if lai > 1e-5:
+                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
+                    warnings.warn(msg)
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+        # compose solution object with omegas and modes
+        sol = Solution(
+            self,
+            np.array([t]),
+            np.array([q]),
+            omegas=np.array([omegas]),
+            modes_dq=np.array([modes_dq]),
+        )
+
+        return omegas, modes_dq, sol
