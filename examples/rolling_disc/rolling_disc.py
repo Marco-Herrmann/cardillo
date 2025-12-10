@@ -10,7 +10,7 @@ from cardillo.discrete import RigidBody, Frame, Cylinder, Box
 from cardillo.math import axis_angle2quat, e1, e2, e3, cross3, norm, A_IB_basic
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.forces import Force
-from cardillo.solver import ScipyIVP, Rattle
+from cardillo.solver import ScipyIVP, Rattle, DualStormerVerlet
 
 
 class RollingCondition:
@@ -298,7 +298,8 @@ if __name__ == "__main__":
     # dt = 1.0e-2 / gamma_dot0
 
     # sol = ScipyIVP(system, t1, dt).solve()
-    sol = Rattle(system, t1, dt).solve()
+    # sol = Rattle(system, t1, dt).solve()
+    sol = DualStormerVerlet(system, t1, dt).solve()
 
     # read solution
     t = sol.t  # time
