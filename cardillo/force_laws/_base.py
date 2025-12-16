@@ -100,6 +100,8 @@ class ScalarForceLawComplianceForm(ScalarForceLawBase):
             self.c = self.__c
             self.c_q = self.__c_q
             self.c_u = self.__c_u
+            self.KN_c = self._KN_c
+
         else:
             self.h = self._h
             self.h_q = self._h_q
@@ -140,3 +142,11 @@ class ScalarForceLawComplianceForm(ScalarForceLawBase):
         return la_c * self.subsystem.W_l_q(t, q).reshape(
             self.subsystem._nu, self.subsystem._nq
         )
+
+    def _KN_c(self, t, q, la_c):
+        W2_l = self.subsystem.W2_l(t, q).reshape(self.subsystem._nu, self.subsystem._nu)
+
+        # TODO: test this and check if there is no N?
+        # TODO: check all the signs below here!
+        K = -la_c * W2_l
+        return K, np.zeros((self.subsystem._nu, self.subsystem._nu))

@@ -493,6 +493,15 @@ class System:
             )
         return coo.asformat(format)
 
+    def KN_c(self, t, q, la_c, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__c_contr:
+            K, N = contr.KN_c(t, q[contr.qDOF], la_c[contr.la_cDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
     ###########
     # actuators
     ###########
@@ -860,12 +869,6 @@ class System:
     #########################
     # general linearization #
     #########################
-    def KN_c(self, t, q, la_c, format="coo"):
-        assert self.nla_c == 0
-        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
-            (self.nu, self.nu)
-        ).asformat(format)
-
     def KN_tau(self, t, q, u, format="coo"): ...
     def KN_g(self, t, q, la_g, format="coo"):
         assert self.nla_g == 0
