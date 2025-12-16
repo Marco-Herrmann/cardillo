@@ -208,10 +208,10 @@ class TwoPointInteraction:
         J2_P2 = self.J2_P2(t, q)
 
         W2 = np.zeros((self._nu, self._nu))
-        W2[:nu1, :nu1] = J_P1.T @ P @ J_P1 + np.einsum("i, ijk -> ij", -n, J2_P1)
+        W2[:nu1, :nu1] = J_P1.T @ P @ J_P1 + np.einsum("i, ijk -> jk", -n, J2_P1)
         W2[:nu1, nu1:] = -J_P1.T @ P @ J_P2
         W2[nu1:, :nu1] = J_P2.T @ P @ J_P1
-        W2[nu1:, nu1:] = J_P2.T @ P @ J_P2 + np.einsum("i, ijk -> ij", n, J2_P2)
+        W2[nu1:, nu1:] = J_P2.T @ P @ J_P2 + np.einsum("i, ijk -> jk", n, J2_P2)
         return W2
 
     def export(self, sol_i, **kwargs):
