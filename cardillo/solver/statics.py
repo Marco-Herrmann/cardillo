@@ -509,9 +509,10 @@ class Eigenmodes:
         if system.nla_c > 1:
             self.C_inv = sparse_inv(C)
         else:
-            self.C_inv = CooMatrix((system.nla_c, system.nla_c)).asformat("csr")
+            self.C_inv = CooMatrix((system.nla_c, system.nla_c))
             if system.nla_c == 1:
                 self.C_inv[0, 0] = 1 / C[0, 0]
+            self.C_inv = self.C_inv.asformat("csr")
 
     def solve(self, index=-1):
         # TODO: check for static equilibrium

@@ -1,6 +1,8 @@
 from numpy import einsum, zeros
 from vtk import VTK_VERTEX
 
+from cardillo.math import ax2skew
+
 
 class Force:
     r"""Force represented w.r.t. I-basis
@@ -30,6 +32,7 @@ class Force:
         self.r_OP = lambda t, q: subsystem.r_OP(t, q, xi, B_r_CP)
         self.J_P = lambda t, q: subsystem.J_P(t, q, xi, B_r_CP)
         self.J_P_q = lambda t, q: subsystem.J_P_q(t, q, xi, B_r_CP)
+        self.J2_P = lambda t, q: subsystem.J2_P(t, q, xi, B_r_CP)
 
     def assembler_callback(self):
         self.qDOF = self.subsystem.qDOF[self.subsystem.local_qDOF_P(self.xi)]
@@ -44,7 +47,13 @@ class Force:
     def h_q(self, t, q, u):
         return einsum("i,ijk->jk", self.force(t), self.J_P_q(t, q))
 
+    def KN_h(self, t, q, u):
+        return einsum("i, ijk -> jk", -self.force(t), self.J2_P(t, q)), zeros(
+            (self.subsystem.nu, self.subsystem.nu)
+        )
+
     def export(self, sol_i, **kwargs):
+        # TODO: point data for warp by vector!
         points = [self.r_OP(sol_i.t, sol_i.q[self.qDOF])]
         cells = [(VTK_VERTEX, [0])]
         cell_data = dict(F=[self.force(sol_i.t)])
@@ -81,6 +90,8 @@ class B_Force:
         self.r_OP = lambda t, q: subsystem.r_OP(t, q, xi=xi, B_r_CP=B_r_CP)
         self.J_P = lambda t, q: subsystem.J_P(t, q, xi=xi, B_r_CP=B_r_CP)
         self.J_P_q = lambda t, q: subsystem.J_P_q(t, q, xi=xi, B_r_CP=B_r_CP)
+        self.B_J_R = lambda t, q: subsystem.B_J_R(t, q, xi=xi)
+        self.J2_P = lambda t, q: subsystem.J2_P(t, q, xi=xi, B_r_CP=B_r_CP)
 
     def assembler_callback(self):
         self.qDOF = self.subsystem.qDOF[self.subsystem.local_qDOF_P(self.xi)]
@@ -93,6 +104,19 @@ class B_Force:
         return einsum(
             "ijk,j,il->lk", self.A_IB_q(t, q), self.force(t), self.J_P(t, q)
         ) + einsum("i,ijk->jk", self.A_IB(t, q) @ self.force(t), self.J_P_q(t, q))
+
+    def KN_h(self, t, q, u):
+        B_F = self.force(t)
+        A_IB = self.A_IB(t, q)
+        J_P = self.J_P(t, q)
+        B_J_R = self.B_J_R(t, q)
+        J2_P = self.J2_P(t, q)
+
+        K1 = einsum("i, ijk -> jk", A_IB @ B_F, J2_P)
+        KN2 = -J_P.T @ A_IB @ ax2skew(B_F) @ B_J_R
+
+        print(KN2, "check this matrix on symmetry!")
+        return K1 + 0.5 * (KN2 + KN2.T), 0.5 * (KN2 - KN2.T)
 
     def export(self, sol_i, **kwargs):
         r_OP = self.r_OP(sol_i.t, sol_i.q[self.qDOF])
