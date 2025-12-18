@@ -70,6 +70,9 @@ def auxiliary_functions(
     object.J_J1_q1 = lambda t, q: object.subsystem1.J_P_q(
         t, q[:nq1], object.xi1, B1_r_P1B0
     )
+    object.J2_J1 = lambda t, q: object.subsystem1.J2_P(
+        t, q[:nq1], object.xi1, B1_r_P1B0
+    )
     object.A_IJ1 = lambda t, q: object.subsystem1.A_IB(t, q[:nq1], object.xi1) @ A_K1B0
     object.A_IJ1_q1 = lambda t, q: np.einsum(
         "ijl,jk->ikl", object.subsystem1.A_IB_q(t, q[:nq1], object.xi1), A_K1B0
@@ -111,6 +114,11 @@ def auxiliary_functions(
         object.subsystem1.A_IB(t, q[:nq1], object.xi1),
         object.subsystem1.B_J_R_q(t, q[:nq1], object.xi1),
     )
+    object.J2_R1 = lambda t, q: np.einsum(
+        "ij,jkl->ikl",
+        object.subsystem1.A_IB(t, q[:nq1], object.xi1),
+        object.subsystem1.B_J2_R(t, q[:nq1], object.xi1),
+    )
 
     # auxiliary functions for subsystem 2
     object.r_OJ2 = lambda t, q: object.subsystem2.r_OP(
@@ -136,6 +144,9 @@ def auxiliary_functions(
     )
     object.J_J2 = lambda t, q: object.subsystem2.J_P(t, q[nq1:], object.xi2, B2_r_P2B0)
     object.J_J2_q2 = lambda t, q: object.subsystem2.J_P_q(
+        t, q[nq1:], object.xi2, B2_r_P2B0
+    )
+    object.J2_J2 = lambda t, q: object.subsystem2.J2_P(
         t, q[nq1:], object.xi2, B2_r_P2B0
     )
     object.A_IJ2 = lambda t, q: object.subsystem2.A_IB(t, q[nq1:], object.xi2) @ A_K2B0
@@ -178,6 +189,11 @@ def auxiliary_functions(
         "ij,jkl->ikl",
         object.subsystem2.A_IB(t, q[nq1:], object.xi2),
         object.subsystem2.B_J_R_q(t, q[nq1:], object.xi2),
+    )
+    object.J2_R2 = lambda t, q: np.einsum(
+        "ij,jkl->ikl",
+        object.subsystem2.A_IB(t, q[nq1:], object.xi2),
+        object.subsystem2.B_J2_R(t, q[nq1:], object.xi2),
     )
 
 
@@ -421,6 +437,43 @@ class PositionOrientationBase:
                 ) + np.einsum("ij,ik->kj", -la_g[3 + i] * n_q2, J_R2)
 
         return Wla_g_q
+
+    def KN_g(self, t, q, la_g):
+        nu1 = self._nu1
+        K = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
+        N = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
+
+        # minus sign!
+        K[:nu1, :nu1] -= np.einsum("i,ijk->jk", -la_g[:3], self.J2_J1(t, q))
+        K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[:3], self.J2_J2(t, q))
+
+        if self.constrain_orientation:
+            A_IJ1 = self.A_IJ1(t, q)
+            A_IJ2 = self.A_IJ2(t, q)
+
+            J_R1 = self.J_R1(t, q)
+            J_R2 = self.J_R2(t, q)
+
+            J2_R1 = self.J2_R1(t, q)
+            J2_R2 = self.J2_R2(t, q)
+
+            for i, (a, b) in enumerate(self.projection_pairs):
+                e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
+                n = cross3(e_a, e_b)
+                double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[3 + i]
+                off_diag_term = J_R1.T @ double_tilde @ J_R2
+                K[:nu1, :nu1] += (
+                    np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R1)
+                    + J_R1.T @ double_tilde @ J_R1
+                )
+                K[:nu1, nu1:] -= off_diag_term
+                K[nu1:, :nu1] -= off_diag_term.T
+                K[nu1:, nu1:] += (
+                    -np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R2)
+                    + J_R2.T @ double_tilde.T @ J_R2
+                )
+
+        return K, N
 
     # TODO analytical derivative
     def g_q_T_mu_q(self, t, q, mu):

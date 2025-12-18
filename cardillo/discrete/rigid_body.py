@@ -6,6 +6,7 @@ from vtk import VTK_VERTEX
 from cardillo.math import (
     cross3,
     ax2skew,
+    ax2skew_a,
     norm,
     Exp_SO3_quat,
     Exp_SO3_quat_P,
@@ -246,14 +247,15 @@ class RigidBody:
         return J_P_q
 
     def J2_P(self, t, q, xi=None, B_r_CP=np.zeros(3, dtype=float)):
-        J2_P = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
         A_IB = self.A_IB(t, q)
-        for i in range(3):
-            B_ei = A_IB[i]
-            J2_P[i, 3:, 3:] = (
-                np.outer(B_ei, B_r_CP) + np.outer(B_r_CP, B_ei)
-            ) / 2 - np.eye(3) * (B_r_CP @ B_ei)
+        B_J2_R_phi = -0.5 * ax2skew_a()
+        B_r_CP_tilde = ax2skew(B_r_CP)
 
+        # only operations on relevant DOFs and using B_J_R = [zero, eye]
+        J2_P = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        J2_P[:, 3:, 3:] = np.einsum(
+            "jl, lki -> ijk", B_r_CP_tilde, ax2skew_a() @ A_IB.T
+        ) - np.einsum("il, ljk -> ijk", A_IB @ B_r_CP_tilde, B_J2_R_phi)
         return J2_P
 
     def kappa_P(self, t, q, u, xi=None, B_r_CP=np.zeros(3)):
@@ -302,6 +304,11 @@ class RigidBody:
 
     def B_J_R_q(self, t, q, xi=None):
         return np.zeros((3, self.nu, self.nq), dtype=q.dtype)
+
+    def B_J2_R(self, t, q, xi=None):
+        B_J2_R = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
+        return B_J2_R
 
     ########
     # export

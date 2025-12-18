@@ -594,6 +594,15 @@ class System:
             )
         return coo.asformat(format)
 
+    def KN_g(self, t, q, la_g, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__g_contr:
+            K, N = contr.KN_g(t, q[contr.qDOF], la_g[contr.la_gDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
     def g_dot(self, t, q, u):
         g_dot = np.zeros(self.nla_g, dtype=np.common_type(q, u))
         for contr in self.__g_contr:
@@ -870,11 +879,6 @@ class System:
     # general linearization #
     #########################
     def KN_tau(self, t, q, u, format="coo"): ...
-    def KN_g(self, t, q, la_g, format="coo"):
-        assert self.nla_g == 0
-        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
-            (self.nu, self.nu)
-        ).asformat(format)
 
     def KN_gamma(self, t, q, la_gamma, format="coo"): ...
     def KN_N(self, t, q, la_N, format="coo"):

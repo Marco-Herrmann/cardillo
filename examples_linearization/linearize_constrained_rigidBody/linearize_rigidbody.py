@@ -8,10 +8,11 @@ import scipy.linalg
 from cardillo import System
 from cardillo.discrete import Box, RigidBody
 from cardillo.force_laws import KelvinVoigtElement as SpringDamper
+from cardillo.forces import Force
 from cardillo.interactions import TwoPointInteraction
 from cardillo.constraints import RigidConnection, FixedDistance, Revolute, Cylindrical
-from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei
-from cardillo.solver import Solution
+from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei, norm
+from cardillo.solver import Eigenmodes, Newton
 
 
 if __name__ == "__main__":
@@ -64,12 +65,18 @@ if __name__ == "__main__":
         )
         constraints.append(constrainti)
 
-    # connection = RigidConnection(block, system.origin)
-    # connection = FixedDistance(block, system.origin, B2_r_P2J2=block_dim / 2)
-    # connection1 = Revolute(system.origin, blocks[1], axis=2, r_OJ0=np.array([-block_dim[0]/2, 0, 0]))
-    # connection2 = Revolute(blocks[1], blocks[2], axis=2, r_OJ0=np.array([block_dim[0]/2, 0, 0]))
-    # connection3 = Revolute(blocks[2], blocks[3], axis=2, r_OJ0=np.array([3*block_dim[0]/2, 0, 0]))
-    # connection = Cylindrical(block, system.origin, axis=2, r_OJ0=block_dim/2)
+    preloaded = False
+    preloaded = True
+    if preloaded:
+        e_diag = block_dim.copy()
+        # e_diag[axis] = 0.0
+        e_diag /= norm(e_diag)
+
+        f0 = 100.0
+
+        f = lambda t: f0 * e_diag
+        force = Force(f, blocks[-1], B_r_CP=block_dim / 2, name="force")
+        system.add(force)
 
     #################
     # assemble system
@@ -77,19 +84,18 @@ if __name__ == "__main__":
     system.add(*blocks[1:], *constraints)
     system.assemble()
 
-    for proj in [None, "NullSpace", "ComplianceProjection"]:
-        omegas, modes_dq, sol = system.eigenmodes(
-            system.t0,
-            system.q0,
-            system.la_g0,
-            system.la_gamma0,
-            system.la_c0,
-            constraints=proj,
-        )
+    if preloaded:
+        static_solver = Newton(system)
+        sol0 = static_solver.solve()
+        print(sol0.la_g)
+    else:
+        sol0 = system.sol0
 
-        print(omegas)
+    solver = Eigenmodes(system, system.sol0)
+    omegas, modes_dq, sol = solver.solve(-1)
 
-        # vtk-export
-        dir_name = Path(__file__).parent
-        system.export(dir_name, f"vtk{'_'+proj if proj else ''}", sol, fps=25)
+    print(omegas)
 
+    # vtk-export
+    dir_name = Path(__file__).parent
+    system.export(dir_name, f"vtk", sol, fps=25)

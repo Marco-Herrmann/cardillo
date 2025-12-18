@@ -125,6 +125,9 @@ class Frame:
     def B_J_R_q(self, t, q=None, xi=None):
         return np.array([]).reshape((3, 0, 0))
 
+    def B_J2_R(self, t, q, xi=None):
+        return np.array([]).reshape((3, 0, 0))
+
     def B_Psi(self, t, q=None, u=None, u_dot=None, xi=None):
         B_psi_IB = self.A_IB_t__(t).T @ self.A_IB_t__(t) + self.A_IB__(
             t
