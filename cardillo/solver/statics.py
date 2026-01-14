@@ -502,6 +502,8 @@ class Eigenmodes:
         self.system = system
         self.sol = sol
 
+        self.la_sqared_tol = 1e-5
+
         self.u = np.zeros(system.nu, dtype=float)
 
         # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
@@ -644,20 +646,19 @@ class Eigenmodes:
         valids = np.ones_like(omegas, dtype=bool)
         modes_dq = B @ T @ Vs_ud
         for i, lai in enumerate(las_ud_squared):
-            if np.isclose(0.0, lai):
+            if np.abs(lai) <= self.la_sqared_tol:
                 omegas[i] = 0.0
             elif lai > 0:
-                if lai > 1e-5:
-                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
-                    warnings.warn(msg)
-                    valids[i] = False
+                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
+                warnings.warn(msg)
+                valids[i] = False
                 omegas[i] = np.sqrt(lai)
             else:
                 omegas[i] = np.sqrt(-lai)
 
         # compose solution object with omegas and modes
         sol = Solution(
-            self,
+            self.system,
             np.array([t]),
             np.array([q]),
             omegas=np.array([omegas]),
