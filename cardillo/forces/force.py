@@ -49,7 +49,7 @@ class Force:
 
     def KN_h(self, t, q, u):
         return einsum("i, ijk -> jk", -self.force(t), self.J2_P(t, q)), zeros(
-            (self.subsystem.nu, self.subsystem.nu)
+            (len(self.uDOF), len(self.uDOF))
         )
 
     def export(self, sol_i, **kwargs):
