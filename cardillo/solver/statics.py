@@ -641,14 +641,16 @@ class Eigenmodes:
 
         # compute omegas
         omegas = np.zeros([len(las_ud_squared)])
+        valids = np.ones_like(omegas, dtype=bool)
         modes_dq = B @ T @ Vs_ud
         for i, lai in enumerate(las_ud_squared):
             if np.isclose(0.0, lai):
                 omegas[i] = 0.0
             elif lai > 0:
                 if lai > 1e-5:
-                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e}. This should not happen."
+                    msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
                     warnings.warn(msg)
+                    valids[i] = False
                 omegas[i] = np.sqrt(lai)
             else:
                 omegas[i] = np.sqrt(-lai)
@@ -660,6 +662,7 @@ class Eigenmodes:
             np.array([q]),
             omegas=np.array([omegas]),
             modes_dq=np.array([modes_dq]),
+            valids=np.array([valids]),
         )
 
         return omegas, modes_dq, sol

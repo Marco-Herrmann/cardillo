@@ -4,11 +4,11 @@ from cachetools.keys import hashkey
 import numpy as np
 from scipy.sparse.linalg import spsolve
 
-from cardillo.math.algebra import norm, cross3, ax2skew
+from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.math.rotations import (
     Exp_SO3_quat,
-    Exp_SO3_quat_p,
+    Exp_SO3_quat_P,
     T_SO3_inv_quat,
     T_SO3_inv_quat_P,
 )
@@ -369,7 +369,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
             [
                 np.einsum(
                     "ijk, k -> ij",
-                    Exp_SO3_quat_p(q_body[nodalDOF], normalize=True),
+                    Exp_SO3_quat_P(q_body[nodalDOF], normalize=True),
                     dq_body[nodalDOF],
                 )
                 for nodalDOF in self.nodalDOF_p
@@ -875,6 +875,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
 
         return J_P_q
 
+    def J2_P(self, t, qe, xi, B_r_CP=np.zeros(3, dtype=float)):
+        # TODO: implement for B_r_CP != 0.0
+        assert np.linalg.norm(B_r_CP) == 0.0
+        return np.zeros((3, self.nu_element, self.nu_element), dtype=qe.dtype)
+
     def a_P(self, t, qe, ue, ue_dot, xi, B_r_CP=np.zeros(3, dtype=float)):
         N, _ = self.basis_functions_r(xi)
 
@@ -941,6 +946,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
     def B_J_R_q(self, t, qe, xi):
         return np.zeros((3, self.nu_element, self.nq_element), dtype=float)
 
+    def B_J2_R(self, t, q, xi):
+        # TODO: check plus-minus bzw. [:, None]
+        N_p, _ = self.basis_functions_p(xi)
+        B_J2_R = np.zeros((3, self.nu_element, self.nu_element), dtype=q.dtype)
+        for node in range(self.nnodes_element_p):
+            DOF = self.nodalDOF_element_p_u[node]
+            B_J2_R[:, DOF, DOF[:, None]] = -0.5 * N_p[node] * ax2skew_a()
+        return B_J2_R
+
     def B_Psi(self, t, qe, ue, ue_dot, xi):
         """Since we use Petrov-Galerkin method we only interpolate the nodal
         time derivative of the angular velocities in the B-frame.
@@ -979,6 +993,12 @@ class CosseratRodDisplacementBased(CosseratRod_PetrovGalerkin):
             elDOF_u = self.elDOF_u[el]
             coo[elDOF_u, elDOF] = self.f_int_el_qe(q[elDOF], el)
         return coo
+
+    def KN_h(self, t, q, u):
+        raise NotImplementedError("Use mixed Cosserat rod instead!")
+
+    def DG_h(self, t, q, u):
+        raise NotImplementedError("Use mixed Cosserat rod instead!")
 
     # h_u is implmented in base class.
 
@@ -1603,6 +1623,99 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
 
         return Wla_c_el_qe
 
+    def KN_c(self, t, q, la_c):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for el in range(self.nelement):
+            elDOF = self.elDOF[el]
+            elDOF_u = self.elDOF_u[el]
+            elDOF_la_c = self.elDOF_la_c[el]
+            K_el, N_el = self.KN_c_el(q[elDOF], la_c[elDOF_la_c], el)
+            coo_K[elDOF_u, elDOF_u] = K_el
+            coo_N[elDOF_u, elDOF_u] = N_el
+        return coo_K, coo_N
+
+    def KN_c_el(self, qe, la_ce, el):
+        dtype = np.common_type(qe, la_ce)
+        K_el = np.zeros((self.nu_element, self.nu_element), dtype=dtype)
+        N_el = np.zeros((self.nu_element, self.nu_element), dtype=dtype)
+
+        for i in range(self.nquadrature):
+            # extract reference state variables
+            qpi = self.qp[el, i]
+            qwi = self.qw[el, i]
+
+            # evaluate required quantities
+            _, A_IB, B_Gamma_bar, B_Kappa_bar = self._eval(
+                qe, qpi, N=self.N_r[el, i], N_xi=self.N_r_xi[el, i]
+            )
+
+            # interpolation of the n and m
+            la_c = np.zeros(self.mesh_la_c.dim_q, dtype=qe.dtype)
+
+            for node in range(self.nnodes_element_la_c):
+                la_c_node = la_ce[self.nodalDOF_element_la_c[node]]
+                la_c += self.N_la_c[el, i, node] * la_c_node
+
+            B_n = np.zeros(3, dtype=dtype)
+            B_m = np.zeros(3, dtype=dtype)
+            B_n[self.mixed_n] = la_c[: self.nmixed_n]
+            B_m[self.mixed_m] = la_c[self.nmixed_n :]
+
+            part_r_xi_phi = A_IB @ ax2skew(B_n)
+            part_phi_xi_phi = ax2skew(B_m)
+            part_phi_phi = ax2skew(B_Gamma_bar) @ ax2skew(B_n) + ax2skew(
+                B_Kappa_bar
+            ) @ ax2skew(B_m)
+            part_phi_phi = 0.5 * (part_phi_phi + part_phi_phi.T)
+
+            for node_A in range(self.nnodes_element_r):
+                DOF_A = self.nodalDOF_element_r_u[node_A]
+                for node_B in range(self.nnodes_element_p):
+                    DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                    K_el[DOF_A[:, None], DOF_B] -= (
+                        self.N_r_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_r_xi_phi
+                    )
+                    K_el[DOF_B[:, None], DOF_A] -= (
+                        self.N_r_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_r_xi_phi.T
+                    )
+
+            for node_A in range(self.nnodes_element_p):
+                DOF_A = self.nodalDOF_element_p_u[node_A]
+                for node_B in range(self.nnodes_element_p):
+                    DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                    K_el[DOF_A[:, None], DOF_B] += (
+                        0.5
+                        * self.N_p_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_xi_phi
+                    )
+                    K_el[DOF_B[:, None], DOF_A] += (
+                        0.5
+                        * self.N_p_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_xi_phi.T
+                    )
+
+                    K_el[DOF_A[:, None], DOF_B] += (
+                        self.N_p[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_phi
+                    )
+
+        return K_el, N_el
+
     ##############################
     # stress and strain evaluation
     ##############################
@@ -2021,6 +2134,99 @@ def make_CosseratRodConstrained(mixed, constraints):
             q_dot = self.q_dot(t, q, u)
             g_ddot += np.einsum("ijk, k->ij", W_g_T_q, q_dot) @ u
             return g_ddot
+
+        def KN_g(self, t, q, la_g):
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+            for el in range(self.nelement):
+                elDOF = self.elDOF[el]
+                elDOF_u = self.elDOF_u[el]
+                elDOF_la_g = self.elDOF_la_g[el]
+                K_el, N_el = self.KN_g_el(q[elDOF], la_g[elDOF_la_g], el)
+                coo_K[elDOF_u, elDOF_u] = K_el
+                coo_N[elDOF_u, elDOF_u] = N_el
+            return coo_K, coo_N
+
+        def KN_g_el(self, qe, la_ge, el):
+            dtype = np.common_type(qe, la_ge)
+            K_el = np.zeros((self.nu_element, self.nu_element), dtype=dtype)
+            N_el = np.zeros((self.nu_element, self.nu_element), dtype=dtype)
+
+            for i in range(self.nquadrature):
+                # extract reference state variables
+                qpi = self.qp[el, i]
+                qwi = self.qw[el, i]
+
+                # evaluate required quantities
+                _, A_IB, B_Gamma_bar, B_Kappa_bar = self._eval(
+                    qe, qpi, N=self.N_r[el, i], N_xi=self.N_r_xi[el, i]
+                )
+
+                # interpolation of the n and m
+                la_g = np.zeros(self.mesh_la_g.dim_q, dtype=qe.dtype)
+
+                for node in range(self.nnodes_element_la_g):
+                    la_g_node = la_ge[self.nodalDOF_element_la_g[node]]
+                    la_g += self.N_la_g[el, i, node] * la_g_node
+
+                B_n = np.zeros(3, dtype=dtype)
+                B_m = np.zeros(3, dtype=dtype)
+                B_n[self.constraints_gamma] = la_g[: self.nconstraints_gamma]
+                B_m[self.constraints_kappa] = la_g[self.nconstraints_gamma :]
+
+                part_r_xi_phi = A_IB @ ax2skew(B_n)
+                part_phi_xi_phi = ax2skew(B_m)
+                part_phi_phi = ax2skew(B_Gamma_bar) @ ax2skew(B_n) + ax2skew(
+                    B_Kappa_bar
+                ) @ ax2skew(B_m)
+                part_phi_phi = 0.5 * (part_phi_phi + part_phi_phi.T)
+
+                for node_A in range(self.nnodes_element_r):
+                    DOF_A = self.nodalDOF_element_r_u[node_A]
+                    for node_B in range(self.nnodes_element_p):
+                        DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                        K_el[DOF_A[:, None], DOF_B] -= (
+                            self.N_r_xi[el, i, node_A]
+                            * self.N_p[el, i, node_B]
+                            * qwi
+                            * part_r_xi_phi
+                        )
+                        K_el[DOF_B[:, None], DOF_A] -= (
+                            self.N_r_xi[el, i, node_A]
+                            * self.N_p[el, i, node_B]
+                            * qwi
+                            * part_r_xi_phi.T
+                        )
+
+                for node_A in range(self.nnodes_element_p):
+                    DOF_A = self.nodalDOF_element_p_u[node_A]
+                    for node_B in range(self.nnodes_element_p):
+                        DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                        K_el[DOF_A[:, None], DOF_B] += (
+                            0.5
+                            * self.N_p_xi[el, i, node_A]
+                            * self.N_p[el, i, node_B]
+                            * qwi
+                            * part_phi_xi_phi
+                        )
+                        K_el[DOF_B[:, None], DOF_A] += (
+                            0.5
+                            * self.N_p_xi[el, i, node_A]
+                            * self.N_p[el, i, node_B]
+                            * qwi
+                            * part_phi_xi_phi.T
+                        )
+
+                        K_el[DOF_A[:, None], DOF_B] += (
+                            self.N_p[el, i, node_A]
+                            * self.N_p[el, i, node_B]
+                            * qwi
+                            * part_phi_phi
+                        )
+
+            return K_el, N_el
 
         ##############################
         # stress and strain evaluation
