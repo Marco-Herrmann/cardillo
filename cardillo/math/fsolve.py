@@ -241,6 +241,9 @@ def fsolve(
     Delta_x = np.zeros_like(x0)
     x = x0 + Delta_x
 
+    # create list for all x-iterates
+    all_x = [x]
+
     # initial function value
     f = np.atleast_1d(fun(x, *fun_args))
 
@@ -259,6 +262,8 @@ def fsolve(
             Delta_x -= dx
             x = x0 + Delta_x
 
+            all_x.append(x)
+
             # new function value, error and convergence check
             f = np.atleast_1d(fun(x, *fun_args))
             error = np.linalg.norm(f / scale) / scale.size**0.5
@@ -267,9 +272,22 @@ def fsolve(
                 break
 
         if not converged:
-            warn(f"fsolve is not converged after {i} iterations with error {error:.2e}")
+            msg = f"fsolve is not converged after {i} iterations with error {error:.2e}"
+            print(msg)
+            warn(msg)
 
         nit = i + 1
+
+    # compute final quadratic rate of convergence
+    if not converged:
+        final_rate = np.inf
+    else:
+        if nit > 2:
+            epsilon_m1 = np.linalg.norm(all_x[-2] - all_x[-1])
+            epsilon_m2 = np.linalg.norm(all_x[-3] - all_x[-1])
+            final_rate = epsilon_m1 / epsilon_m2**2
+        else:
+            final_rate = np.nan
 
     return OptimizeResult(
         x=x,
@@ -279,4 +297,6 @@ def fsolve(
         nit=nit,
         nfev=nfev,
         njev=njev,
+        all_x=np.array(all_x),
+        final_quadratic_rate=final_rate,
     )
