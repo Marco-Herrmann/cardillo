@@ -62,6 +62,23 @@ class ScalarForceLawBase(ABC):
             self.subsystem.W_l(t, q).reshape(self.subsystem._nu), self.la_c_u(t, q, u)
         )
 
+    def _KN_h(self, t, q, u):
+        l = self.l(t, q)
+        l_dot = self.l_dot(t, q, u)
+
+        la_c = self._la_c(t, l, l_dot)
+        la_c_l = self._la_c_l(t, l, l_dot)
+        la_c_l_dot = self._la_c_l_dot(t, l, l_dot)
+
+        W_l = self.subsystem.W_l(t, q).reshape(self.subsystem._nu)
+        W2_l = self.subsystem.W2_l(t, q).reshape(self.subsystem._nu, self.subsystem._nu)
+
+        # TODO: test this and check if N is purely skew-symmetric!
+        # TODO: check all the signs below here!
+        K = -la_c * W2_l - np.outer(W_l, la_c_l * W_l)
+        N = -np.outer(W_l, W2_l @ u) * la_c_l_dot
+        return K, N
+
     def export(self, sol_i, **kwargs):
         return self.subsystem.export(sol_i, **kwargs)
 
@@ -72,6 +89,7 @@ class ScalarForceLaw(ScalarForceLawBase):
         self.h = self._h
         self.h_q = self._h_q
         self.h_u = self._h_u
+        self.KN_h = self._KN_h
 
 
 class ScalarForceLawComplianceForm(ScalarForceLawBase):
@@ -82,10 +100,13 @@ class ScalarForceLawComplianceForm(ScalarForceLawBase):
             self.c = self.__c
             self.c_q = self.__c_q
             self.c_u = self.__c_u
+            self.KN_c = self._KN_c
+
         else:
             self.h = self._h
             self.h_q = self._h_q
             self.h_u = self._h_u
+            self.KN_h = self._KN_h
 
     @abstractmethod
     def _c(self, t, l, l_dot, la_c): ...
@@ -121,3 +142,11 @@ class ScalarForceLawComplianceForm(ScalarForceLawBase):
         return la_c * self.subsystem.W_l_q(t, q).reshape(
             self.subsystem._nu, self.subsystem._nq
         )
+
+    def _KN_c(self, t, q, la_c):
+        W2_l = self.subsystem.W2_l(t, q).reshape(self.subsystem._nu, self.subsystem._nu)
+
+        # TODO: test this and check if there is no N?
+        # TODO: check all the signs below here!
+        K = -la_c * W2_l
+        return K, np.zeros((self.subsystem._nu, self.subsystem._nu))

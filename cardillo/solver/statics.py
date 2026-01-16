@@ -1,9 +1,13 @@
 import numpy as np
-from scipy.sparse import lil_array, bmat
+import warnings
+from scipy.sparse import lil_array, bmat, csc_array
+from scipy.sparse.linalg import inv as sparse_inv
+from scipy.linalg import eigh, null_space
 from tqdm import tqdm
 
 from cardillo.math.fsolve import fsolve
 from cardillo.solver import Solution, SolverOptions, SolverSummary
+from cardillo.utility.coo_matrix import CooMatrix
 
 
 class Newton:
@@ -500,3 +504,175 @@ class Riks:
             la_g=np.asarray(la_g),
             la_N=np.asarray(la_N),
         )
+
+
+class Eigenmodes:
+    def __init__(self, system, sol):
+        self.system = system
+        self.sol = sol
+
+        self.la_sqared_tol = 1e-5
+
+        self.u = np.zeros(system.nu, dtype=float)
+
+        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
+        C = system.c_la_c("csc")
+        if system.nla_c > 1:
+            self.C_inv = sparse_inv(C)
+        else:
+            self.C_inv = CooMatrix((system.nla_c, system.nla_c))
+            if system.nla_c == 1:
+                self.C_inv[0, 0] = 1 / C[0, 0]
+            self.C_inv = self.C_inv.asformat("csr")
+
+    def solve(self, index=-1):
+        # TODO: check for static equilibrium
+
+        # extract values
+        t = self.sol.t[index]
+        q = self.sol.q[index]
+        la_c = self.sol.la_c[index] if self.sol.la_c is not None else None
+        la_g = self.sol.la_g[index] if self.sol.la_g is not None else None
+        la_N = self.sol.la_N[index] if self.sol.la_N is not None else None
+
+        ##################
+        # stiffness matrix
+        ##################
+        # Using h, c, g, N contributions for stiffness
+        K_h = self.system.KN_h(t, q, self.u)[0]
+        K_c = self.system.KN_c(t, q, la_c)[0]
+        K_g = self.system.KN_g(t, q, la_g)[0]
+        K_N = self.system.KN_N(t, q, la_N)[0]
+
+        # solve compliance equation
+        W_c = self.system.W_c(t, q, format="csc")
+        K0 = K_h + K_c + K_g + K_N + W_c @ self.C_inv @ W_c.T
+
+        #############
+        # mass matrix
+        #############
+        M0 = self.system.M(t, q)
+
+        #######################
+        # bilateral constraints
+        #######################
+        # TODO: split up in internal and non-internal contributions
+
+        # internal_contr, non_internal_contr = [], []
+        # for contr in self.__g_contr:
+        #     # TODO: maybe just check if there is a "T" attribute
+        #     if hasattr(contr, "nq") and hasattr(contr, "nu"):
+        #         internal_contr.append(contr)
+        #     else:
+        #         non_internal_contr.append(contr)
+
+        # ########################################
+        # # A: constraints inside a contribution #
+        # ########################################
+        # nla_g_intern = int(np.sum([c.nla_g for c in internal_contr]))
+        # T_int, col = CooMatrix((self.nu, self.nu - nla_g_intern)), 0
+        # removed_laDOFs, changing_uDOFs = [], []
+        # for contr in internal_contr:
+        #     if hasattr(contr, "T"):
+        #         # if there is an implementation
+        #         T = contr.T(t, q, format="csc")
+        #     else:
+        #         # project numerically using W_g
+        #         W_g = contr.W_g(t, q[contr.qDOF])
+        #         if not isinstance(W_g, np.ndarray):
+        #             W_g = W_g.toarray()
+        #         T = scipy.sparse.csc_array(scipy.linalg.null_space(W_g.T))
+
+        #     ni_contr = contr.nu - contr.nla_g
+        #     T_int[contr.uDOF, col : col + ni_contr] = T
+        #     col += ni_contr
+
+        #     removed_laDOFs.extend(contr.la_gDOF)
+        #     changing_uDOFs.extend(contr.uDOF)
+
+        # # double check if no wrong DOF was touched
+        # removed_laDOFs = np.array(removed_laDOFs)
+        # changing_uDOFs = np.array(changing_uDOFs)
+        # assert len(removed_laDOFs) == len(
+        #     np.unique(removed_laDOFs)
+        # ), "Some contributions were working on the same laDOF."
+        # assert len(changing_uDOFs) == len(
+        #     np.unique(changing_uDOFs)
+        # ), "Some contributions were working on the same uDOF."
+
+        # # these are uDOFs by rigid bodies, rods without constraints, ...
+        # unchanging_uDOFs = np.setdiff1d(np.arange(self.nu), changing_uDOFs)
+        # T_int[unchanging_uDOFs, unchanging_uDOFs] = scipy.sparse.eye_array(
+        #     len(unchanging_uDOFs), dtype=float
+        # )
+        # T_int = T_int.asformat("csc")
+
+        # ######################################
+        # # B: remaining bilateral constraints #
+        # ######################################
+        # # try straight forward Nullspace matrix on W_g.T
+        # non_internal_laDOFs = np.setdiff1d(np.arange(self.nla_g), removed_laDOFs)
+        # W_g_non_internalT = Wg0[:, non_internal_laDOFs].T.toarray()
+        # T_bil = scipy.sparse.csc_array(
+        #     scipy.linalg.null_space(W_g_non_internalT @ T_int)
+        # )
+
+        W_g = self.system.W_g(t, q, format="csr")
+        T = csc_array(null_space(W_g.T.toarray()))
+
+        # T = T_int @ T_bil
+        B = self.system.q_dot_u(t, q, format="csc")
+        K = T.T @ K0 @ T
+        M = T.T @ M0 @ T
+
+        ####################
+        # compute eigenmodes
+        ####################
+        # squared eigenvalues
+        res = list(eigh(-K.toarray(), M.toarray()))
+
+        # make everything real
+        for i, v in enumerate(res):
+            imag_norm = np.linalg.norm(np.imag(v))
+            total_norm = np.linalg.norm(v)
+            if total_norm > 0.0:
+                ratio = imag_norm / total_norm
+                if ratio >= 1e-2:
+                    print(
+                        f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
+                    )
+            res[i] = np.real(v)
+
+        las_ud_squared, Vs_ud = res
+
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_ud_squared)
+        las_ud_squared = las_ud_squared[sort_idx]
+        Vs_ud = Vs_ud[:, sort_idx]
+
+        # compute omegas
+        omegas = np.zeros([len(las_ud_squared)])
+        valids = np.ones_like(omegas, dtype=bool)
+        modes_dq = B @ T @ Vs_ud
+        for i, lai in enumerate(las_ud_squared):
+            if np.abs(lai) <= self.la_sqared_tol:
+                omegas[i] = 0.0
+            elif lai > 0:
+                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
+                warnings.warn(msg)
+                valids[i] = False
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+        # compose solution object with omegas and modes
+        sol = Solution(
+            self.system,
+            np.array([t]),
+            np.array([q]),
+            omegas=np.array([omegas]),
+            modes_dq=np.array([modes_dq]),
+            valids=np.array([valids]),
+        )
+
+        return omegas, modes_dq, sol

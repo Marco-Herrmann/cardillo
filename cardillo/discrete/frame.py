@@ -91,6 +91,9 @@ class Frame:
     def J_P_q(self, t, q, xi=None, B_r_CP=np.zeros(3)):
         return np.array([]).reshape((3, 0, 0))
 
+    def J2_P(self, t, q=None, xi=None, B_r_CP=np.zeros(3)):
+        return np.array([]).reshape((3, 0, 0))
+
     def a_P(self, t, q=None, u=None, u_dot=None, xi=None, B_r_CP=np.zeros(3)):
         return self.r_OP_tt__(t) + self.A_IB_tt__(t) @ B_r_CP
 
@@ -120,6 +123,9 @@ class Frame:
         return np.array([]).reshape((3, 0))
 
     def B_J_R_q(self, t, q=None, xi=None):
+        return np.array([]).reshape((3, 0, 0))
+
+    def B_J2_R(self, t, q, xi=None):
         return np.array([]).reshape((3, 0, 0))
 
     def B_Psi(self, t, q=None, u=None, u_dot=None, xi=None):

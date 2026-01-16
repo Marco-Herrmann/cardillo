@@ -120,12 +120,36 @@ def Meshed(Base):
                 r_OC = self.r_OP(
                     sol_i.t, sol_i.q[self.qDOF]
                 )  # TODO: Idea: slicing could be done on global level in Export class. Moreover, solution class should be able to return the slice, e.g., sol_i.get_q_of_body(name).
-                A_IB = self.A_IB(sol_i.t, sol_i.q[self.qDOF])
+                # TODO: check this out if changed in main cardillo, same for A_IB_q below!
+                if hasattr(self, "A_IB"):
+                    A_IB = self.A_IB(sol_i.t, sol_i.q[self.qDOF])
+                else:
+                    A_IB = np.eye(3, dtype=float)
                 points = (r_OC[:, None] + A_IB @ self.B_r_CQi_T).T
 
                 cells = [(VTK_TRIANGLE, face) for face in self.B_visual_mesh.faces]
+                point_data = {}
 
-            return points, cells, None, None
+                if hasattr(sol_i, "omegas") and hasattr(sol_i, "modes_dq"):
+                    # export modes
+                    omegas = sol_i.omegas
+                    modes_dq = sol_i.modes_dq
+                    fmt = len(str(len(omegas)))
+
+                    r_OP_q = self.r_OP_q(sol_i.t, sol_i.q[self.qDOF])
+                    if hasattr(self, "A_IB_q"):
+                        A_IB_q = self.A_IB_q(sol_i.t, sol_i.q[self.qDOF])
+                    else:
+                        A_IB_q = np.zeros((3, 3, len(self.qDOF)))
+                    for i, mode_dq in enumerate(modes_dq.T):
+                        dq = mode_dq[self.qDOF]
+                        dr_OC = r_OP_q @ dq
+                        dA_IB = np.einsum("ijk, k -> ij", A_IB_q, dq)
+                        mode_data = (dr_OC[:, None] + dA_IB @ self.B_r_CQi_T).T
+                        mode_str = f"mode {i:{fmt}d}, omega {omegas[i]:+.2f}"
+                        point_data[mode_str] = mode_data
+
+            return points, cells, point_data, None
 
     return _Meshed
 

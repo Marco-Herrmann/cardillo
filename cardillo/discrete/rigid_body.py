@@ -6,6 +6,7 @@ from vtk import VTK_VERTEX
 from cardillo.math import (
     cross3,
     ax2skew,
+    ax2skew_a,
     norm,
     Exp_SO3_quat,
     Exp_SO3_quat_P,
@@ -113,6 +114,18 @@ class RigidBody:
     def step_callback(self, t, q, u):
         q[3:] = q[3:] / norm(q[3:])
         return q, u
+
+    def G(self, t, q, u):
+        dtype = np.common_type(q, u)
+        G = np.zeros((self.nu, self.nu), dtype=dtype)
+        G[3:, 3:] = ax2skew(u[3:])
+        return G
+
+    def G_dot(self, t, q, u, u_dot):
+        dtype = np.common_type(q, u, u_dot)
+        G_dot = np.zeros((self.nu, self.nu), dtype=dtype)
+        G_dot[3:, 3:] = ax2skew(u_dot[3:])
+        return G_dot
 
     #####################
     # equations of motion
@@ -233,6 +246,18 @@ class RigidBody:
         J_P_q[:, 3:, :] = np.einsum("ijk,jl->ilk", self.A_IB_q(t, q), -ax2skew(B_r_CP))
         return J_P_q
 
+    def J2_P(self, t, q, xi=None, B_r_CP=np.zeros(3, dtype=float)):
+        A_IB = self.A_IB(t, q)
+        B_J2_R_phi = -0.5 * ax2skew_a()
+        B_r_CP_tilde = ax2skew(B_r_CP)
+
+        # only operations on relevant DOFs and using B_J_R = [zero, eye]
+        J2_P = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        J2_P[:, 3:, 3:] = np.einsum(
+            "jl, lki -> ijk", B_r_CP_tilde, ax2skew_a() @ A_IB.T
+        ) - np.einsum("il, ljk -> ijk", A_IB @ B_r_CP_tilde, B_J2_R_phi)
+        return J2_P
+
     def kappa_P(self, t, q, u, xi=None, B_r_CP=np.zeros(3)):
         return self.A_IB(t, q) @ (cross3(u[3:], cross3(u[3:], B_r_CP)))
 
@@ -279,6 +304,11 @@ class RigidBody:
 
     def B_J_R_q(self, t, q, xi=None):
         return np.zeros((3, self.nu, self.nq), dtype=q.dtype)
+
+    def B_J2_R(self, t, q, xi=None):
+        B_J2_R = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
+        return B_J2_R
 
     ########
     # export
