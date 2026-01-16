@@ -135,6 +135,7 @@ def fsolve(
     fun_args=(),
     jac_args=(),
     inexact=False,
+    update_rule=None,
     options=SolverOptions(),
 ) -> tuple[np.ndarray, bool, float, int, np.ndarray]:
     """Solve a nonlinear system of equations using (inexact) Newton method.
@@ -237,8 +238,18 @@ def fsolve(
         def solve(x, rhs):
             return options.linear_solver(jacobian(x, *jac_args), rhs)
 
+    if update_rule is None:
+        update_rule = lambda x, Delta_x_bar: Delta_x_bar
+        nx_bar = x0.size
+    else:
+        assert callable(update_rule), "update_rule must be callable"
+        nx_bar = f(x0, *fun_args).size
+        jac0 = jac(x0, *jac_args)
+        assert jac0.shape[0] == jac0.shape[1] == nx_bar, "size of jacobian do not match"
+
     # eliminate round-off errors
-    Delta_x = np.zeros_like(x0)
+    Delta_x_bar = np.zeros(nx_bar, dtype=x0.dtype)
+    Delta_x = update_rule(x0, Delta_x_bar)
     x = x0 + Delta_x
 
     # create list for all x-iterates
@@ -258,8 +269,8 @@ def fsolve(
     if not converged:
         for i in range(options.newton_max_iter):
             # Newton update
-            dx = solve(x, f)
-            Delta_x -= dx
+            dx_bar = solve(x, f)
+            Delta_x -= update_rule(x, dx_bar)
             x = x0 + Delta_x
 
             all_x.append(x)
