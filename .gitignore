@@ -30,6 +30,8 @@ eggs/
 # exported data
 *.txt
 *.dat
+*.csv
+*.pkl
 
 # videos
 *.mp4
@@ -51,4 +53,5 @@ examples/results
 
 # virtual environment
 myvenv
+myWSLvenv
 
