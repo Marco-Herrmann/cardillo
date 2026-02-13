@@ -25,11 +25,13 @@ class Newton:
         system,
         n_load_steps=1,
         verbose=True,
+        updated=False,
         options=SolverOptions(),
     ):
         self.system = system
         self.options = options
         self.verbose = verbose
+        self.updated = updated
         self.load_steps = np.linspace(0, 1, n_load_steps + 1)
         self.nt = len(self.load_steps)
 
@@ -43,7 +45,7 @@ class Newton:
 
         self.split_f = np.cumsum(
             np.array(
-                [system.nu, system.nla_g, system.nla_c, system.nla_S],
+                [system.nu, system.nla_g, system.nla_c, system.nla_N],
                 dtype=int,
             )
         )
@@ -54,10 +56,37 @@ class Newton:
             )
         )
 
+        if self.updated:
+            self.nx_bar = system.nu + system.nla_g + system.nla_c + system.nla_N
+            # not sure how the Jacobian is for this
+            assert self.nla_N == 0
+
+            def update_rule(x, Delta_x_bar, t):
+                q, la_g, la_c, la_N = np.array_split(x, self.split_x)
+                ds, dla_g, dla_c, dla_N, _ = np.array_split(Delta_x_bar, self.split_f)
+                dq = self.system.q_dot(t, q, ds)
+                dx = np.zeros_like(x)
+                dx[: self.split_x[0]] = dq
+                dx[self.split_x[0] : self.split_x[1]] = dla_g
+                dx[self.split_x[1] : self.split_x[2]] = dla_c
+                dx[self.split_x[2] :] = dla_N
+                return dx
+
+            self.update_rule = update_rule
+
+        else:
+            self.nx_bar = system.nq + system.nla_g + system.nla_c + system.nla_N
+            self.update_rule = None
+
         # initial conditions
         x0 = np.concatenate((system.q0, system.la_g0, system.la_c0, system.la_N0))
         nx = len(x0)
         self.u0 = np.zeros(system.nu)  # zero velocities as system is static
+
+        print(f"{self.nx_bar = }, {nx = }")
+
+        # pre-evaluate compliance matrix
+        self.c_la_c = self.system.c_la_c()
 
         # memory allocation
         self.x = np.zeros((self.nt, nx), dtype=float)
@@ -65,6 +94,15 @@ class Newton:
 
         self.all_x = np.zeros([len(self.x[:, 0])], dtype=object)
         self.all_x[0] = np.array([self.x[0]])
+
+        # step callback
+        def update_callback(x, t):
+            x[: self.split_x[0]], _ = self.system.step_callback(
+                t, x[: self.split_x[0]], self.u0
+            )
+            return x
+
+        self.update_callback = update_callback
 
     def fun(self, x, t):
         # unpack unknowns
@@ -80,7 +118,7 @@ class Newton:
         self.g_N = self.system.g_N(t, q)
 
         # static equilibrium
-        F = np.zeros_like(x)
+        F = np.zeros(self.nx_bar)
         F[: self.split_f[0]] = (
             self.system.h(t, q, self.u0)
             + self.W_g @ la_g
@@ -89,9 +127,42 @@ class Newton:
         )
         F[self.split_f[0] : self.split_f[1]] = self.system.g(t, q)
         F[self.split_f[1] : self.split_f[2]] = self.system.c(t, q, self.u0, la_c)
-        F[self.split_f[2] : self.split_f[3]] = self.system.g_S(t, q)
-        F[self.split_f[3] :] = np.minimum(la_N, self.g_N)
+        F[self.split_f[2] : self.split_f[3]] = np.minimum(la_N, self.g_N)
+        if not self.updated:
+            F[self.split_f[3] :] = self.system.g_S(t, q)
         return F
+
+    def jac_updated(self, x, t):
+        # unpack unknowns
+        q, la_g, la_c, la_N = np.array_split(x, self.split_x)
+
+        # evaluate additionally required quantites for computing the jacobian
+        # coo is used for efficient bmat
+        KNs = [
+            self.system.KN_h(t, q, self.u0),
+            self.system.KN_g(t, q, la_g),
+            self.system.KN_c(t, q, la_c),
+            self.system.KN_N(t, q, la_N),
+        ]
+        K = np.sum([KN[0] for KN in KNs])
+        N = np.sum([KN[1] for KN in KNs])
+
+        # note: csr_matrix is best for row slicing, see
+        # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
+        dRla_N = lil_array((self.nla_N, self.nu), dtype=float)
+        Rla_N_la_N = lil_array((self.nla_N, self.nla_N), dtype=float)
+        for i in range(self.nla_N):
+            if la_N[i] < self.g_N[i]:
+                Rla_N_la_N[i, i] = 1.0
+            else:
+                dRla_N[i] = self.W_N.T[i]
+
+        # fmt: off
+        return bmat([[     K + N, self.W_g,    self.W_c,   self.W_N], 
+                     [self.W_g.T,     None,        None,       None],
+                     [self.W_c.T,     None, self.c_la_c,       None],
+                     [    dRla_N,     None,        None, Rla_N_la_N],], format="csc")
+        # fmt: on
 
     def jac(self, x, t):
         # unpack unknowns
@@ -108,7 +179,6 @@ class Newton:
         g_q = self.system.g_q(t, q)
         g_S_q = self.system.g_S_q(t, q)
         c_q = self.system.c_q(t, q, self.u0, la_c)
-        c_la_c = self.system.c_la_c()
 
         # note: csr_matrix is best for row slicing, see
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
@@ -123,11 +193,11 @@ class Newton:
                 Rla_N_q[i] = g_N_q[i]
 
         # fmt: off
-        return bmat([[      K, self.W_g, self.W_c,   self.W_N], 
-                     [    g_q,     None,     None,       None],
-                     [    c_q,     None,   c_la_c,       None],
-                     [  g_S_q,     None,     None,       None],
-                     [Rla_N_q,     None,     None, Rla_N_la_N]], format="csc")
+        return bmat([[      K, self.W_g,    self.W_c,   self.W_N], 
+                     [    g_q,     None,        None,       None],
+                     [    c_q,     None, self.c_la_c,       None],
+                     [Rla_N_q,     None,        None, Rla_N_la_N],
+                     [  g_S_q,     None,        None,       None],], format="csc")
         # fmt: on
 
     def __pbar_text(self, force_iter, newton_iter, error):
@@ -138,7 +208,9 @@ class Newton:
         )
 
     def solve(self):
-        self.solver_summary = SolverSummary("Newton")
+        self.solver_summary = SolverSummary(
+            f"Newton{' updated' if self.updated else ''}"
+        )
         pbar = range(0, self.nt)
         if self.verbose:
             pbar = tqdm(pbar, leave=True)
@@ -146,9 +218,12 @@ class Newton:
             sol = fsolve(
                 self.fun,
                 self.x[i],
-                jac=self.jac,
+                jac=self.jac if not self.updated else self.jac_updated,
                 fun_args=(self.load_steps[i],),
                 jac_args=(self.load_steps[i],),
+                update_rule=self.update_rule,
+                # update_callback=self.update_callback if self.updated else None,
+                update_args=(self.load_steps[i],),
                 options=self.options,
             )
             self.x[i] = sol.x
@@ -165,6 +240,15 @@ class Newton:
                     f"Newton-Raphson method not converged, returning solution "
                     f"up to iteration {i+1:>{self.len_t}d}/{self.nt}"
                 )
+
+                # put iterates into solution
+                sub_ts = np.linspace(0, 1, self.options.newton_max_iter + 5)
+                all_q = np.vstack(
+                    [xi[:, : self.split_x[0]] for xi in self.all_x[: i + 1]]
+                )
+                all_t = np.concatenate(
+                    [j + sub_ts[: len(self.all_x[j][:, 0])] for j in range(i + 1)]
+                )
                 return Solution(
                     system=self.system,
                     t=self.load_steps[: i + 1],
@@ -174,10 +258,14 @@ class Newton:
                     la_c=self.x[: i + 1, self.split_x[1] : self.split_x[2]],
                     la_N=self.x[: i + 1, self.split_x[2] :],
                     all_x=self.all_x[: i + 1],
+                    all_q=all_q,
+                    all_t=all_t,
                     solver_summary=self.solver_summary,
                 )
 
-            # solver step callback
+            # # solver step callback
+            # self.x[i] = self.update_callback(self.x[i], self.load_steps[i])
+
             self.x[i, : self.split_x[0]], _ = self.system.step_callback(
                 self.load_steps[i], self.x[i, : self.split_x[0]], self.u0
             )
@@ -189,6 +277,13 @@ class Newton:
         # return solution object
         if self.verbose:
             pbar.close()
+
+        # put iterates into solution
+        sub_ts = np.linspace(0, 1, self.options.newton_max_iter + 5)
+        all_q = np.vstack([xi[:, : self.split_x[0]] for xi in self.all_x[: i + 1]])
+        all_t = np.concatenate(
+            [j + sub_ts[: len(self.all_x[j][:, 0])] for j in range(i + 1)]
+        )
         return Solution(
             self.system,
             t=self.load_steps,
@@ -198,6 +293,8 @@ class Newton:
             la_c=self.x[: i + 1, self.split_x[1] : self.split_x[2]],
             la_N=self.x[: i + 1, self.split_x[2] :],
             all_x=self.all_x[: i + 1],
+            all_q=all_q,
+            all_t=all_t,
             solver_summary=self.solver_summary,
         )
 

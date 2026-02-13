@@ -37,6 +37,7 @@ def make_CosseratRod(
     constraints=None,
     polynomial_degree=None,
     reduced_integration=True,
+    updated=False,
 ):
     """Rod factory that returns Petrov-Galerkin Cosserat rod classes.
 
@@ -85,7 +86,7 @@ def make_CosseratRod(
             raise ValueError("constraint values must between 0 and 5")
 
     if interpolation == "Quaternion":
-        Basis = make_CosseratRod_Quat(mixed=mixed, constraints=constraints)
+        Basis = make_CosseratRod_Quat(mixed=mixed, constraints=constraints, updated=updated)
         polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
     elif interpolation == "SE3":
         Basis = make_CosseratRod_SE3(mixed=mixed, constraints=constraints)
@@ -332,7 +333,7 @@ def make_CosseratRod(
     return CosseratRod
 
 
-def make_CosseratRod_Quat(mixed=True, constraints=None):
+def make_CosseratRod_Quat(mixed=True, constraints=None, updated=False):
     if mixed == True:
         if constraints == None:
             CosseratRodBase = CosseratRodMixed
@@ -368,6 +369,8 @@ def make_CosseratRod_Quat(mixed=True, constraints=None):
                 r_OP_xi += N_xi[node] * r_OP_node
 
                 p_node = qe[self.nodalDOF_element_p[node]]
+                if updated:
+                    p_node /= np.linalg.norm(p_node)
                 p += N[node] * p_node
                 p_xi += N_xi[node] * p_node
 
@@ -413,12 +416,21 @@ def make_CosseratRod_Quat(mixed=True, constraints=None):
 
                 nodalDOF_p = self.nodalDOF_element_p[node]
                 p_node = qe[nodalDOF_p]
+                if updated:
+                    norm_P = np.linalg.norm(p_node)
+                    p_node /= norm_P
+
+                    P_perp = (1 / (norm_P**2)) * (
+                        np.eye(4, dtype=float) - np.outer(p_node, p_node)
+                    )
+                else:
+                    P_perp = np.eye(4, dtype=float)
 
                 p += N[node] * p_node
-                p_qe[:, nodalDOF_p] += N[node] * np.eye(4, dtype=float)
+                p_qe[:, nodalDOF_p] += N[node] * P_perp
 
                 p_xi += N_xi[node] * p_node
-                p_xi_qe[:, nodalDOF_p] += N_xi[node] * np.eye(4, dtype=float)
+                p_xi_qe[:, nodalDOF_p] += N_xi[node] * P_perp
 
             # transformation matrix
             A_IB = Exp_SO3_quat(p, normalize=True)
