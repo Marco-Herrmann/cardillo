@@ -854,6 +854,43 @@ class ProjectedPositionOrientationBase:
 
         # return Wla_g_q_num
 
+    def KN_g(self, t, q, la_g):
+        nu1 = self._nu1
+        K = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
+        N = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
+
+        # minus sign!
+        K[:nu1, :nu1] -= np.einsum("i,ijk->jk", -la_g[:3], self.J2_J1(t, q))
+        K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[:3], self.J2_J2(t, q))
+
+        if self.constrain_orientation:
+            A_IJ1 = self.A_IJ1(t, q)
+            A_IJ2 = self.A_IJ2(t, q)
+
+            J_R1 = self.J_R1(t, q)
+            J_R2 = self.J_R2(t, q)
+
+            J2_R1 = self.J2_R1(t, q)
+            J2_R2 = self.J2_R2(t, q)
+
+            for i, (a, b) in enumerate(self.projection_pairs):
+                e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
+                n = cross3(e_a, e_b)
+                double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[3 + i]
+                off_diag_term = J_R1.T @ double_tilde @ J_R2
+                K[:nu1, :nu1] += (
+                    np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R1)
+                    + J_R1.T @ double_tilde @ J_R1
+                )
+                K[:nu1, nu1:] -= off_diag_term
+                K[nu1:, :nu1] -= off_diag_term.T
+                K[nu1:, nu1:] += (
+                    -np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R2)
+                    + J_R2.T @ double_tilde.T @ J_R2
+                )
+
+        return K, N
+
     def g_q_T_mu_q(self, t, q, mu):
         warnings.warn(
             "'ProjectedPositionOrientationBase.g_q_T_mu_q' uses numerical derivative."
