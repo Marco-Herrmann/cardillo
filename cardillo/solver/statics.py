@@ -2,7 +2,7 @@ import numpy as np
 import warnings
 from scipy.sparse import lil_array, bmat, csc_array
 from scipy.sparse.linalg import inv as sparse_inv
-from scipy.linalg import eigh, null_space
+from scipy.linalg import eigh, null_space, eig
 from tqdm import tqdm
 
 from cardillo.math.fsolve import fsolve
@@ -645,6 +645,100 @@ class Eigenmodes:
         omegas = np.zeros([len(las_ud_squared)])
         valids = np.ones_like(omegas, dtype=bool)
         modes_dq = B @ T @ Vs_ud
+        for i, lai in enumerate(las_ud_squared):
+            if np.abs(lai) <= self.la_sqared_tol:
+                omegas[i] = 0.0
+            elif lai > 0:
+                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
+                warnings.warn(msg)
+                valids[i] = False
+                omegas[i] = np.sqrt(lai)
+            else:
+                omegas[i] = np.sqrt(-lai)
+
+        # compose solution object with omegas and modes
+        sol = Solution(
+            self.system,
+            np.array([t]),
+            np.array([q]),
+            omegas=np.array([omegas]),
+            modes_dq=np.array([modes_dq]),
+            valids=np.array([valids]),
+        )
+
+        return omegas, modes_dq, sol
+
+    def solve_cheap(self, index=-1):
+
+        warnings.warn(
+            "Using `solve_cheap` uses the derivatives of the nonlinear equations w.r.t. q and projects with q_dot_u. Furthermore: constraints are eliminated 'to the left and to the right' with different projection matrices. The resulting matrices are not guaranteed to be symmetric, so problems with purely imaginary eigenvales may occur."
+        )
+        # TODO: check for static equilibrium
+
+        # extract values
+        t = self.sol.t[index]
+        q = self.sol.q[index]
+        la_c = self.sol.la_c[index] if self.sol.la_c is not None else None
+        la_g = self.sol.la_g[index] if self.sol.la_g is not None else None
+        la_N = self.sol.la_N[index] if self.sol.la_N is not None else None
+
+        ##################
+        # stiffness matrix
+        ##################
+        # Using h, c, g, N contributions for stiffness
+        K_h = self.system.h_q(t, q, self.u)
+        K_c = self.system.Wla_c_q(t, q, la_c)
+        K_g = self.system.Wla_g_q(t, q, la_g)
+        K_N = self.system.Wla_N_q(t, q, la_N)
+
+        # solve compliance equation
+        W_c = self.system.W_c(t, q, format="csc")
+        c_q = self.system.c_q(t, q, self.sol.u[index], la_c)
+        B = self.system.q_dot_u(t, q, format="csc")
+        K0 = -(K_h + K_c + K_g + K_N - W_c @ self.C_inv @ c_q) @ B
+
+        #############
+        # mass matrix
+        #############
+        M0 = self.system.M(t, q)
+
+        W_g = self.system.W_g(t, q, format="csr")
+        g_q = self.system.g_q(t, q, format="csr")
+        T_left = csc_array(null_space(W_g.T.toarray()))
+        T_right = csc_array(null_space((g_q @ B).toarray()))
+
+        K = T_left.T @ K0 @ T_right
+        M = T_left.T @ M0 @ T_right
+
+        ####################
+        # compute eigenmodes
+        ####################
+        # squared eigenvalues
+        res = list(eig(-K.toarray(), M.toarray()))
+
+        # make everything real
+        for i, v in enumerate(res):
+            imag_norm = np.linalg.norm(np.imag(v))
+            total_norm = np.linalg.norm(v)
+            if total_norm > 0.0:
+                ratio = imag_norm / total_norm
+                if ratio >= 1e-2:
+                    print(
+                        f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
+                    )
+            res[i] = np.real(v)
+
+        las_ud_squared, Vs_ud = res
+
+        # sort eigenvalues such that rigid body modes are first
+        sort_idx = np.argsort(-las_ud_squared)
+        las_ud_squared = las_ud_squared[sort_idx]
+        Vs_ud = Vs_ud[:, sort_idx]
+
+        # compute omegas
+        omegas = np.zeros([len(las_ud_squared)])
+        valids = np.ones_like(omegas, dtype=bool)
+        modes_dq = B @ T_right @ Vs_ud
         for i, lai in enumerate(las_ud_squared):
             if np.abs(lai) <= self.la_sqared_tol:
                 omegas[i] = 0.0
