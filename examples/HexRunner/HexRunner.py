@@ -7,7 +7,7 @@ from cardillo.actuators import Motor, PDcontroller
 from cardillo.discrete import Frame, RigidBody, Box, Cylinder, PointMass
 from cardillo.forces import Force
 from cardillo.constraints import Revolute, Prismatic, RigidConnection
-from cardillo.math import A_IB_basic
+from cardillo.math import A_IB_basic, cross3
 from cardillo.contacts import Sphere2Plane
 from cardillo.interactions import TwoPointInteraction
 from cardillo.force_laws import KelvinVoigtElement
@@ -22,26 +22,26 @@ if __name__ == "__main__":
 
     # ground
     floor = Box(Frame)(
-        dimensions=[4.5, 4.5, 0.0001],
+        dimensions=[100.0, 2.0, 0.0001],
         name="floor",
-        A_IB=np.eye(3),  # A_IB_basic(np.deg2rad(10)).x @ A_IB_basic(np.deg2rad(10)).y,
+        A_IB=np.eye(3),
     )
     system.add(floor)
 
     # length of the leg
     l_leg = 0.5
     height_offset = 0.01
+    v0 = 10.0
 
-    omega_0 = -0.0
+    r_Center = np.array([-10.0, 0.0, l_leg + height_offset])
+    v_Center = np.array([v0, 0.0, 0.0])
+    Omega0 = np.array([0.0, v0 / l_leg, 0.0])
 
     # lower hanging cylinder
-    r_C1 = np.array([0.0, 0.0, 0.3 + height_offset])
+    r_C1 = r_Center - np.array([0.0, 0.0, 0.35])
     A_IB1 = A_IB_basic(np.pi / 2).y
     radius_C1 = 0.05
     length_C1 = 0.5
-    # rho_C1 = 100.0  # TODO
-    # m_C1 = np.pi * radius_C1**2 * length_C1 * rho_C1
-    # print(f"{m_C1 = }")
     m_C1 = 2.0
     B1_Theta_C1 = m_C1 * np.diag(
         [
@@ -52,6 +52,7 @@ if __name__ == "__main__":
     )
     q0_C1 = RigidBody.pose2q(r_C1, A_IB1)
     u0_C1 = np.zeros(6)
+    u0_C1[:3] = v_Center
     cylinder1 = Cylinder(RigidBody)(
         radius_C1,
         length_C1,
@@ -65,13 +66,10 @@ if __name__ == "__main__":
     objects.append(cylinder1)
 
     # left rotating disc
-    r_C2 = np.array([0.0, 0.1, 0.5 + height_offset])
+    r_C2 = r_Center + np.array([0.0, 0.1, 0.0])
     A_IB2 = A_IB_basic(np.pi / 2).x
     radius_C2 = 0.05
     length_C2 = 0.02
-    # rho_C2 = 100.0 # TODO
-    # m_C2 = np.pi * radius_C2**2 * length_C2 * rho_C2
-    # print(f"{m_C2 = }")
     m_C2 = 0.5
     B2_Theta_C2 = m_C2 * np.diag(
         [
@@ -82,7 +80,8 @@ if __name__ == "__main__":
     )
     q0_C2 = RigidBody.pose2q(r_C2, A_IB2)
     u0_C2 = np.zeros(6)
-    u0_C2[-1] = omega_0
+    u0_C2[:3] = v_Center
+    u0_C2[3:] = A_IB2.T @ Omega0
     cylinder2 = Cylinder(RigidBody)(
         radius_C2,
         length_C2,
@@ -96,22 +95,18 @@ if __name__ == "__main__":
     objects.append(cylinder2)
 
     # right rotating disc
-    r_C3 = np.array([0.0, -0.1, 0.5 + height_offset])
+    r_C3 = r_Center - np.array([0.0, 0.1, 0.0])
     A_IB3 = A_IB_basic(np.pi / 2).x
-    radius_C3 = radius_C2
-    length_C3 = length_C2
-    # rho_C3 = rho_C2
-    m_C3 = m_C2
-    B3_Theta_C3 = B2_Theta_C2
     q0_C3 = RigidBody.pose2q(r_C3, A_IB3)
     u0_C3 = np.zeros(6)
-    u0_C3[-1] = omega_0
+    u0_C3[:3] = v_Center
+    u0_C3[3:] = A_IB3.T @ Omega0
     cylinder3 = Cylinder(RigidBody)(
-        radius_C3,
-        length_C3,
+        radius_C2,
+        length_C2,
         None,
-        mass=m_C3,
-        B_Theta_C=B3_Theta_C3,
+        mass=m_C2,
+        B_Theta_C=B2_Theta_C2,
         q0=q0_C3,
         u0=u0_C3,
         name="Cylinder3",
@@ -119,19 +114,17 @@ if __name__ == "__main__":
     objects.append(cylinder3)
 
     # connect cylinder1 and cylinder2
-    revolute_12 = Revolute(cylinder1, cylinder2, axis=1, r_OJ0=r_C2, name="revolute_12")
+    revolute_12 = Revolute(
+        cylinder1, cylinder2, axis=1, r_OJ0=r_Center, name="revolute_12"
+    )
     system.add(revolute_12)
-
-    # connect cylinder1 and cylinder3
-    # revolute_13 = Revolute(cylinder1, cylinder3, axis=1, r_OJ0=r_C3, name="revolute_13")
-    # system.add(revolute_13)
 
     rc = RigidConnection(cylinder2, cylinder3, name="rigid_connection")
     system.add(rc)
 
     # Motor
     print(0.2 * cylinder1.mass * 9.81)
-    motor = Motor(revolute_12, lambda t: 5.0)
+    motor = Motor(revolute_12, lambda t: 4.0)
     system.add(motor)
 
     contacts = []
@@ -157,10 +150,7 @@ if __name__ == "__main__":
     ######################
     radius_leg = 0.01
     length_leg = l_leg / 2
-    # rho_leg = rho_C2 # TODO
-    # m_leg = np.pi * radius_leg**2 * length_leg * rho_leg
-    # print(f"{m_leg = }")
-    m_leg = 0.1
+    m_leg = 0.05
     Bi_Theta_Ci = m_leg * np.diag(
         [
             1 / 2 * radius_leg**2,
@@ -172,13 +162,16 @@ if __name__ == "__main__":
         for j in range(3):
             alpha = (alpha0 + 120 * j) * np.pi / 180
             A_IBi = A_IB_basic(alpha).y
-            r_Ci = np.array(
-                [0.0, 0.1 * (-1) ** i, 0.5 + height_offset]
-            ) + A_IBi @ np.array([0.0, 0.0, 3 / 4 * l_leg])
+            r_Ci = (
+                r_Center
+                + (-1) ** i * np.array([0.0, 0.1, 0.0])
+                + A_IBi @ np.array([0.0, 0.0, 3 / 4 * l_leg])
+            )
 
             q0_Ci = RigidBody.pose2q(r_Ci, A_IBi)
             u0_Ci = np.zeros(6)
-            u0_Ci[-1] = omega_0
+            u0_Ci[:3] = v_Center + cross3(Omega0, r_Ci - r_Center)
+            u0_Ci[3:] = A_IBi.T @ Omega0
             cylinderi = Cylinder(RigidBody)(
                 radius_leg,
                 length_leg,
@@ -231,8 +224,8 @@ if __name__ == "__main__":
     ############
     # simulation
     ############
-    t1 = 1.0
-    dt = 5e-4  # time step
+    t1 = 2.0
+    dt = 1e-3  # time step
     solver = Moreau(
         system,
         t1,
@@ -250,6 +243,20 @@ if __name__ == "__main__":
 
     # render.stop_step_render()
     render.render_solution(sol, repeat=True)
+
+    # get energeies of the system
+    E_pot = [system.E_pot(ti, qi) for ti, qi in zip(sol.t, sol.q)]
+    E_kin = [system.E_kin(ti, qi, ui) for ti, qi, ui in zip(sol.t, sol.q, sol.u)]
+    E_tot = [E_kin[i] + E_pot[i] for i in range(len(sol.t))]
+
+    fig, ax = plt.subplots()
+    ax.plot(sol.t, E_pot, label="E_pot")
+    ax.plot(sol.t, E_kin, label="E_kin")
+    ax.plot(sol.t, E_tot, label="E_tot")
+    ax.legend()
+    ax.grid()
+
+    plt.show()
 
     # vtk-export
     dir_name = Path(__file__).parent

@@ -44,7 +44,10 @@ class Renderer:
 
     def __update_fps(self):
         self.n_frame += 1
-        self.fps = self.n_frame / (time() - self.t0)
+        if time() - self.t0 == 0:
+            self.fps = 30
+        else:
+            self.fps = self.n_frame / (time() - self.t0)
         self.fps_actor.SetInput(
             f" frame {self.n_frame} / {self.tot_frame}, fps {self.fps:.2f}" + " " * 10
         )

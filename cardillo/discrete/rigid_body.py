@@ -116,6 +116,12 @@ class RigidBody:
         return q, u
 
     #####################
+    # kinetic energy
+    #####################
+    def E_kin(self, t, q, u):
+        return 0.5 * u @ self.__M @ u
+
+    #####################
     # equations of motion
     #####################
     def M(self, t, q):
