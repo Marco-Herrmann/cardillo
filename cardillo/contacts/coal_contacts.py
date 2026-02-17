@@ -4,22 +4,52 @@ import numpy as np
 import coal
 from warnings import warn
 
-from cardillo.math.algebra import cross3, norm
+from cardillo.math.algebra import cross3, norm, e3
 from cardillo.math.prox import Sphere
 
+# TODO: get other primitives from meshed
+# https://github.com/coal-library/coal/blob/devel/src/shape/geometric_shapes.cpp
+# https://github.com/coal-library/coal/blob/devel/include/coal/shape/geometric_shapes.h#L386
+# https://docs.ros.org/en/iron/p/coal/generated/classcoal_1_1ShapeBase.html#exhale-class-classcoal-1-1shapebase
 
-class CoalShapes:
-    ...
-    # TODO: get them from meshed
-    # https://github.com/coal-library/coal/blob/devel/src/shape/geometric_shapes.cpp
+
+def CoalBox(dimensions):
+    return coal.Box(*dimensions)
 
 
 def CoalSphere(radius):
     return coal.Sphere(radius)
 
 
-def CoalBox(dimensions):
-    return coal.Box(*dimensions)
+def CoalEllipsoid(dimensions):
+    # TODO: Test implementation
+    return coal.Ellipsoid(*dimensions)
+
+
+def CoalCapsule(radius, height):
+    return coal.Capsule(radius, height)
+
+
+def CoalCone(radius, height):
+    # TODO: coalCone goes from z=-height/2 to z=height/2
+    # while in cardillo it goes from z=0 to z=height
+    # however, the COM is somewhere between the base surface and the middle
+    return coal.Cone(radius, height)
+
+
+def CoalCylinder(radius, height):
+    return coal.Cylinder(radius, height)
+
+
+# TODO: how to name it: halfspace or plane
+# in cardillo, we call it plane, but coal halfspace is oriented, while plane isn't
+# def CoalPlane(normal=e3, d=0.0):
+def CoalHalfspace(normal=e3, d=0.0):
+    # default in upwards direction
+    return coal.Halfspace(normal, d)
+
+
+def CoalTriangleP(): ...
 
 
 class ContactObject:
