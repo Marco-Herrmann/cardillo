@@ -1,18 +1,17 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from pathlib import Path
 
 from cardillo import System
-from cardillo.actuators import Motor, PDcontroller
-from cardillo.discrete import Frame, RigidBody, Box, Cylinder, PointMass
-from cardillo.forces import Force
+from cardillo.actuators import Motor
 from cardillo.constraints import Revolute, Prismatic, RigidConnection
-from cardillo.math import A_IB_basic, cross3
 from cardillo.contacts import Sphere2Plane
-from cardillo.interactions import TwoPointInteraction
+from cardillo.discrete import Frame, RigidBody, Box, Cylinder
 from cardillo.force_laws import KelvinVoigtElement
-
-from cardillo.solver import Moreau, Rattle, SolverOptions
+from cardillo.forces import Force
+from cardillo.interactions import TwoPointInteraction
+from cardillo.math import A_IB_basic, cross3
+from cardillo.solver import Moreau, SolverOptions
 from cardillo.visualization import Renderer
 
 if __name__ == "__main__":
