@@ -53,25 +53,46 @@ def LeviCivita3(i: int, j: int, k: int) -> int:
 
 def ax2skew(a: np.ndarray) -> np.ndarray:
     """Computes the skew symmetric matrix from a 3D vector."""
-    assert a.size == 3
+    a = np.asarray(a)
+    was_1d = (a.ndim == 1)
+    a = np.atleast_2d(a)
+    assert a.shape[1] == 3
+
     # fmt: off
-    return np.array([[0,    -a[2], a[1] ],
-                     [a[2],  0,    -a[0]],
-                     [-a[1], a[0], 0    ]], dtype=a.dtype)
+    S = np.zeros((a.shape[0], 3, 3), dtype=a.dtype)
+    S[:, 0, 1] = -a[:, 2]
+    S[:, 0, 2] =  a[:, 1]
+    S[:, 1, 0] =  a[:, 2]
+    S[:, 1, 2] = -a[:, 0]
+    S[:, 2, 0] = -a[:, 1]
+    S[:, 2, 1] =  a[:, 0]
     # fmt: on
+
+    return S[0] if was_1d else S
 
 
 def ax2skew_squared(a: np.ndarray) -> np.ndarray:
     """Computes the product of a skew-symmetric matrix with itself from a given axial vector."""
-    assert a.size == 3
-    a1, a2, a3 = a
-    # fmt: off
-    return np.array([
-        [-a2**2 - a3**2,              a1 * a2,              a1 * a3],
-        [             a2 * a1, -a1**2 - a3**2,              a2 * a3],
-        [             a3 * a1,              a3 * a2, -a1**2 - a2**2],
-    ], dtype=a.dtype)
-    # fmt: on
+    a = np.asarray(a)
+    was_1d = (a.ndim == 1)
+    a = np.atleast_2d(a)
+    assert a.shape[1] == 3
+
+    a1, a2, a3 = a[:, 0], a[:, 1], a[:, 2]
+    a1a1 = a1*a1
+    a2a2 = a2*a2
+    a3a3 = a3*a3
+
+    S = np.empty((a.shape[0], 3, 3), dtype=a.dtype)
+    S[:, 0, 0] = -(a2a2 + a3a3)
+    S[:, 1, 1] = -(a1a1 + a3a3)
+    S[:, 2, 2] = -(a1a1 + a2a2)
+
+    S[:, 0, 1] = S[:, 1, 0] = a1*a2
+    S[:, 0, 2] = S[:, 2, 0] = a1*a3
+    S[:, 1, 2] = S[:, 2, 1] = a2*a3
+
+    return S[0] if was_1d else S
 
 
 def skew2ax(A: np.ndarray) -> np.ndarray:

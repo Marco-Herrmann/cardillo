@@ -544,7 +544,7 @@ def smallest_rotation(
         return Exp_SO3(psi * axis)
 
 
-def Exp_SO3_quat(P, normalize=True):
+def Exp_SO3_quat(P: np.ndarray, normalize:bool=True) -> np.ndarray:
     """Exponential mapping defined by (unit) quaternion, see 
     Egeland2002 (6.163), Nuetzi2016 (3.31) and Rucker2018 (13).
 
@@ -557,11 +557,18 @@ def Exp_SO3_quat(P, normalize=True):
     Nuetzi2016: https://www.research-collection.ethz.ch/handle/20.500.11850/117165 \\
     Rucker2018: https://ieeexplore.ieee.org/document/8392463
     """
-    p0, p = P[0], P[1:]
-    matrix = 2.0 * (p0 * ax2skew(p) + ax2skew_squared(p))
+    P = np.asarray(P)
+    was_1d = (P.ndim == 1)
+    P = np.atleast_2d(P)
+    assert P.shape[1] == 4
+
+    p0, p = P[:, 0], P[:, 1:]
+    matrix = 2.0 * (p0[:, None, None] * ax2skew(p) + ax2skew_squared(p))
     if normalize:
-        matrix /= P @ P
-    return eye3 + matrix
+        matrix /= np.sum(P * P, axis=1)[:, None, None]
+    
+    result = eye3[None, :, :] + matrix
+    return result[0] if was_1d else result
 
 
 def Exp_SO3_quat_P(P, normalize=True):
@@ -586,18 +593,25 @@ def Exp_SO3_quat_P(P, normalize=True):
 Log_SO3_quat = Spurrier
 
 
-def T_SO3_quat(P, normalize=True):
+def T_SO3_quat(P_IB: np.ndarray, normalize:bool=True) -> np.ndarray:
     """Tangent map for unit quaternion. See Egeland2002 (6.327).
 
     References:
     -----------
     Egeland2002: https://folk.ntnu.no/oe/Modeling%20and%20Simulation.pdf
     """
-    p0, p = P[0], P[1:]
-    matrix = 2.0 * np.hstack((-p[:, None], p0 * eye3 - ax2skew(p)))
+    P_IB = np.asarray(P_IB)
+    was_1d = (P_IB.ndim == 1)
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    result = np.empty((P_IB.shape[0], 3, 4), dtype=np.result_type(P_IB, 1.0))
+    result[:, :, 0] = -2.0 * p
+    result[:, :, 1:] = 2.0 * (p0[:, None, None] * eye3[None, :, :] - ax2skew(p))
     if normalize:
-        matrix /= P @ P
-    return matrix
+        result /= np.sum(P_IB * P_IB, axis=1)[:, None, None]
+    return result[0] if was_1d else result
 
 
 def T_SO3_inv_quat(P, normalize=True):
