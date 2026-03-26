@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.sparse import csr_matrix, bsr_array, bsr_matrix
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from .lagrange import LagrangeBasis
@@ -287,6 +288,28 @@ class Mesh1D:
                         Nu[d][el, i, :, uDOF] = shape_functions[d][el, i, node] * eye_u
 
         return Nq, Nu
+
+    def shape_functions_matrix_new(self, nquadrature, derivative_order):
+        N_sparse = [
+            csr_matrix((self.nelement * nquadrature, self.nnodes))
+            for _ in range(derivative_order + 1)
+        ]
+        shape_functions = self.shape_functions(nquadrature, derivative_order)
+
+        if self.basis == "Lagrange":
+            offset = self.degree
+        elif self.basis == "Lagrange_Disc":
+            offset = self.degree + 1
+
+        for el in range(self.nelement):
+            for i in range(nquadrature):
+                row = el * nquadrature + i
+                for node in range(self.nnodes_per_element):
+                    col = el * offset + node
+                    for d in range(derivative_order + 1):
+                        N_sparse[d][row, col] = shape_functions[d][el, i, node]
+
+        return N_sparse
 
 
 if __name__ == "__main__":
