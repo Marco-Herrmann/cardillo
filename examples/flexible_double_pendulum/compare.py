@@ -4,7 +4,6 @@ from pathlib import Path
 
 from cardillo.solver import load_solution
 
-
 ###############
 # load solution
 ###############

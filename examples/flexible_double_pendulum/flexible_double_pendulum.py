@@ -1,4 +1,4 @@
-from math import pi
+from cProfile import Profile
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
@@ -31,7 +31,7 @@ def flexible_double_pendulum(Rod, show_plots, name):
     length = 1.0
     width_y = 0.05
     width_z = 0.05
-    nelements = 4
+    nelements = 10
 
     rho = 7000.0
     cross_section = RectangularCrossSection(width_y, width_z)
@@ -117,7 +117,7 @@ def flexible_double_pendulum(Rod, show_plots, name):
                 )
             )
 
-    system.assemble()
+    system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     t1 = 1.5
     dt = 5e-3
@@ -127,11 +127,17 @@ def flexible_double_pendulum(Rod, show_plots, name):
     solver = DualStormerVerlet(
         system, t1, dt, options=SolverOptions(newton_max_iter=100)
     )
+    prof = Profile()
+    prof.enable()
     sol = solver.solve()
+    prof.disable()
 
     # save solution
     path = Path(__file__)
     sol.save(Path(path.parent, f"sol_{name}.pkl"))
+
+    # to view: run "view snakeviz.exe .\rod.prof" in shell
+    prof.dump_stats(Path(path.parent, f"prof_{name}.prof"))
 
     fig, ax, anim = animate_beam(
         sol.t, sol.q, rods, scale=2 * length, scale_di=width_y, show=False

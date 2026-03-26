@@ -31,6 +31,8 @@ eggs/
 *.txt
 *.dat
 *.csv
+*.pkl
+*.prof
 
 # videos
 *.mp4
@@ -49,7 +51,10 @@ jupyter_execute/
 
 # results
 examples/results
+examples_linearization
 
 # virtual environment
 myvenv
+myWSLvenv
+myCONDAvenv
 

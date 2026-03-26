@@ -2,7 +2,6 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-
 p_deg = np.arange(5) + 1
 n_red = p_deg
 n_full_Masterthesis = 2 * p_deg - 1
