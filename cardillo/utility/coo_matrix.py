@@ -20,7 +20,7 @@ class CooMatrix:
     Wiki/COO: https://en.wikipedia.org/wiki/Sparse_matrix#Coordinate_list_(COO)
     """
 
-    def __init__(self, shape):
+    def __init__(self, shape, nallocate=None):
         # check shape input
         if isinstance(shape, tuple):
             pass
@@ -48,6 +48,13 @@ class CooMatrix:
         self.__row = array("I", [])  # unsigned int
         self.__col = array("I", [])  # unsigned int
 
+        self.nallocate = nallocate
+        self.allocated = nallocate is not None
+        if self.allocated:
+            self.fixed_size = False
+            self.__idx0 = 0
+            self.allocation_slices = [None] * nallocate
+
     @property
     def data(self):
         return self.__data
@@ -73,6 +80,12 @@ class CooMatrix:
         self.__col = value
 
     def __setitem__(self, key, value):
+        if self.allocated:
+            self.__setitem_allocated(key, value)
+        else:
+            self.__setitem_default(key[-2:], value)
+
+    def __setitem_default(self, key, value):
         # None is returned by every function that does not return. Hence, we
         # can use this to add no contribution to the matrix.
         if value is not None:
@@ -121,6 +134,78 @@ class CooMatrix:
                 self.row.extend(repeat(rows, len(cols)))
                 self.col.extend(tile(cols, len(rows)))
 
+    def __setitem_allocated(self, key, value):
+        if not self.fixed_size:
+            # fill rows, columns and data, and save indices
+            if value is not None:
+                allocate_id, rows, cols = key
+                if isinstance(rows, slice):
+                    rows = arange(*rows.indices(self.shape[0]))
+                if isinstance(cols, slice):
+                    cols = arange(*cols.indices(self.shape[1]))
+                rows = atleast_1d(rows)
+                cols = atleast_1d(cols)
+
+                if isinstance(value, CooMatrix):
+                    assert value.shape == (
+                        len(rows),
+                        len(cols),
+                    ), "inconsistent assignment"
+
+                    # extend arrays from given CooMatrix
+                    self.data.extend(value.data)
+                    self.row.extend(rows[value.row])
+                    self.col.extend(cols[value.col])
+                    # TODO: benchmark
+                    # self.data.fromlist(value.data.tolist())
+                    # self.row.fromlist(rows[value.row].tolist())
+                    # self.col.fromlist(cols[value.col].tolist())
+
+                    self.allocation_slices[allocate_id] = slice(
+                        self.__idx0, self.__idx0 + len(value.data)
+                    )
+                    self.__idx0 += len(value.data)
+
+                elif isinstance(value, sparray):
+                    raise NotImplementedError(
+                        "allocated access for sparray is not implemented yet"
+                    )
+                elif isinstance(value, spmatrix):
+                    raise RuntimeError(
+                        "Do not use sparse matrices, move to sparse array."
+                    )
+                else:
+                    value = atleast_2d(value)
+                    assert value.shape == (
+                        len(rows),
+                        len(cols),
+                    ), "inconsistent assignment"
+
+                    # 2D array
+                    self.data.extend(value.ravel(order="C"))
+                    self.row.extend(repeat(rows, len(cols)))
+                    self.col.extend(tile(cols, len(rows)))
+
+                    self.allocation_slices[allocate_id] = slice(
+                        self.__idx0, self.__idx0 + value.size
+                    )
+                    self.__idx0 += value.size
+
+            if key[0] == self.nallocate - 1:
+                self.fixed_size = True
+            return
+
+        if value is not None:
+            if isinstance(value, CooMatrix):
+                data = value.data
+            elif isinstance(value, sparray):
+                raise NotImplementedError(
+                    "allocated access for sparray is not implemented yet"
+                )
+            else:
+                data = atleast_2d(value).ravel(order="C")
+            self.data[self.allocation_slices[key[0]]] = array("d", data)
+
     def extend(self, matrix, DOF):
         warnings.warn(
             "Usage of `CooMatrix.extend` is deprecated. "
@@ -142,6 +227,10 @@ class CooMatrix:
         -------
         A : This matrix in the passed format.
         """
+        if format is None:
+            assert not copy, "copy=True is not supported when format=None"
+            return self
+
         try:
             convert_method = getattr(self, "to" + format)
         except AttributeError as e:

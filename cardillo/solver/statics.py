@@ -60,6 +60,36 @@ class Newton:
         self.x = np.zeros((self.nt, nx), dtype=float)
         self.x[0] = x0
 
+        # allocate for coo
+        preallocate = True
+        preallocate = False
+        if preallocate:
+            # fmt: off
+            self.W_g_coo = system.W_g(self.load_steps[0], system.q0, format=None)
+            self.W_c_coo = system.W_c(self.load_steps[0], system.q0, format=None)
+            self.W_N_coo = system.W_N(self.load_steps[0], system.q0, format=None)
+            self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format=None)
+            self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format=None)
+            self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format=None)
+            self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format=None)
+            self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format=None)
+            self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format=None)
+            self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format=None)
+            self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format=None)
+            # fmt: on
+        else:
+            self.W_g_coo = None
+            self.W_c_coo = None
+            self.W_N_coo = None
+            self.h_q_coo = None
+            self.Wla_g_q_coo = None
+            self.Wla_c_q_coo = None
+            self.Wla_N_q_coo = None
+            self.g_q_coo = None
+            self.g_S_q_coo = None
+            self.c_q_coo = None
+            self.g_N_q_coo = None
+
     def fun(self, x, t):
         # unpack unknowns
         q, la_g, la_c, la_N = np.array_split(x, self.split_x)
@@ -68,9 +98,9 @@ class Newton:
         # the jacobian
         # csr is used for efficient matrix vector multiplication, see
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
-        self.W_g = self.system.W_g(t, q, format="csr")
-        self.W_c = self.system.W_c(t, q, format="csr")
-        self.W_N = self.system.W_N(t, q, format="csr")
+        self.W_g = self.system.W_g(t, q, format="csr", coo=self.W_g_coo)
+        self.W_c = self.system.W_c(t, q, format="csr", coo=self.W_c_coo)
+        self.W_N = self.system.W_N(t, q, format="csr", coo=self.W_N_coo)
         self.g_N = self.system.g_N(t, q)
 
         # static equilibrium
@@ -94,19 +124,19 @@ class Newton:
         # evaluate additionally required quantites for computing the jacobian
         # coo is used for efficient bmat
         K = (
-            self.system.h_q(t, q, self.u0)
-            + self.system.Wla_g_q(t, q, la_g)
-            + self.system.Wla_c_q(t, q, la_c)
-            + self.system.Wla_N_q(t, q, la_N)
+            self.system.h_q(t, q, self.u0, coo=self.h_q_coo)
+            + self.system.Wla_g_q(t, q, la_g, coo=self.Wla_g_q_coo)
+            + self.system.Wla_c_q(t, q, la_c, coo=self.Wla_c_q_coo)
+            + self.system.Wla_N_q(t, q, la_N, coo=self.Wla_N_q_coo)
         )
-        g_q = self.system.g_q(t, q)
-        g_S_q = self.system.g_S_q(t, q)
-        c_q = self.system.c_q(t, q, self.u0, la_c)
+        g_q = self.system.g_q(t, q, coo=self.g_q_coo)
+        g_S_q = self.system.g_S_q(t, q, coo=self.g_S_q_coo)
+        c_q = self.system.c_q(t, q, self.u0, la_c, coo=self.c_q_coo)
         c_la_c = self.system.c_la_c()
 
         # note: csr_matrix is best for row slicing, see
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
-        g_N_q = self.system.g_N_q(t, q, format="csr")
+        g_N_q = self.system.g_N_q(t, q, format="csr", coo=self.g_N_q_coo)
 
         Rla_N_q = lil_array((self.nla_N, self.nq), dtype=float)
         Rla_N_la_N = lil_array((self.nla_N, self.nla_N), dtype=float)
