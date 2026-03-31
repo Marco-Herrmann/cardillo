@@ -572,6 +572,17 @@ def Exp_SO3_quat(P: np.ndarray, normalize: bool = True) -> np.ndarray:
 
 
 def Exp_SO3_quat_P(P, normalize=True):
+    P = np.asarray(P)
+    was_1d = P.ndim == 1
+    P = np.atleast_2d(P)
+    assert P.shape[1] == 4
+
+    # TODO: vectorize and optimize
+    result = np.array([Exp_SO3_quat_P_(Pi, normalize=normalize) for Pi in P])
+    return result[0] if was_1d else result
+
+
+def Exp_SO3_quat_P_(P, normalize=True):
     """Derivative of Exp_SO3_quat with respect to P."""
     p0, p = P[0], P[1:]
     p_tilde = ax2skew(p)
@@ -647,6 +658,17 @@ def T_SO3_inv_quat_(P, normalize=True):
 
 
 def T_SO3_quat_P(P, normalize=True):
+    P = np.asarray(P)
+    was_1d = P.ndim == 1
+    P = np.atleast_2d(P)
+    assert P.shape[1] == 4
+
+    # TODO: vectorize and optimize
+    result = np.array([T_SO3_quat_P_(Pi, normalize=normalize) for Pi in P])
+    return result[0] if was_1d else result
+
+
+def T_SO3_quat_P_(P, normalize=True):
     p0, p = P[0], P[1:]
     T_P = np.zeros((3, 4, 4), dtype=np.result_type(P, 1.0))
     T_P[:, 0, 1:] = -2.0 * eye3

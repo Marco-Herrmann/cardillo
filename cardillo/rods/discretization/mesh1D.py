@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.sparse import csr_matrix, bsr_array, bsr_matrix
+from scipy.sparse import csr_array, bsr_array, bsr_matrix
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from .lagrange import LagrangeBasis
@@ -291,7 +291,7 @@ class Mesh1D:
 
     def shape_functions_matrix_new(self, nquadrature, derivative_order):
         N_sparse = [
-            csr_matrix((self.nelement * nquadrature, self.nnodes))
+            csr_array((self.nelement * nquadrature, self.nnodes))
             for _ in range(derivative_order + 1)
         ]
         shape_functions = self.shape_functions(nquadrature, derivative_order)
