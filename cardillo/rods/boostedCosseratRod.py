@@ -6,7 +6,9 @@ from scipy.sparse import (
     block_diag,
     bsr_array,
     csr_array,
+    eye_array,
 )
+from scipy.sparse.linalg import spsolve
 from warnings import warn
 
 from cardillo.math.algebra import norm, cross3, ax2skew
@@ -217,6 +219,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         dim_g_S = 1
         self.nla_S = self.nnodes * dim_g_S
         self.la_S0 = np.zeros(self.nla_S, dtype=float)
+        self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
+        self._g_S_q_col = ((3 + 7*np.arange(self.nnodes))[:, None] + np.arange(4)).ravel()
 
         ###############################
         # compliance and constrtaints #
@@ -731,15 +735,18 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             blocksize=(6, 6),
         )
 
-    # TODO: vectorize
-    def _h(self, t, q, u):
-        h = np.zeros(self.nu, dtype=u.dtype)
-        warn("No gyroscopic forces!")
-        return h
-        for el in range(self.nelement):
-            elDOF_u = self.elDOF_u[el][self.nu_element_r :]
-            h[elDOF_u] -= self.f_gyr_master(u[elDOF_u], el)[0]
-        return h
+    def _h(self, t, q, u):        
+        unodes = u.reshape(self.nnodes, -1)
+        B_Omega = self.N_dyn @ unodes[:, 3:]
+
+        # spin
+        B_L = B_Omega @ self.cross_section_inertias.B_I_rho0.T
+        f_gyr_qp = np.cross(B_Omega, B_L)
+
+        f_gyr = np.empty((self.nnodes, 6))
+        f_gyr[:, :3] = 0.0
+        f_gyr[:, 3:] = self.N_dyn.T @ (f_gyr_qp * (-self.J_dyn_vec * self.qw_dyn_vec)[:, None])
+        return f_gyr.reshape(-1)
 
     # TODO: vectorize
     def _h_u(self, t, q, u):
@@ -786,17 +793,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ###########################
     # TODO: optimize
     def g_S(self, t, q):
-        print("optimize g_S")
-        P = q[self.permutation_node2comp_q][self.nq_r :].reshape(4, -1)
-        return np.sum(P**2, axis=0) - 1
+        qnodes = q.reshape(self.nnodes, -1)
+        return np.sum(qnodes[:, 3:]**2, axis=1) - 1
 
     # TODO: optimize
     def g_S_q(self, t, q):
-        print("optimize g_S_q")
+        qnodes = q.reshape(self.nnodes, -1)
         coo = CooMatrix((self.nla_S, self.nq))
-        coo.data = 2 * q[self.nq_r :]
-        coo.row = np.tile(np.arange(self.nla_S), 4)
-        coo.col = np.arange(self.nq_r, self.nq)
+        coo.data = 2 * qnodes[:, 3:].reshape(-1)
+        coo.row = self._g_S_q_row
+        coo.col = self._g_S_q_col
         return coo
 
     ####################################################
@@ -1214,41 +1220,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
     # K_c^{-1}
     def c_la_c(self):
-        return self.__cla_c_vec
+        return self.__cla_c
 
-    # TODO: vectorize
     def la_c(self, t, q, u):
-        print("called la_c --> need to be vectorized! Order of DOF is wrong anyway...")
-        self._c_la_c_coo_alt()
-        la_c = np.zeros(self.nla_c)
-        for el in range(self.nelement):
-            qe = q[self.elDOF[el]]
-            ue = u[self.elDOF_u[el]]
-            la_cDOF = self.elDOF_la_c[el]
-            la_c[la_cDOF] = self.la_c_el(qe, ue, el)
-
-        return la_c
-
-    def _c_la_c_coo_alt(self):
-        self.K_c_inv = np.zeros(
-            (self.nelement, self.nla_sigma_element, self.nla_sigma_element), dtype=float
-        )
-        for el in range(self.nelement):
-            K_c_inv_el = self.c_la_c_el(el)
-            self.K_c_inv[el] = K_c_inv_el
-
-    def c_la_c_el(self, el):
-        c_la_c_el = np.zeros((self.nla_sigma_element, self.nla_sigma_element))
-        for i in range(self.nquadrature_int):
-            Ci_inv = self.material_model.C_inv * self.qw_int[el, i] * self.J_int[el, i]
-            N_c = self.Nc[el, i][self.idx_impressed[:, None], self.cDOF_el]
-            c_la_c_el += N_c.T @ Ci_inv @ N_c
-
-        return c_la_c_el
-
-    def la_c_el(self, qe, ue, el):
-        l_c = self.internal_master(qe, el)[0][self.cDOF_el]
-        return np.linalg.solve(self.K_c_inv[el], l_c)
+        return self.__cla_c_inv @ self.c_sigma(q, u)
 
     def c_q(self, t, q, u, la_c):
         print("called c_q --> need to be vectorized!")
@@ -1278,9 +1253,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return l.reshape(-1)
 
     def c(self, t, q, u, la_c):
-        return self.c_la_c_vec @ la_c - self.c_sigma(q, u)
+        return self.__cla_c @ la_c - self.c_sigma(q, u)
 
-    def _c_la_coo(self):
+    def _c_la_c_coo(self):
         weights_matrix = self.NcNc_int_bd["weights_matrix"]
         block_cols = self.NcNc_int_bd["block_cols"]
         indptr = self.NcNc_int_bd["indptr"]
@@ -1299,7 +1274,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             shape=(self.nla_c, self.nla_c),
             blocksize=(6, 6),
         )
-        self.__cla_c_vec = c_la_c
+        self.__cla_c = c_la_c
+        self.__cla_c_inv = spsolve(self.c_la_c().tocsc(), eye_array(self.nla_c, format="csc"))
         return c_la_c
 
     def W_sigma(self, q):
@@ -1426,7 +1402,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return Wla_sigma
 
     def Wla_sigma_q(self, t, q, la_c):
-        return approx_fprime(q, lambda q_: self.W_c(t, q_).tocsr() @ la_c)
+        return approx_fprime(q, lambda q_: self.W_c(t, q_) @ la_c)
+        # return approx_fprime(q, lambda q_: self.W_c(t, q_).tocsr() @ la_c)
         # return approx_fprime(q, lambda q_: self.Wla_sigma(t, q_[self.permutation_comp2node_q], la_c))
 
     def Wla_c_q(self, t, q, la_c):
