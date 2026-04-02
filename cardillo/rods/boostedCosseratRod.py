@@ -356,10 +356,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.permutation_comp2node_c_el = idxc_old.ravel()[np.argsort(idxc_new.ravel())]
         self.permutation_node2comp_c_el = idxc_new.ravel()[np.argsort(idxc_old.ravel())]
 
-        # F: qnodes = q_cardillo.reshape(nnodes, -1)
-        self.__current_order = "C"
-        # "C" is default
-
         # TODO: do inner dict with enum as key or use a class instead of dict
         self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
 
@@ -371,33 +367,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # TODO: check again which caches are usefull
         ninteractions = 2
         # TODO: get this number based on the number of interactions
-        self._cache_f_gyr = LRUCache(self.nquadrature_dyn * nelement)
-        self._cache_internal = LRUCache(self.nquadrature_int * nelement)
-
         self._cache_element_number = LRUCache(50 * ninteractions)
-        self._cache_eval_r_A = LRUCache(ninteractions)
-        self._cache_velocity_rotational = LRUCache(ninteractions)
-
-        # pre-evaluated zeros
-        self.zero_3_nqe = np.zeros((3, self.nq_element), dtype=float)
-        self.zero_3_nue = np.zeros((3, self.nu_element), dtype=float)
-
-        #######
-        # use new, old or both
-        #######
-        # compliance
-        # self.c = self.c_compare
-        # self.W_c = self.W_c_compare
-
-        self.c = self.c
-        self.W_c = self.W_c
-
-        print("init done")
-
-    @property
-    def current_order(self):
-        # print("current order used")
-        return self.__current_order
 
     # TODO: this should be some utility functions, as they don't depend on self and are also usable for other stuff!!
     def create_block_dict(self, Na, Nb):
@@ -504,7 +474,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
-
 
     # TODO: maybe it is more practical to set up a function to return
     # TODO: use it with line distributed force
@@ -637,44 +606,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     # TODO: Add energies and momenta? #
     ###################################
 
-    ##################
-    # eval functions #
-    ##################
-    # @cachedmethod(
-    #     lambda self: self._cache_eval_r_A,
-    #     key=lambda self, xi, Nq, qe: hashkey(xi, *qe),
-    # )
-    def _eval_r_A(self, xi, Nq, qe):
-        rP = Nq @ qe
-        A_IB = Exp_SO3_quat(rP[3:])
-        A_IB_qe = Exp_SO3_quat_P(rP[3:], normalize=True) @ Nq[3:]
-        return (rP[:3], A_IB), (Nq[:3], A_IB_qe)
-
-    def _veval_v_Om(self, xi, Nu, ue):
-        vOm = Nu @ ue
-        return vOm[:3], vOm[3:]
-
-    def _eval_internal(self, xi, Nq, Nq_xi, qe):
-        # eval
-        rP = Nq @ qe
-        rP_xi = Nq_xi @ qe
-        A_IB = Exp_SO3_quat(rP[3:])
-        T = T_SO3_quat(rP[3:], normalize=True)
-        B_gamma = A_IB.T @ rP_xi[:3]
-        B_kappa = T @ rP_xi[3:]
-        eps = np.array([*B_gamma, *B_kappa])
-
-        # deval
-        A_IB_qe = Exp_SO3_quat_P(rP[3:], normalize=True) @ Nq[3:]
-        # TODO: think of implementing (T_SO3_quat(P) @ Q)_P for kappa
-        # (ca. 10% speed up per call)
-        # TP_xi_P = rP_xi[3:] @ T_SO3_quat_P(rP[3:], normalize=True)
-        TP_xi_P = T_SO3_quat_Q_P(rP[3:], rP_xi[3:], normalize=True)
-        B_gamma_bar_qe = ax2skew(B_gamma) @ T @ Nq[3:] + A_IB.T @ Nq_xi[:3]
-        B_kappa_bar_qe = TP_xi_P @ Nq[3:] + T @ Nq_xi[3:]
-        eps_qe = np.vstack([B_gamma_bar_qe, B_kappa_bar_qe])
-        return (rP[:3], A_IB, eps), (Nq[:3], A_IB_qe, eps_qe)
-
     #########################################
     # equations of motion
     #########################################
@@ -722,7 +653,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         B_L = B_Omega @ B_I_rho0.T
 
         f_gyr_qp_ubar = np.zeros((self.nquadrature_dyn_total, 6, 6))
-        # ax2skew(B_Omega) @ B_I_rho0 - ax2skew(B_I_rho0 @ B_Omega)
+        # B_Omega_tilde @ B_I_rho0 - B_L_tilde
         f_gyr_qp_ubar[:, 3:, 3:] = np.cross(
             B_Omega[:, :, None], B_I_rho0[None, :, :], axisa=1, axisb=1, axisc=1
         ) - ax2skew(B_L)
@@ -734,7 +665,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.nu, self.nu),
             (6, 6),
         )
-
 
     ###########################
     # unit-quaternion condition
@@ -775,7 +705,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 Nq = np.eye(7)
                 Nu = np.eye(6)
                 N = np.array([1.0])
-
             else:
                 el = self.element_number(xi)
                 nnodes = self.nnodes_element
@@ -808,8 +737,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 P_q=Nq[3:],
                 J_C=Nu[:3],
                 B_J_R=Nu[3:],
-                J_C_q=np.zeros((3, 6 * nnodes, 7 * nnodes)),
-                B_J_R_q=np.zeros((3, 6 * nnodes, 7 * nnodes)),
+                zero_3_nqi=np.zeros((3, 7 * nnodes), dtype=float),
+                zero_3_nui=np.zeros((3, 6 * nnodes), dtype=float),
+                zero_3_nui_nqi=np.zeros((3, 6 * nnodes, 7 * nnodes), dtype=float),
             )
         return self.interaction_points[xi]
 
@@ -851,189 +781,117 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def element_number(self, xi):
         return np.where(self.xis_element_boundaries[:-1] <= xi)[0][-1]
 
-    def _eval_nodal(self, qe, node):
-        """returns (r_OC, A_IB), (r_OC_qe, A_IB_qe), (J_C, B_J_R)"""
-        # split up nodalDOF
-        nodalDOF = self.nodalDOF_element[node]
-        nodalDOF_u = self.nodalDOF_element_u[node]
-        nodalDOF_r = nodalDOF[:3]
-        nodalDOF_P = nodalDOF[3:]
-        # transformation matrix
-        P = qe[nodalDOF_P]
-        A_IB = Exp_SO3_quat(P, normalize=True)
-        A_IB_qe = np.zeros((3, 3, self.nq_element), dtype=qe.dtype)
-        A_IB_qe[:, :, nodalDOF_P] = Exp_SO3_quat_P(P, normalize=True)
-        # centerline
-        r_OC_qe = np.zeros((3, self.nq_element), dtype=qe.dtype)
-        r_OC_qe[:, nodalDOF_r] = eye3
-
-        # Jacobians
-        J_total = np.zeros((6, self.nu_element), dtype=float)
-        J_total[:, nodalDOF_u] = eye6
-        return (qe[nodalDOF_r], A_IB), (r_OC_qe, A_IB_qe), (J_total[:3], J_total[3:])
-
-    def _veval_nodal(self, ue, node):
-        """if argument is ue:\n
-        returns (v_C, B_Omega_IB), (J_C, B_J_R) \n
-        if argument is ue_dot:\n
-        returns (a_C, B_Psi_IB), (J_C, B_J_R)"""
-        nodalDOF_u = self.nodalDOF_element_u[node]
-        v = ue[nodalDOF_u]
-        return v[:3], v[3:]
-
-    def velocity_translational(self, qe, ue, xi, B_r_CP=zeros3):
-        """returns (v_P, v_P_qe)"""
-
-        if not xi in self.interaction_points.keys():
-            warn("xi was not initialized")
-            _ = self.local_qDOF_P(xi)
-        else:
-            point_dict = self.interaction_points.get(xi)
-            Nq = point_dict["Nq"]
-            Nu = point_dict["Nu"]
-
-        if (node := self.node_number_element(xi)) is not False:
-            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
-            _veval = self._veval_nodal(ue, node)
-        else:
-            # el = self.element_number(xi)
-            # Nq = self.Nq(xi, el, 0)
-            _eval, _deval = self._eval_r_A(xi, Nq, qe)
-            # Nu = self.Nu(xi, el, 0)
-            _veval = self._veval_v_Om(xi, Nu, ue)
-
-        if B_r_CP @ B_r_CP > 0.0:
-            B_v_CP = cross3(_veval[1], B_r_CP)
-            v_P = _veval[0] + _eval[1] @ B_v_CP
-            # TODO: accelerate this
-            v_P_qe = np.einsum("ijk,j->ik", _deval[1], B_v_CP)
-            return v_P, v_P_qe
-        else:
-            return _veval[0], self.zero_3_nqe
-
-    # TODO: cache this with *qe, *ue, *ue_dot, *B_r_CP, xi
-    # TODO: cache for integrators with acceleration level
-    def acceleration_translational(self, qe, ue, ue_dot, xi, B_r_CP=zeros3):
-        """returns (a_P, a_P_qe, a_P_ue)"""
-        print(f"acceleration_translational")
-        if (node := self.node_number_element(xi)) is not False:
-            _eval, _deval, Jacobians = self._eval_nodal(qe, node)
-            _veval = self._veval_nodal(ue, node)
-            _aeval = self._veval_nodal(ue_dot, node)
-            B_J_R = Jacobians[1]
-        else:
-            el = self.element_number(xi)
-            Nq = self.Nq(xi, el, 0)
-            _eval, _deval = self._eval_r_A(xi, Nq, qe)
-            Nu = self.Nu(xi, el, 0)
-            _veval = self._veval_v_Om(xi, Nu, ue)
-            _aeval = self._veval_v_Om(xi, Nu, ue_dot)
-            B_J_R = Nu[3:]
-
-        if B_r_CP @ B_r_CP > 0.0:
-            A_IB = _eval[1]
-            B_Omega_IB = _veval[1]
-            B_a_CP = cross3(B_Omega_IB, cross3(B_Omega_IB, B_r_CP)) + cross3(
-                _aeval[1], B_r_CP
-            )
-            a_P = _aeval[0] + A_IB @ B_a_CP
-            # TODO: accelerate this
-            a_P_qe = np.einsum("ijk,j->ik", _deval[1], B_a_CP)
-            a_P_ue = (
-                -A_IB
-                @ (
-                    ax2skew(cross3(B_Omega_IB, B_r_CP))
-                    + ax2skew(B_Omega_IB) @ ax2skew(B_r_CP)
-                )
-            ) @ B_J_R
-            return a_P, a_P_qe, a_P_ue
-        else:
-            return _aeval[0], self.zero_3_nqe, self.zero_3_nue
-
-    # @cachedmethod(
-    #     lambda self: self._cache_velocity_rotational,
-    #     key=lambda self, ue, xi: hashkey(*ue, xi),
-    # )
-    def velocity_rotational(self, ue, xi):
-        """returns (B_Omega_IB, B_Omega_IB_qe)"""
-        if (node := self.node_number_element(xi)) is not False:
-            _veval = self._veval_nodal(ue, node)
-        else:
-            el = self.element_number(xi)
-            Nu = self.Nu(xi, el, 0)
-            _veval = self._veval_v_Om(xi, Nu, ue)
-
-        return _veval[1]
-
     # cardillo functions
-    def r_OP(self, t, qe, xi, B_r_CP=zeros3):
+    def r_OP(self, t, qi, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
-        qnodes = qe.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
         if B_r_CP @ B_r_CP == 0.0:
             return N @ qnodes[:, :3]
-        rP = N @ qnodes
-        return rP[:3] + self._A_IB(rP[3:]) @ B_r_CP
 
-    def r_OP_q(self, t, qe, xi, B_r_CP=zeros3):
+        rP = N @ qnodes
+        r_CP = self._A_IB(rP[3:]) @ B_r_CP
+        return rP[:3] + r_CP
+
+    def r_OP_q(self, t, qi, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         if B_r_CP @ B_r_CP == 0.0:
             return point_dict["r_q"]
-        return point_dict["r_q"] + np.einsum(
-            "ijk,j->ik", self.A_IB_q(t, qe, xi), B_r_CP
-        )
 
-    def J_P(self, t, qe, xi, B_r_CP=zeros3):
+        r_CP_q = np.einsum("ijk,j->ik", self.A_IB_q(t, qi, xi), B_r_CP)
+        return point_dict["r_q"] + r_CP_q
+
+    def J_P(self, t, qi, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         if B_r_CP @ B_r_CP == 0.0:
             return point_dict["J_C"]
 
-        qnodes = qe.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
         P = point_dict["N"] @ qnodes[:, 3:]
-        return point_dict["J_C"] - self._A_IB(P) @ ax2skew(B_r_CP) @ point_dict["B_J_R"]
+        B_J_CP = np.cross(
+            -B_r_CP[:, None], point_dict["B_J_R"], axisa=0, axisb=0, axisc=0
+        )
+        return point_dict["J_C"] + self._A_IB(P) @ B_J_CP
 
-    def J_P_q(self, t, qe, xi, B_r_CP=zeros3):
+    def J_P_q(self, t, qi, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         if B_r_CP @ B_r_CP == 0.0:
-            # this is zero
-            return point_dict["J_C_q"]
+            return point_dict["zero_3_nui_nqi"]
 
-        B_J_CP = ax2skew(-B_r_CP) @ point_dict["B_J_R"]
-        return np.einsum("ijk, jl -> ilk", self.A_IB_q(t, qe, xi), B_J_CP)
+        B_J_CP = np.cross(
+            -B_r_CP[:, None], point_dict["B_J_R"], axisa=0, axisb=0, axisc=0
+        )
+        return np.einsum("ijk, jl -> ilk", self.A_IB_q(t, qi, xi), B_J_CP)
 
-    def v_P(self, t, qe, ue, xi, B_r_CP=zeros3):
+    def v_P(self, t, qi, ui, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
-        unodes = ue.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        unodes = ui.reshape(point_dict["nnodes"], -1)
         if B_r_CP @ B_r_CP == 0.0:
             return N @ unodes[:, :3]
-        qnodes = qe.reshape(point_dict["nnodes"], -1, order=self.current_order)
+
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
         P = N @ qnodes[:, 3:]
         vO = N @ unodes
-        return vO[:3] + self._A_IB(P) @ (cross3(vO[3:], B_r_CP))
+        B_v_CP = np.cross(vO[3:], B_r_CP)
+        return vO[:3] + self._A_IB(P) @ B_v_CP
 
-    def v_P_q(self, t, qe, ue, xi, B_r_CP=zeros3):
-        # TODO
-        print("v_P_q")
+    def v_P_q(self, t, qi, ui, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        if B_r_CP @ B_r_CP == 0.0:
+            return point_dict["zero_3_nqi"]
 
-        # # TODO: replace all cross3 by np.cross
-        # B_v_CP = cross3(_veval[1], B_r_CP)
-        # v_P = _veval[0] + _eval[1] @ B_v_CP
-        # # TODO: accelerate this
-        # v_P_qe = np.einsum("ijk,j->ik", _deval[1], B_v_CP)
-        return self.velocity_translational(qe, ue, xi, B_r_CP)[1]
+        N = point_dict["N"]
+        unodes = ui.reshape(point_dict["nnodes"], -1)
+        B_Omega = N @ unodes[:, 3:]
+        B_v_CP = np.cross(B_Omega, B_r_CP)
+        return np.einsum("ijk,j->ik", self.A_IB_q(t, qi, xi), B_v_CP)
 
-    def a_P(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
-        print("a_P")
-        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[0]
+    def a_P(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        N = point_dict["N"]
+        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
+        if B_r_CP @ B_r_CP == 0.0:
+            return N @ u_dotnodes[:, :3]
 
-    def a_P_q(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
-        print("a_P_q")
-        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[1]
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
+        unodes = ui.reshape(point_dict["nnodes"], -1)
+        P = N @ qnodes[:, 3:]
+        B_Omega = N @ unodes[:, 3:]
+        aP = N @ u_dotnodes
+        B_a_CP = np.cross(aP[3:], B_r_CP) + np.cross(B_Omega, np.cross(B_Omega, B_r_CP))
+        return aP[:3] + self._A_IB(P) @ B_a_CP
 
-    def a_P_u(self, t, qe, ue, ue_dot, xi, B_r_CP=zeros3):
-        print("a_P_u")
-        return self.acceleration_translational(qe, ue, ue_dot, xi, B_r_CP)[2]
+    def a_P_q(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        if B_r_CP @ B_r_CP == 0.0:
+            return point_dict["zero_3_nqi"]
+
+        N = point_dict["N"]
+        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
+        unodes = ui.reshape(point_dict["nnodes"], -1)
+        B_Omega = N @ unodes[:, 3:]
+        aP = N @ u_dotnodes
+        B_a_CP = np.cross(aP[3:], B_r_CP) + np.cross(B_Omega, np.cross(B_Omega, B_r_CP))
+        return np.einsum("ijk,j->ik", self.A_IB_q(t, qi, xi), B_a_CP)
+
+    def a_P_u(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        if B_r_CP @ B_r_CP == 0.0:
+            return point_dict["zero_3_nui"]
+
+        N = point_dict["N"]
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
+        unodes = ui.reshape(point_dict["nnodes"], -1)
+        P = N @ qnodes[:, 3:]
+        B_Omega = N @ unodes[:, 3:]
+        B_a_CP_B_Omega = ax2skew(np.cross(B_r_CP, B_Omega)) - ax2skew(
+            B_Omega
+        ) @ ax2skew(B_r_CP)
+
+        a_P_u = point_dict["zero_3_nui"].copy()
+        a_P_u[:, 3:] = self._A_IB(P) @ B_a_CP_B_Omega
+        return a_P_u @ point_dict["Nu"]
 
     # TODO: cache and move to init or upwards!
     def _A_IB(self, P):
@@ -1051,51 +909,50 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # TODO: update this function in rotations
         return T_SO3_quat_P(P)
 
-    def A_IB(self, t, qe, xi):
+    def A_IB(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
-        qnodes = qe.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
         return self._A_IB(N @ qnodes[:, 3:])
 
-    def A_IB_q(self, t, qe, xi):
+    def A_IB_q(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
-        qnodes = qe.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
         P = N @ qnodes[:, 3:]
         return self._A_IB_P(P) @ point_dict["P_q"]
 
-    def B_J_R(self, t, qe, xi):
+    def B_J_R(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
         return point_dict["B_J_R"]
 
-    def B_J_R_q(self, t, qe, xi):
+    def B_J_R_q(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
-        return point_dict["B_J_R_q"]
+        return point_dict["zero_3_nui_nqi"]
 
-    def B_Omega(self, t, qe, ue, xi):
+    def B_Omega(self, t, qi, ui, xi):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
-        unodes = ue.reshape(point_dict["nnodes"], -1, order=self.current_order)
+        unodes = ui.reshape(point_dict["nnodes"], -1)
         return N @ unodes[:, 3:]
 
-    def B_Omega_q(self, t, qe, ue, xi):
-        print("B_Omega_q")
-        # TODO: size must be (3, 7*point_dict["nnodes"])
-        return self.zero_3_nqe
+    def B_Omega_q(self, t, qi, ui, xi):
+        point_dict = self.get_interaction_point(xi)
+        return point_dict["zero_3_nqi"]
 
-    def B_Psi(self, t, qe, ue, ue_dot, xi):
-        print("B_Psi")
-        return self.velocity_rotational(ue_dot, xi)
+    def B_Psi(self, t, qi, ui, ui_dot, xi):
+        point_dict = self.get_interaction_point(xi)
+        N = point_dict["N"]
+        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
+        return N @ u_dotnodes[:, 3:]
 
-    def B_Psi_q(self, t, qe, ue, ue_dot, xi):
-        print("B_Psi_q")
-        # TODO: size must be (3, 7*point_dict["nnodes"])
-        return self.zero_3_nqe
+    def B_Psi_q(self, t, qi, ui, ui_dot, xi):
+        point_dict = self.get_interaction_point(xi)
+        return point_dict["zero_3_nqi"]
 
-    def B_Psi_u(self, t, qe, ue, ue_dot, xi):
-        print("B_Psi_u")
-        # TODO: size must be (3, 6*point_dict["nnodes"])
-        return self.zero_3_nue
+    def B_Psi_u(self, t, qi, ui, ui_dot, xi):
+        point_dict = self.get_interaction_point(xi)
+        return point_dict["zero_3_nui"]
 
     #########################
     # internal virtual work #
