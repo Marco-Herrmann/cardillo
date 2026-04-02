@@ -888,10 +888,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         B_a_CP_B_Omega = ax2skew(np.cross(B_r_CP, B_Omega)) - ax2skew(
             B_Omega
         ) @ ax2skew(B_r_CP)
-
-        a_P_u = point_dict["zero_3_nui"].copy()
-        a_P_u[:, 3:] = self._A_IB(P) @ B_a_CP_B_Omega
-        return a_P_u @ point_dict["Nu"]
+        return self._A_IB(P) @ B_a_CP_B_Omega @ point_dict["Nu"][3:]
 
     # TODO: cache and move to init or upwards!
     def _A_IB(self, P):
@@ -1168,19 +1165,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.__cla_c @ la_c - self.l_sigma(q, u)
 
     def c_q(self, t, q, u, la_c):
-        # TODO: return sparse
-        return -self.c_sigma_q(q, u).toarray()
+        return -self.c_sigma_q(q, u)
 
     def c_la_c(self):
         return self.__cla_c
 
     def W_c(self, t, q):
-        # TODO: return sparse
-        return self.W_sigma(q).toarray()
+        return self.W_sigma(q)
 
     def Wla_c_q(self, t, q, la_c):
-        # TODO: return sparse
-        return self.Wla_sigma_q(q, la_c).toarray()
+        return self.Wla_sigma_q(q, la_c)
 
     ###############
     # constraints #

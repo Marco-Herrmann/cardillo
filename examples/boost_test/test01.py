@@ -1,4 +1,5 @@
 import numpy as np
+from timeit import timeit
 
 from cardillo.rods import CircularCrossSection, Simo1986, CrossSectionInertias
 from cardillo import System
@@ -7,7 +8,8 @@ from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.approx_fprime import approx_fprime
 
-if __name__ == "__main__":
+
+def test_implementation(n_test=1_000):
     constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0]))
     cross_section = CircularCrossSection(0.1)
     A_rho0 = np.random.rand()
@@ -108,7 +110,6 @@ if __name__ == "__main__":
     ]
     # fmt: on
 
-    n_test = 1_000
     for i in range(n_test):
         t_test = np.random.rand()
         q_test__new = system_new.q0 + np.random.rand(system_new.nq) * 5
@@ -151,7 +152,7 @@ if __name__ == "__main__":
 
         # interactions
         for function_name, argument_names in interactions:
-            for xi in np.linspace(0.0, 1.0, rod_new.nnodes):
+            for xi in np.linspace(0.0, 1.0, 2 * rod_new.nnodes):
                 for B_r_CP in [np.zeros(3), np.random.rand(3)]:
                     arguments__new["B_r_CP"] = B_r_CP
                     arguments__old["B_r_CP"] = B_r_CP
@@ -188,7 +189,7 @@ if __name__ == "__main__":
 
         # derivatives
         for deriv, orig, i in derivatives:
-            for xi in np.linspace(0.0, 1.0, rod_new.nnodes):
+            for xi in np.linspace(0.0, 1.0, rod_new.nnodes * 2):
                 for B_r_CP in [np.zeros(3), np.random.rand(3)]:
                     arguments__new["B_r_CP"] = B_r_CP
                     args = []
@@ -232,3 +233,192 @@ if __name__ == "__main__":
                     error = np.linalg.norm(derivative - approx)
                     if error > 1e-5:
                         print(f"{deriv[0]}: {error}")
+
+
+def compare_performance(n_test=1_000):
+    constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0]))
+    cross_section = CircularCrossSection(0.1)
+    A_rho0 = np.random.rand()
+    B_I_rho0 = np.diag(np.random.rand(3))
+    cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
+    nelement = 500
+    polynomial_degree = 2
+
+    Rod_old = make_CosseratRod(
+        interpolation="Quaternion", mixed=True, polynomial_degree=polynomial_degree
+    )
+    Rod_new = make_BoostedCosseratRod(polynomial_degree=polynomial_degree)
+
+    q0_old = Rod_old.straight_configuration(nelement, 5)
+    rod_old = Rod_old(
+        cross_section,
+        constitutive_law,
+        nelement,
+        Q=q0_old,
+        cross_section_inertias=cross_section_inertia,
+    )
+
+    q0_new = Rod_new.straight_configuration(nelement, 5)
+    rod_new = Rod_new(
+        cross_section,
+        constitutive_law,
+        nelement,
+        Q=q0_new,
+        cross_section_inertias=cross_section_inertia,
+    )
+
+    system_old = System()
+    system_old.add(rod_old)
+    system_old.assemble()
+
+    system_new = System()
+    system_new.add(rod_new)
+    system_new.assemble()
+
+    # get permutations
+    perm_n2c_q = rod_new.permutation_node2comp_q
+    perm_c2n_q = rod_new.permutation_comp2node_q
+    perm_n2c_u = rod_new.permutation_node2comp_u
+    perm_c2n_u = rod_new.permutation_comp2node_u
+    perm_n2c_c = rod_new.permutation_node2comp_c
+    perm_c2n_c = rod_new.permutation_comp2node_c
+
+    # fmt: off
+    functions = [
+        # kinematic equation
+        ["q_dot", ("t", "q", "u"), False],
+        ["q_dot_q", ("t", "q", "u"), False],
+        # ["q_dot_u", ("t", "q"), False], # q_dot_u of old is very slow!
+        # compliance equation
+        ["la_c", ("t", "q", "u"), False],
+        ["c", ("t", "q", "u", "la_c"), False],
+        ["c_q", ("t", "q", "u", "la_c"), False],
+        # ["c_u", ("t", "q", "u", "la_c"), False], # we test on rod (not system)
+        # ["c_la_c", (), False], # getter function
+        ["W_c", ("t", "q"), False],
+        ["Wla_c_q", ("t", "q", "la_c"), False],
+        # dynamic forces
+        # ["M", ("t", "q"), False], # getter function
+        # ["Mu_q", ("t", "q", "u"), False], # we test on rod (not system)
+        ["h", ("t", "q", "u"), False],
+        # ["h_q", ("t", "q", "u"), False], # we test on rod (not system)
+        ["h_u", ("t", "q", "u"), False],
+        # quaternion constraint
+        ["g_S", ("t", "q"), False],
+        ["g_S_q", ("t", "q"), False],
+        ################
+        # interactions #
+        ################
+        ["r_OP", ("t", "q", "xi", "B_r_CP"), True],
+        ["v_P", ("t", "q", "u", "xi", "B_r_CP"), True],
+        ["a_P", ("t", "q", "u", "u_dot", "xi", "B_r_CP"), True],
+
+        ["A_IB", ("t", "q", "xi"), True],
+        ["B_Omega", ("t", "q", "u", "xi"), True],
+        ["B_Psi", ("t", "q", "u", "u_dot", "xi"), True],
+
+        ["J_P", ("t", "q", "xi", "B_r_CP"), True],
+        ["J_P_q", ("t", "q", "xi", "B_r_CP"), True],
+        ["r_OP_q", ("t", "q", "xi", "B_r_CP"), True],
+        ["v_P_q", ("t", "q", "u", "xi", "B_r_CP"), True],
+        ["a_P_q", ("t", "q", "u", "u_dot", "xi", "B_r_CP"), True],
+        ["a_P_u", ("t", "q", "u", "u_dot", "xi", "B_r_CP"), True],
+
+        ["B_J_R", ("t", "q", "xi"), True],
+        ["B_J_R_q", ("t", "q", "xi"), True],
+        ["A_IB_q", ("t", "q", "xi"), True],
+        ["B_Omega_q", ("t", "q", "u", "xi"), True],
+        ["B_Psi_q", ("t", "q", "u", "u_dot", "xi"), True],
+        ["B_Psi_u", ("t", "q", "u", "u_dot", "xi"), True],
+    ]
+    # fmt: on
+
+    t_test = np.random.rand()
+    q_test__new = system_new.q0 + np.random.rand(system_new.nq) * 5
+    u_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
+    u_dot_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
+    la_c_test__new = system_new.la_c0 + np.random.rand(system_new.nla_c) * 5
+    xi = np.random.rand()
+    B_r_CP = np.random.rand(3)
+
+    xi = 0.0
+    B_r_CP = np.zeros(3)
+
+    # TODO: maybe step callback!
+    arguments__new = dict(
+        t=t_test,
+        q=q_test__new,
+        u=u_test__new,
+        u_dot=u_dot_test__new,
+        la_c=la_c_test__new,
+        xi=xi,
+        B_r_CP=B_r_CP,
+    )
+    arguments__old = dict(
+        t=t_test,
+        q=q_test__new[perm_n2c_q],
+        u=u_test__new[perm_n2c_u],
+        u_dot=u_dot_test__new[perm_n2c_u],
+        la_c=la_c_test__new[perm_n2c_c],
+        xi=xi,
+        B_r_CP=B_r_CP,
+    )
+
+    for function_name, argument_names, is_interaction in functions:
+        function_new = getattr(rod_new, function_name)
+        function_old = getattr(rod_old, function_name)
+
+        args_old = []
+        args_new = []
+        for name in argument_names:
+            if "xi" in argument_names:
+                if name in ["q", "u", "u_dot"]:
+                    if name == "q":
+                        DOF_old = rod_old.local_qDOF_P(xi)
+                        DOF_new = rod_new.local_qDOF_P(xi)
+                    else:
+                        DOF_old = rod_old.local_uDOF_P(xi)
+                        DOF_new = rod_new.local_uDOF_P(xi)
+
+                    args_old.append(arguments__old[name][DOF_old])
+                    args_new.append(arguments__new[name][DOF_new])
+                else:
+                    args_old.append(arguments__old[name])
+                    args_new.append(arguments__new[name])
+            else:
+                args_old.append(arguments__old[name])
+                args_new.append(arguments__new[name])
+
+        def implementation_old():
+            return function_old(*args_old)
+
+        def implementation_new():
+            return function_new(*args_new)
+
+        # run once
+        implementation_old()
+        implementation_new()
+
+        N = 1_000 * n_test if is_interaction else n_test
+
+        t_old = timeit(implementation_old, number=N)
+        t_new = timeit(implementation_new, number=N)
+
+        ratio = t_new / t_old
+        result_str = f"{function_name:<25}: t_new: {t_new:8.3f}, t_old: {t_old:8.3f}, ratio (t_new/t_old): {(t_new / t_old):8.3f}"
+
+        if ratio >= 1.0:
+            result_str += "   --> no improvement!"
+        else:
+            result_str += f"   --> speedup: {(1 - ratio) * 100:.2f}%!"
+
+        print(result_str)
+
+
+if __name__ == "__main__":
+    print("Test single")
+    test_implementation(n_test=1)
+    # print("Test 1_000")
+    # test_implementation(n_test=1_000)
+    print("Compare performance")
+    compare_performance(n_test=20)

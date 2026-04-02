@@ -55,6 +55,8 @@ class CooMatrix:
             self.__idx0 = 0
             self.allocation_slices = [None] * nallocate
 
+            self.allocated_sparse_array = [None] * nallocate
+
     @property
     def data(self):
         return self.__data
@@ -167,9 +169,26 @@ class CooMatrix:
                     self.__idx0 += len(value.data)
 
                 elif isinstance(value, sparray):
-                    raise NotImplementedError(
-                        "allocated access for sparray is not implemented yet"
+                    assert value.shape == (
+                        len(rows),
+                        len(cols),
+                    ), "inconsistent assignment"
+
+                    # all scipy sparse matrices are converted to coo_array, their
+                    # data, row and column lists are subsequently appended
+                    coo = value.tocoo()
+                    self.data.extend(coo.data)
+                    self.row.extend(rows[coo.row])
+                    self.col.extend(cols[coo.col])
+
+                    self.allocation_slices[allocate_id] = slice(
+                        self.__idx0, self.__idx0 + len(coo.data)
                     )
+                    self.__idx0 += len(coo.data)
+
+                    # TODO: check if row and col did not change if so: don't change anything but raise error
+                    # self.allocated_sparse_array[]
+
                 elif isinstance(value, spmatrix):
                     raise RuntimeError(
                         "Do not use sparse matrices, move to sparse array."
@@ -199,9 +218,9 @@ class CooMatrix:
             if isinstance(value, CooMatrix):
                 data = value.data
             elif isinstance(value, sparray):
-                raise NotImplementedError(
-                    "allocated access for sparray is not implemented yet"
-                )
+                coo = value.tocoo()
+                data = coo.data
+                # TODO: check if row/col changed
             else:
                 data = atleast_2d(value).ravel(order="C")
             self.data[self.allocation_slices[key[0]]] = array("d", data)
