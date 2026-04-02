@@ -21,10 +21,22 @@ if __name__ == "__main__":
     Rod_new = make_BoostedCosseratRod(polynomial_degree=polynomial_degree)
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
-    rod_old = Rod_old(cross_section, constitutive_law, nelement, Q=q0_old, cross_section_inertias=cross_section_inertia)
+    rod_old = Rod_old(
+        cross_section,
+        constitutive_law,
+        nelement,
+        Q=q0_old,
+        cross_section_inertias=cross_section_inertia,
+    )
 
     q0_new = Rod_new.straight_configuration(nelement, 5)
-    rod_new = Rod_new(cross_section, constitutive_law, nelement, Q=q0_new, cross_section_inertias=cross_section_inertia)
+    rod_new = Rod_new(
+        cross_section,
+        constitutive_law,
+        nelement,
+        Q=q0_new,
+        cross_section_inertias=cross_section_inertia,
+    )
 
     print(f"q0s: {np.linalg.norm(q0_old - q0_new)}")
 
@@ -53,13 +65,11 @@ if __name__ == "__main__":
         # compliance equation
         ["la_c", ("t", "q", "u"), perm_c2n_c, False],
         ["c", ("t", "q", "u", "la_c"), perm_c2n_c, False],
-        # TODO: 
-        # ["c_q", ("t", "q", "u", "la_c"), (perm_c2n_c[:, None], perm_c2n_q), True],
+        ["c_q", ("t", "q", "u", "la_c"), (perm_c2n_c[:, None], perm_c2n_q), True],
         ["c_u", ("t", "q", "u", "la_c"), (perm_c2n_c[:, None], perm_c2n_u), True],
         ["c_la_c", (), (perm_c2n_c[:, None], perm_c2n_c), True],
         ["W_c", ("t", "q"), (perm_c2n_u[:, None], perm_c2n_c), True],
-        # TODO:
-        # ["Wla_c_q", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_q), True],
+        ["Wla_c_q", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_q), True],
         # dynamic forces
         ["M", ("t", "q"), (perm_c2n_u[:, None], perm_c2n_u), True],
         ["Mu_q", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_q), True],
@@ -82,21 +92,23 @@ if __name__ == "__main__":
 
         # TODO: maybe step callback!
         arguments__new = dict(
-            t = t_test,
-            q = q_test__new,
-            u = u_test__new,
-            la_c = la_c_test__new,
-        ) 
+            t=t_test,
+            q=q_test__new,
+            u=u_test__new,
+            la_c=la_c_test__new,
+        )
         arguments__old = dict(
-            t = t_test,
-            q = q_test__new[perm_n2c_q],
-            u = u_test__new[perm_n2c_u],
-            la_c = la_c_test__new[perm_n2c_c],
+            t=t_test,
+            q=q_test__new[perm_n2c_q],
+            u=u_test__new[perm_n2c_u],
+            la_c=la_c_test__new[perm_n2c_c],
         )
 
         for function_name, argument_names, permutation, sparse in functions:
             results = []
-            for system, arguments_dict in zip([system_new, system_old], [arguments__new, arguments__old]):
+            for system, arguments_dict in zip(
+                [system_new, system_old], [arguments__new, arguments__old]
+            ):
                 arguments = [arguments_dict[name] for name in argument_names]
                 result = getattr(system, function_name)(*arguments)
                 if sparse:
@@ -107,8 +119,6 @@ if __name__ == "__main__":
             error = np.linalg.norm(results[0] - results[1][permutation])
             if error > 1e-10:
                 print(f"{function_name}: {error}")
-
-        
 
         # # interactions
         # r_OP0 = q_test__new[:3]

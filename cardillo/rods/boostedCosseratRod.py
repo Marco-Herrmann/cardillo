@@ -32,7 +32,8 @@ from .discretization.mesh1D import Mesh1D
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
-eye4 = np.eye(4, dtype=float)
+
+# TODO: remove eye6
 eye6 = np.eye(6, dtype=float)
 
 
@@ -220,7 +221,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nla_S = self.nnodes * dim_g_S
         self.la_S0 = np.zeros(self.nla_S, dtype=float)
         self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
-        self._g_S_q_col = ((3 + 7*np.arange(self.nnodes))[:, None] + np.arange(4)).ravel()
+        self._g_S_q_col = (
+            (3 + 7 * np.arange(self.nnodes))[:, None] + np.arange(4)
+        ).ravel()
 
         ###############################
         # compliance and constrtaints #
@@ -437,7 +440,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             order=order,
         )
 
-    def _eval_internal_vec(self, N, N_xi, q):
+    def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
         P_IB = N @ qbar_nodes[:, 3:]
         qbar_xi = N_xi @ qbar_nodes
@@ -445,38 +448,17 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         A_IB = self._A_IB(P_IB)
         T = self._T_IB(P_IB)
 
-        # TODO: can we avoid einsum?
         B_gamma_bar = np.einsum("ijk,ij->ik", A_IB, qbar_xi[:, :3])
-        B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
-        return A_IB, B_gamma_bar, B_kappa_bar
+        if not deval:
+            B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
+            return A_IB, B_gamma_bar, B_kappa_bar
 
-    def _deval_internal_vec(self, N, N_xi, q, sigma_qp=None):
-        print("deval")
-        qbar_nodes = q.reshape(self.nnodes, -1)
-        P_IB = N @ qbar_nodes[:, 3:]
-        qbar_xi = N_xi @ qbar_nodes
+        # using my magic property
+        B_gamma_bar_P = np.cross(B_gamma_bar[:, :, None], T, axisa=1, axisb=1, axisc=1)
 
-        A_IB = self._A_IB(P_IB)
-        T_IB = self._T_IB(P_IB)
-
-        A_IB_P = self._A_IB_P(P_IB)
         T_IB_P = self._T_IB_P(P_IB)
-
-        # TODO: can we avoid einsum?
-        B_gamma_bar = np.einsum("ijk,ij->ik", A_IB, qbar_xi[:, :3])
-        B_kappa_bar = np.einsum("ijk,ik->ij", T_IB, qbar_xi[:, 3:])
-
-        n = np.einsum("ijk,ik->ij", A_IB, sigma_qp[:, :3])
-        n_P = np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
-
-        if sigma_qp == None:
-            eval = A_IB, B_gamma_bar, B_kappa_bar
-            deval = None, B_gamma_bar_q, B_kappa_bar_q
-        else:
-            eval = n, ga_cross_n, ka_cross_m
-            deval = n_q, ga_cross_n_q, ka_cross_m_q
-
-        return eval, deval
+        B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
+        return A_IB, T, B_gamma_bar_P, B_kappa_bar_P
 
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
@@ -715,7 +697,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         indptr = self.NN_dyn_bd["indptr"]
         order = self.NN_dyn_bd["order"]
 
-        # TODO: make this dense?
+        # TODO: make this sparse?
         M_qp = np.empty((self.nquadrature_dyn_total, 6, 6))
         M_qp[:, :3, :3] = eye3 * self.cross_section_inertias.A_rho0
         M_qp[:, :3, 3:] = 0.0
@@ -735,7 +717,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             blocksize=(6, 6),
         )
 
-    def _h(self, t, q, u):        
+    def _h(self, t, q, u):
         unodes = u.reshape(self.nnodes, -1)
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
@@ -745,7 +727,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         f_gyr = np.empty((self.nnodes, 6))
         f_gyr[:, :3] = 0.0
-        f_gyr[:, 3:] = self.N_dyn.T @ (f_gyr_qp * (-self.J_dyn_vec * self.qw_dyn_vec)[:, None])
+        f_gyr[:, 3:] = self.N_dyn.T @ (
+            f_gyr_qp * (-self.J_dyn_vec * self.qw_dyn_vec)[:, None]
+        )
         return f_gyr.reshape(-1)
 
     # TODO: vectorize
@@ -791,12 +775,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ###########################
     # unit-quaternion condition
     ###########################
-    # TODO: optimize
     def g_S(self, t, q):
         qnodes = q.reshape(self.nnodes, -1)
-        return np.sum(qnodes[:, 3:]**2, axis=1) - 1
+        return np.sum(qnodes[:, 3:] ** 2, axis=1) - 1
 
-    # TODO: optimize
     def g_S_q(self, t, q):
         qnodes = q.reshape(self.nnodes, -1)
         coo = CooMatrix((self.nla_S, self.nq))
@@ -809,10 +791,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     # interactions with other bodies and the environment
     ####################################################
     def elDOF_P(self, xi):
+        # TODO: update elDOF
         el = self.element_number(xi)
         return self.elDOF[el]
 
     def elDOF_P_u(self, xi):
+        # TODO: update elDOF
         el = self.element_number(xi)
         return self.elDOF_u[el]
 
@@ -837,18 +821,17 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 Nu = self.Nu(xi, el, 0)
                 N = Nq[0, :3]
 
+                # TODO: avoid this elDOF and permutation afterwards!
                 qDOF = self.elDOF_P(xi)
                 uDOF = self.elDOF_P_u(xi)
 
                 Nq = Nq[:, self.permutation_comp2node_q_el]
                 Nu = Nu[:, self.permutation_comp2node_u_el]
 
-                qDOF = np.arange(
-                    7 * (nnodes - 1) * el, 7 * ((nnodes - 1) * (el + 1) + 1)
-                )
-                uDOF = np.arange(
-                    6 * (nnodes - 1) * el, 6 * ((nnodes - 1) * (el + 1) + 1)
-                )
+                start = (nnodes - 1) * el
+                end = (nnodes - 1) * (el + 1) + 1
+                qDOF = np.arange(7 * start, 7 * end)
+                uDOF = np.arange(6 * start, 6 * end)
 
             self.interaction_points[xi] = dict(
                 nnodes=nnodes,
@@ -875,7 +858,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##########################
     # r_OP / A_IB contribution
     ##########################
-    # TODO: move upwards?
+    # TODO: move up to interactions?
     def node_number(self, xi):
         """For given xi in I = [0.0, 1.0], returns node number if xi is a node, otherwise False"""
         idx = np.where(self.xis_nodes == xi)[0]
@@ -1133,6 +1116,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
     def B_Omega_q(self, t, qe, ue, xi):
         print("B_Omega_q")
+        # TODO: size must be (3, 7*point_dict["nnodes"])
         return self.zero_3_nqe
 
     def B_Psi(self, t, qe, ue, ue_dot, xi):
@@ -1141,15 +1125,17 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
     def B_Psi_q(self, t, qe, ue, ue_dot, xi):
         print("B_Psi_q")
+        # TODO: size must be (3, 7*point_dict["nnodes"])
         return self.zero_3_nqe
 
     def B_Psi_u(self, t, qe, ue, ue_dot, xi):
         print("B_Psi_u")
+        # TODO: size must be (3, 6*point_dict["nnodes"])
         return self.zero_3_nue
 
-    ##############
-    # compliance #
-    ##############
+    #########################
+    # internal virtual work #
+    #########################
     # TODO: we need the mesh
     # TODO: can we use the same function for
     #   W_g and W_c
@@ -1163,52 +1149,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     #   g = l_compliance[gDOF]
     #   c = l_compliance[cDOF] (+ Kc @ la_c)
 
-    ####################################################
-    # element functions for compliance and constraints #
-    ####################################################
-    # @cachedmethod(
-    #     lambda self: self._cache_internal,
-    #     key=lambda self, qe, el: hashkey(*qe, el),
-    # )
-    def internal_master(self, qe, el):
-        c_el = np.zeros(self.nla_sigma_element, dtype=qe.dtype)
-        c_el_qe = np.zeros((self.nla_sigma_element, self.nq_element), dtype=qe.dtype)
-        W_c_el = np.zeros((self.nu_element, self.nla_sigma_element), dtype=qe.dtype)
-
-        for i in range(self.nquadrature_int):
-            # extract reference state variables
-            qpi = self.qp_int[el, i]
-            qwi = self.qw_int[el, i]
-            epsilon0_bar = self.epsilon0_bar[el, i]
-
-            # get shape functions
-            Nq = self.Nq_int[el, i]
-            Nq_xi = self.Nq_xi_int[el, i]
-            N_o = self.No_int[el, i]
-            Nu_xi = self.Nu_xi_int[el, i]
-            Nc = self.Nc[el, i]
-
-            # get stretches
-            _eval, _deval = self._eval_internal(qpi, Nq, Nq_xi, qe)
-            epsilon_bar = _eval[2]
-            epsilon_bar_qe = _deval[2]
-
-            # constributions to W
-            mtx1 = np.zeros((6, 6), dtype=float)
-            mtx1[:3, :3] = _eval[1] * qwi
-            mtx1[3:, 3:] = eye3 * qwi
-
-            mtx2_omega = np.hstack(
-                [ax2skew(epsilon_bar[:3] * qwi), ax2skew(epsilon_bar[3:] * qwi)]
-            )
-
-            # compose vector and matrices
-            c_el += Nc.T @ ((epsilon0_bar - epsilon_bar) * qwi)
-            c_el_qe -= Nc.T @ epsilon_bar_qe * qwi
-            W_c_el -= Nu_xi.T @ mtx1 @ Nc
-            W_c_el[self.nu_element_r :] += N_o.T @ (mtx2_omega @ Nc)
-
-        return c_el, c_el_qe, W_c_el
 
     ##############
     # compliance #
@@ -1226,13 +1166,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.__cla_c_inv @ self.c_sigma(q, u)
 
     def c_q(self, t, q, u, la_c):
-        print("called c_q --> need to be vectorized!")
-        coo = CooMatrix((self.nla_c, self.nq))
-        for el in range(self.nelement):
-            elDOF = self.elDOF[el]
-            elDOF_la_c = self.elDOF_la_c[el]
-            coo[elDOF_la_c, elDOF] = self.internal_master(q[elDOF], el)[1][self.cDOF_el]
-        return coo
+        # TODO: return sparse
+        return -self.c_sigma_q(q, u).toarray()
 
     ########################
     # vectorized functions #
@@ -1255,6 +1190,60 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def c(self, t, q, u, la_c):
         return self.__cla_c @ la_c - self.c_sigma(q, u)
 
+    def c_sigma_q(self, q, u):
+        # TODO: combine these!
+        weights_matrix_N = self.NcN_int_bd["weights_matrix"]
+        block_cols_N = self.NcN_int_bd["block_cols"]
+        indptr_N = self.NcN_int_bd["indptr"]
+        order_N = self.NcN_int_bd["order"]
+
+        weights_matrix_N_xi = self.NcN_xi_int_bd["weights_matrix"]
+        block_cols_N_xi = self.NcN_xi_int_bd["block_cols"]
+        indptr_N_xi = self.NcN_xi_int_bd["indptr"]
+        order_N_xi = self.NcN_xi_int_bd["order"]
+
+        # compute W_sigma
+        A_IB, T, B_gamma_bar_P, B_kappa_bar_P = self._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=True
+        )
+
+        # c_sigma_q_qp[qpi, N/N_xi, la_cDOF, qDOF]
+        c_sigma_q_qp = np.empty((2, self.nquadrature_int_total, 6, 7))
+        # to be multiplied with N_xi
+        c_sigma_q_qp[1, :, :3, :3] = A_IB.transpose((0, 2, 1))
+        c_sigma_q_qp[1, :, :3, 3:] = 0.0
+        c_sigma_q_qp[1, :, 3:, :3] = 0.0
+        c_sigma_q_qp[1, :, 3:, 3:] = T
+
+        # to be multiplied with N
+        c_sigma_q_qp[0, :, :, :3] = 0.0
+        c_sigma_q_qp[0, :, :3, 3:] = B_gamma_bar_P
+        c_sigma_q_qp[0, :, 3:, 3:] = B_kappa_bar_P
+
+        blocks_N = np.einsum(
+            "bi,i,ikl->bkl",
+            weights_matrix_N,  # [iBlock, qpi]
+            self.qw_int_vec,  # [qpi]
+            c_sigma_q_qp[0],  # [qpi, la_cDOF, qDOF]
+        )
+        blocks_N_xi = np.einsum(
+            "bi,i,ikl->bkl",
+            weights_matrix_N_xi,  # [iBlock, qpi]
+            self.qw_int_vec,  # [qpi]
+            c_sigma_q_qp[1],  # [qpi, la_cDOF, qDOF]
+        )
+
+        c_sigma_q_coo = bsr_array(
+            (blocks_N[order_N], block_cols_N, indptr_N),
+            shape=(self.nla_c, self.nq),
+            blocksize=(6, 7),
+        ) + bsr_array(
+            (blocks_N_xi[order_N_xi], block_cols_N_xi, indptr_N_xi),
+            shape=(self.nla_c, self.nq),
+            blocksize=(6, 7),
+        )
+        return c_sigma_q_coo
+
     def _c_la_c_coo(self):
         weights_matrix = self.NcNc_int_bd["weights_matrix"]
         block_cols = self.NcNc_int_bd["block_cols"]
@@ -1275,7 +1264,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             blocksize=(6, 6),
         )
         self.__cla_c = c_la_c
-        self.__cla_c_inv = spsolve(self.c_la_c().tocsc(), eye_array(self.nla_c, format="csc"))
+        self.__cla_c_inv = spsolve(
+            self.c_la_c().tocsc(), eye_array(self.nla_c, format="csc")
+        )
         return c_la_c
 
     def W_sigma(self, q):
@@ -1349,65 +1340,129 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return W_c, W_g
 
     def W_c(self, t, q):
+        # TODO: return sparse
         return self.W_sigma(q).toarray()
 
-    # TODO: what to do with this?
     def Wla_sigma(self, t, q, la_sigma):
+        la_sigma_nodes = la_sigma.reshape(self.nnodes_sigma, 6)
+        sigma_qp = self.Nc_int @ la_sigma_nodes
 
-        sigma_qp = self.Nc_int @ la_sigma.reshape(self.nnodes_sigma, 6)
-        # compute W_sigma
-        eval, deval = self._deval_internal_vec(self.N_int, self.N_xi_int, q, sigma_qp)
-        A_IB, B_gamma_bar, B_kappa_bar = eval
-        A_IB_q, B_gamma_bar_q, B_kappa_bar_q = deval
-
-        gamma_bar_tilde = ax2skew(B_gamma_bar)
-        kappa_bar_tilde = ax2skew(B_kappa_bar)
-
-        # W_sigma_qp[qpi, N/N_xi, uDOF, la_cDOF]
-        W_sigma_qp = np.empty((self.nquadrature_int_total, 2, 6, 6))
-        # to be multiplied with N_xi
-        W_sigma_qp[:, 1, :3, :3] = -A_IB
-        W_sigma_qp[:, 1, :3, 3:] = 0.0
-        W_sigma_qp[:, 1, 3:, :3] = 0.0
-        W_sigma_qp[:, 1, 3:, 3:] = -eye3
-
-        # to be multiplied with N
-        W_sigma_qp[:, 0, :3, :] = 0.0
-        W_sigma_qp[:, 0, 3:, :3] = gamma_bar_tilde
-        W_sigma_qp[:, 0, 3:, 3:] = kappa_bar_tilde
-
-        Wla_sigma_qp = np.empty((self.nquadrature_int_total, 2, 6))
-        # to be multiplied with N_xi
-        Wla_sigma_qp[:, 1, :3] = (-A_IB @ sigma[:, :3, None])[:, :, 0]
-        Wla_sigma_qp[:, 1, 3:] = -sigma[:, 3:]
-
-        # to be multiplied with N
-        Wla_sigma_qp[:, 0, :3] = np.cross(B_gamma_bar, sigma[:, :3])
-        Wla_sigma_qp[:, 0, 3:] = np.cross(B_kappa_bar, sigma[:, 3:])
-
-        einsum_way = np.einsum("ijk,ik->ij", A_IB, sigma[:, :3])
-        diff_I_n = einsum_way - Wla_sigma_qp[:, 1, :3]
-        diff_norm_I_n = np.linalg.norm(diff_I_n)
-        print(f"{diff_norm_I_n = }")
-
-        Wla_sigma_nodes = (
-            self.N_int.T @ Wla_sigma_qp[:, 0] + self.N_xi_int.T @ Wla_sigma_qp[:, 1]
+        # compute Wla_sigma
+        A_IB, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(
+            self.N_int, self.N_xi_int, q
         )
-        Wla_sigma = Wla_sigma_nodes.reshape(-1)
 
-        Wla_sigma_old = self.W_c(t, q).tocsr() @ la_sigma
-        diff = Wla_sigma - Wla_sigma_old
-        diff_norm = np.linalg.norm(diff)
-        print(f"diff norm: {diff_norm}")
-        return Wla_sigma
+        # Wla_sigma_qp[qpi, N/N_xi, uDOF]
+        Wla_sigma_qp = np.empty((2, self.nquadrature_int_total, 6))
+        # to be multiplied with N_xi
+        Wla_sigma_qp[1, :, :3] = -np.einsum("ijk,ik->ij", A_IB, sigma_qp[:, :3])
+        Wla_sigma_qp[1, :, 3:] = -sigma_qp[:, 3:]
 
-    def Wla_sigma_q(self, t, q, la_c):
-        return approx_fprime(q, lambda q_: self.W_c(t, q_) @ la_c)
-        # return approx_fprime(q, lambda q_: self.W_c(t, q_).tocsr() @ la_c)
-        # return approx_fprime(q, lambda q_: self.Wla_sigma(t, q_[self.permutation_comp2node_q], la_c))
+        # to be multiplied with N
+        Wla_sigma_qp[0, :, :3] = 0.0
+        Wla_sigma_qp[0, :, 3:] = np.cross(B_gamma_bar, sigma_qp[:, :3]) + np.cross(
+            B_kappa_bar, sigma_qp[:, 3:]
+        )
+
+        # add together and multiply with quadrature weights
+        Wla_sigma_nodes = self.N_int.T @ (
+            Wla_sigma_qp[0] * self.qw_int_vec[:, None]
+        ) + self.N_xi_int.T @ (Wla_sigma_qp[1] * self.qw_int_vec[:, None])
+        return Wla_sigma_nodes.reshape(-1)
+
+    def Wla_sigma_q(self, t, q, la_sigma):
+        la_sigma_nodes = la_sigma.reshape(self.nnodes_sigma, 6)
+        sigma_qp = self.Nc_int @ la_sigma_nodes
+
+        # TODO: combine these!
+        if True:
+            weights_matrix_NN = self.NN_int_bd["weights_matrix"]
+            block_cols_NN = self.NN_int_bd["block_cols"]
+            indptr_NN = self.NN_int_bd["indptr"]
+            order_NN = self.NN_int_bd["order"]
+
+            weights_matrix_N_xiN = self.N_xiN_int_bd["weights_matrix"]
+            block_cols_N_xiN = self.N_xiN_int_bd["block_cols"]
+            indptr_N_xiN = self.N_xiN_int_bd["indptr"]
+            order_N_xiN = self.N_xiN_int_bd["order"]
+
+            weights_matrix_NN_xi = self.NN_xi_int_bd["weights_matrix"]
+            block_cols_NN_xi = self.NN_xi_int_bd["block_cols"]
+            indptr_NN_xi = self.NN_xi_int_bd["indptr"]
+            order_NN_xi = self.NN_xi_int_bd["order"]
+
+        # compute W_sigma
+        A_IB, T, B_gamma_bar_P, B_kappa_bar_P = self._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=True
+        )
+
+        I_n_P = np.einsum(
+            "ijk,ikl->ijl",
+            A_IB,
+            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
+        )
+
+        # TODO: dense?
+        # W_sigma_qp[qpi, N/N_xi, uDOF, qDOF]
+        Wla_sigma_qp_qbar = np.zeros((3, self.nquadrature_int_total, 6, 7))
+        # to be multiplied with N_xi <-> N
+        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
+
+        # to be multiplied with N <-> N_xi
+        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
+            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
+        )  # A_IB.T in gamma -> axisb=2
+        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
+            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
+        )
+
+        # to be multiplied with N <-> N
+        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
+            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
+            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
+        )
+
+        blocks_NN = np.einsum(
+            "bi,i,ikl->bkl",
+            weights_matrix_NN,  # [iBlock, qpi]
+            self.qw_int_vec,  # [qpi]
+            Wla_sigma_qp_qbar[0],  # [qpi, uDOF, qDOF]
+        )
+        blocks_NN_xi = np.einsum(
+            "bi,i,ikl->bkl",
+            weights_matrix_NN_xi,  # [iBlock, qpi]
+            self.qw_int_vec,  # [qpi]
+            Wla_sigma_qp_qbar[1],  # [qpi, uDOF, qDOF]
+        )
+        blocks_N_xiN = np.einsum(
+            "bi,i,ikl->bkl",
+            weights_matrix_N_xiN,  # [iBlock, qpi]
+            self.qw_int_vec,  # [qpi]
+            Wla_sigma_qp_qbar[2],  # [qpi, uDOF, qDOF]
+        )
+
+        Wla_sigma_q = (
+            bsr_array(
+                (blocks_NN[order_NN], block_cols_NN, indptr_NN),
+                shape=(self.nu, self.nq),
+                blocksize=(6, 7),
+            )
+            + bsr_array(
+                (blocks_N_xiN[order_N_xiN], block_cols_N_xiN, indptr_N_xiN),
+                shape=(self.nu, self.nq),
+                blocksize=(6, 7),
+            )
+            + bsr_array(
+                (blocks_NN_xi[order_NN_xi], block_cols_NN_xi, indptr_NN_xi),
+                shape=(self.nu, self.nq),
+                blocksize=(6, 7),
+            )
+        )
+        return Wla_sigma_q
 
     def Wla_c_q(self, t, q, la_c):
-        return self.Wla_sigma_q(t, q, la_c)
+        # TODO: return sparse
+        return self.Wla_sigma_q(t, q, la_c).toarray()
 
     ########################
     # evaluation functions #
