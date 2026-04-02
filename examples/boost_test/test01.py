@@ -288,20 +288,20 @@ def compare_performance(n_test=1_000):
         # kinematic equation
         ["q_dot", ("t", "q", "u"), False],
         ["q_dot_q", ("t", "q", "u"), False],
-        # ["q_dot_u", ("t", "q"), False], # q_dot_u of old is very slow!
+        # ["q_dot_u", ("t", "q"), False],               # q_dot_u of old is very slow!
         # compliance equation
         ["la_c", ("t", "q", "u"), False],
         ["c", ("t", "q", "u", "la_c"), False],
         ["c_q", ("t", "q", "u", "la_c"), False],
-        # ["c_u", ("t", "q", "u", "la_c"), False], # we test on rod (not system)
-        # ["c_la_c", (), False], # getter function
+        # ["c_u", ("t", "q", "u", "la_c"), False],      # rod has no c_u (only system)
+        # ["c_la_c", (), False],                        # c_la_c is a getter function
         ["W_c", ("t", "q"), False],
         ["Wla_c_q", ("t", "q", "la_c"), False],
         # dynamic forces
-        # ["M", ("t", "q"), False], # getter function
-        # ["Mu_q", ("t", "q", "u"), False], # we test on rod (not system)
+        # ["M", ("t", "q"), False],                     # M is a getter function
+        # ["Mu_q", ("t", "q", "u"), False],             # rod has no Mu_q (only system)
         ["h", ("t", "q", "u"), False],
-        # ["h_q", ("t", "q", "u"), False], # we test on rod (not system)
+        # ["h_q", ("t", "q", "u"), False],              # rod has no h_q (only system)
         ["h_u", ("t", "q", "u"), False],
         # quaternion constraint
         ["g_S", ("t", "q"), False],
