@@ -75,8 +75,7 @@ if __name__ == "__main__":
         ["Mu_q", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_q), True],
         ["h", ("t", "q", "u"), perm_c2n_u, False],
         ["h_q", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_q), True],
-        # TODO:
-        # ["h_u", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_u), True],
+        ["h_u", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_u), True],
         # quaternion constraint
         ["g_S", ("t", "q"), (), False],
         ["g_S_q", ("t", "q"), (..., perm_c2n_q), True],

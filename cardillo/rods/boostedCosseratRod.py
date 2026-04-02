@@ -505,54 +505,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
 
-        if True:
-            # TODO: remove all from below f_gyr must be updated!
-
-            # precompute values of the reference configuration in order to save
-            # computation time J in Harsch2020b (5)
-            self.J_int = np.zeros((self.nelement, self.nquadrature_int), dtype=float)
-            self.J_dyn = np.zeros((self.nelement, self.nquadrature_dyn), dtype=float)
-            # strains of the reference configuration
-            self.epsilon0 = np.zeros(
-                (self.nelement, self.nquadrature_int, 6), dtype=float
-            )
-            self.epsilon0_bar = np.zeros(
-                (self.nelement, self.nquadrature_int, 6), dtype=float
-            )
-
-            for el in range(self.nelement):
-                qe = self.Q[self.permutation_node2comp_q][self.elDOF[el]]
-
-                for i in range(self.nquadrature_int):
-                    # evaluate required quantities
-                    qpi = self.qp_int[el, i]
-                    N = self.Nq_int[el, i]
-                    N_xi = self.Nq_xi_int[el, i]
-                    epsilon_bar = self._eval_internal(qpi, N, N_xi, qe)[0][2]
-
-                    # save length of reference tangential vector and strain
-                    self.J_int[el, i] = norm(epsilon_bar[:3])
-                    self.epsilon0[el, i] = epsilon_bar / self.J_int[el, i]
-                    self.epsilon0_bar[el, i] = epsilon_bar
-
-                for i in range(self.nquadrature_dyn):
-                    # evaluate required quantities
-                    qpi = self.qp_dyn[el, i]
-                    N = self.Nq_dyn[el, i]
-                    N_xi = self.Nq_xi_dyn[el, i]
-                    self.J_dyn[el, i] = self.compute_J(qpi, N, N_xi, qe)
 
     # TODO: maybe it is more practical to set up a function to return
     # TODO: use it with line distributed force
     # qp, qw, J, [(Nq, Nq_xi) or (Nu, Nu_xi)] for given number of quadrature points
     def get_quadrature(self, nquadrature, deriv, field):
         """Number of quadrature point, how many derivatives, and what filed (r, P, q, v, Om, u, n, m, la_c)"""
-
-    def compute_J(self, xi, N, N_xi, qe):
-        epsilon_bar = self._eval_internal(xi, N, N_xi, qe)[0][2]
-
-        # length of reference tangential vector
-        return norm(epsilon_bar[:3])
 
     # TODO: When are these functions called? Do we need and can we speed them up?
     def element_interval(self, el):
@@ -613,7 +571,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     #     qbody = qsystem[self.qDOF]
     #     qnodes = qbody.reshape(self.nnodes, -1)
 
-    #     # maybe cach the N matrix
+    #     # maybe cache the N matrix
     #     N = self.mesh_kin.N(np.linspace(0, 1, num=num))
     #     qpoints = N @ qnodes
     #     rs = qpoints[:, :3].T
@@ -756,43 +714,27 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
     # TODO: vectorize
     def _h_u(self, t, q, u):
-        coo = CooMatrix((self.nu, self.nu))
-        warn("No gyroscopic forces .. h_u!")
-        return coo
-        for el in range(self.nelement):
-            elDOF_u = self.elDOF_u[el][self.nu_element_r :]
-            coo[elDOF_u, elDOF_u] = -self.f_gyr_master(u[elDOF_u], el)[1]
-        return coo
+        unodes = u.reshape(self.nnodes, -1)
+        B_Omega = self.N_dyn @ unodes[:, 3:]
 
-    # @cachedmethod(
-    #     lambda self: self._cache_f_gyr,
-    #     key=lambda self, ue_red, el: hashkey(*ue_red, el),
-    # )
-    def f_gyr_master(self, ue_red, el):
-        warn("Do this w/o loops")
-        # only compute part with omega
-        dim_red = self.nu_element - self.nu_element_r
-        f_gyr_el = np.zeros(dim_red, dtype=ue_red.dtype)
-        f_gyr_el_ue = np.zeros((dim_red, dim_red), dtype=ue_red.dtype)
+        # spin
+        B_I_rho0 = self.cross_section_inertias.B_I_rho0
+        B_L = B_Omega @ B_I_rho0.T
 
-        for i in range(self.nquadrature_dyn):
-            # interpoalte angular velocity
-            No = self.No_dyn[el, i]
-            B_Omega = No @ ue_red
-            weight = self.J_dyn[el, i] * self.qw_dyn[el, i]
+        f_gyr_qp_ubar = np.zeros((self.nquadrature_dyn_total, 6, 6))
+        # ax2skew(B_Omega) @ B_I_rho0 - ax2skew(B_I_rho0 @ B_Omega)
+        f_gyr_qp_ubar[:, 3:, 3:] = np.cross(
+            B_Omega[:, :, None], B_I_rho0[None, :, :], axisa=1, axisb=1, axisc=1
+        ) - ax2skew(B_L)
 
-            # vector of gyroscopic forces
-            B_I_rho0 = self.cross_section_inertias.B_I_rho0
-            f_gyr_el_p = cross3(B_Omega, B_I_rho0 @ B_Omega) * weight
-            f_gyr_u_el_p = (
-                (ax2skew(B_Omega) @ B_I_rho0 - ax2skew(B_I_rho0 @ B_Omega))
-            ) * weight
+        return self.add_blocks(
+            [f_gyr_qp_ubar],
+            [self.NN_dyn_bd],
+            -self.J_dyn_vec * self.qw_dyn_vec,
+            (self.nu, self.nu),
+            (6, 6),
+        )
 
-            # multiply vector of gyroscopic forces with nodal virtual rotations
-            f_gyr_el += No.T @ f_gyr_el_p
-            f_gyr_el_ue += No.T @ f_gyr_u_el_p @ No
-
-        return f_gyr_el, f_gyr_el_ue
 
     ###########################
     # unit-quaternion condition
