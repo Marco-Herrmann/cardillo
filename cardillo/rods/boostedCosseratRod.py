@@ -24,6 +24,7 @@ from cardillo.math.rotations import (
     T_SO3_inv_quat_P,
 )
 from cardillo.utility.coo_matrix import CooMatrix
+from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 from ._base_export import RodExportBase
 from ._cross_section import CrossSectionInertias
@@ -211,26 +212,48 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # TODO: this splits c and g from l_c_el
         self.cDOF_el = np.arange(self.nla_sigma_element)
 
+        # TODO: do inner dict with enum as key or use a class instead of dict
+        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
+
+        # reference strains for weight of blocks
+        self.set_reference_strains(Q)
         ################
         # assemble matrices for block structure
         ################
-        self.NN_int_bd = self.create_block_dict(self.N_int, self.N_int)
-        self.NN_xi_int_bd = self.create_block_dict(self.N_int, self.N_xi_int)
-        self.N_xiN_int_bd = self.create_block_dict(self.N_xi_int, self.N_int)
-        self.N_xiN_xi_int_bd = self.create_block_dict(self.N_xi_int, self.N_xi_int)
+        # TODO: simplify!
+        self.bsr_Wla_sigma_q = SparseArrayBlocks((self.nu, self.nq), (6, 7))
+        self.bsr_Wla_sigma_q.create_block_dict(self.N_int, self.N_int, self.qw_int_vec)
+        self.bsr_Wla_sigma_q.create_block_dict(
+            self.N_int, self.N_xi_int, self.qw_int_vec
+        )
+        self.bsr_Wla_sigma_q.create_block_dict(
+            self.N_xi_int, self.N_int, self.qw_int_vec
+        )
 
-        self.NcNc_int_bd = self.create_block_dict(self.Nc_int, self.Nc_int)
+        self.bsr_c_la_c = SparseArrayBlocks((self.nla_c, self.nla_c), (6, 6))
+        self.bsr_c_la_c.create_block_dict(
+            self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec
+        )
 
-        self.NcN_int_bd = self.create_block_dict(self.Nc_int, self.N_int)
-        self.NNc_int_bd = self.create_block_dict(self.N_int, self.Nc_int)
-        self.NcN_xi_int_bd = self.create_block_dict(self.Nc_int, self.N_xi_int)
-        self.N_xiNc_int_bd = self.create_block_dict(self.N_xi_int, self.Nc_int)
+        self.bsr_W_sigma = SparseArrayBlocks((self.nu, self.nla_c), (6, 6))
+        self.bsr_W_sigma.create_block_dict(self.N_int, self.Nc_int, self.qw_int_vec)
+        self.bsr_W_sigma.create_block_dict(self.N_xi_int, self.Nc_int, self.qw_int_vec)
 
-        self.NN_dyn_bd = self.create_block_dict(self.N_dyn, self.N_dyn)
+        self.bsr_c_sigma_q = SparseArrayBlocks((self.nla_c, self.nq), (6, 7))
+        self.bsr_c_sigma_q.create_block_dict(self.Nc_int, self.N_int, self.qw_int_vec)
+        self.bsr_c_sigma_q.create_block_dict(
+            self.Nc_int, self.N_xi_int, self.qw_int_vec
+        )
+
+        self.bsr_M = SparseArrayBlocks((self.nu, self.nu), (6, 6))
+        self.bsr_M.create_block_dict(
+            self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec
+        )
 
         ################
         # permutations #
         ################
+        # TODO: remove permutations
         # from ordering componentwise (old) to nodewise (new)
         # gen. positions q
         iq = np.arange(self.nnodes)[:, None]
@@ -289,84 +312,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.permutation_comp2node_c_el = idxc_old.ravel()[np.argsort(idxc_new.ravel())]
         self.permutation_node2comp_c_el = idxc_new.ravel()[np.argsort(idxc_old.ravel())]
 
-        # TODO: do inner dict with enum as key or use a class instead of dict
-        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
-
-        self.set_reference_strains(Q)
-
-    # TODO: this should be some utility functions, as they don't depend on self and are also usable for other stuff!!
-    def create_block_dict(self, Na, Nb):
-        block_dict = {}  # key = (row_block, col_block), value = list of (i, value)
-        assert Na.shape[0] == Nb.shape[0]
-        neval = Na.shape[0]
-        for i in range(neval):
-            Ni_outer = (Na[i][:, None] @ Nb[i][None, :]).tocoo()
-            for r, c, N in zip(Ni_outer.row, Ni_outer.col, Ni_outer.data):
-                block_dict.setdefault((r, c), []).append((i, N))
-
-        block_positions = list(block_dict.keys())
-        nblocks = len(block_positions)
-        block_rows, block_cols = np.array(block_positions).T
-
-        weights_matrix = np.zeros((nblocks, neval))
-        for b, pos in enumerate(block_positions):
-            for i, N in block_dict[pos]:
-                weights_matrix[b, i] = N
-
-        # TODO: check if we can avoid ordering here by ordering above the N/N_xi
-        # TODO: do we even have to order?
-        order = np.lexsort((block_cols, block_rows))
-        # assert (order == np.arange(len(order))).all()
-        if not (order == np.arange(len(order))).all():
-            print("Reordered!")
-            block_rows = block_rows[order]
-            block_cols = block_cols[order]
-            # blocks = blocks[order]
-
-        # TODO: can we find an explicit expression for indptr?
-        # TODO: check if it is Na.shape[1] + 1 or Nb.shape[1] + 1
-        indptr = np.zeros(Na.shape[1] + 1, dtype=int)
-        np.add.at(indptr, block_rows + 1, 1)
-        indptr = np.cumsum(indptr)
-
-        return dict(
-            weights_matrix=weights_matrix,
-            block_cols=block_cols,
-            indptr=indptr,
-            order=order,
-        )
-
-    # TODO: create function to combine block dicts and incorporate weights --> one dict per function
-    def add_blocks(self, qp_contributions, block_dicts, weight, shape, blocksize):
-        # TODO: improve this function
-        for i, (qp_contr, bd) in enumerate(zip(qp_contributions, block_dicts)):
-            weights_matrix = bd["weights_matrix"]
-            block_cols = bd["block_cols"]
-            indptr = bd["indptr"]
-            order = bd["order"]
-
-            blocks = np.einsum(
-                "bi,i,ikl->bkl",
-                weights_matrix,  # [iBlock, qpi]
-                weight,  # [qpi]
-                qp_contr,  # [qpi, rowDOF, colDOF]
-            )
-
-            if i == 0:
-                result = bsr_array(
-                    (blocks[order], block_cols, indptr),
-                    shape=shape,
-                    blocksize=blocksize,
-                )
-            else:
-                result += bsr_array(
-                    (blocks[order], block_cols, indptr),
-                    shape=shape,
-                    blocksize=blocksize,
-                )
-
-        return result
-
     def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
         P_IB = N @ qbar_nodes[:, 3:]
@@ -416,7 +361,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def nodes(self, qsystem):
         """Returns nodal position coordinates"""
         qbody = qsystem[self.qDOF]
-        qnodesT = qbody.reshape(self.nnodes, -1, order="F")
+        qnodesT = qbody.reshape(-1, self.nnodes, order="F")
         return qnodesT[:3]
 
     def nodalFrames(self, qsystem, elementwise=False):
@@ -517,13 +462,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         M_qp[:, 3:, :3] = 0.0
         M_qp[:, 3:, 3:] = self.cross_section_inertias.B_I_rho0
 
-        self.__M = self.add_blocks(
-            [M_qp],
-            [self.NN_dyn_bd],
-            self.qw_dyn_vec * self.J_dyn_vec,
-            (self.nu, self.nu),
-            (6, 6),
-        )
+        self.__M = self.bsr_M.add_blocks([M_qp])
+        return self.__M
 
     def _h(self, t, q, u):
         unodes = u.reshape(self.nnodes, -1)
@@ -551,16 +491,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         f_gyr_qp_ubar = np.zeros((self.nquadrature_dyn_total, 6, 6))
         # B_Omega_tilde @ B_I_rho0 - B_L_tilde
         f_gyr_qp_ubar[:, 3:, 3:] = np.cross(
-            B_Omega[:, :, None], B_I_rho0[None, :, :], axisa=1, axisb=1, axisc=1
-        ) - ax2skew(B_L)
+            B_I_rho0[None, :, :], B_Omega[:, :, None], axisa=1, axisb=1, axisc=1
+        ) + ax2skew(B_L)
 
-        return self.add_blocks(
-            [f_gyr_qp_ubar],
-            [self.NN_dyn_bd],
-            -self.J_dyn_vec * self.qw_dyn_vec,
-            (self.nu, self.nu),
-            (6, 6),
-        )
+        return self.bsr_M.add_blocks([f_gyr_qp_ubar])
 
     ###########################
     # unit-quaternion condition
@@ -881,34 +815,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         c_sigma_q_qp[0, :, :3, 3:] = B_gamma_bar_P
         c_sigma_q_qp[0, :, 3:, 3:] = B_kappa_bar_P
 
-        return self.add_blocks(
-            c_sigma_q_qp,
-            [self.NcN_int_bd, self.NcN_xi_int_bd],
-            self.qw_int_vec,
-            shape=(self.nla_c, self.nq),
-            blocksize=(6, 7),
-        )
+        return self.bsr_c_sigma_q.add_blocks(c_sigma_q_qp)
 
     def _c_la_c_coo(self):
-        # TODO: make this with add_blocks?
-        weights_matrix = self.NcNc_int_bd["weights_matrix"]
-        block_cols = self.NcNc_int_bd["block_cols"]
-        indptr = self.NcNc_int_bd["indptr"]
-        order = self.NcNc_int_bd["order"]
+        c_la_c = self.bsr_c_la_c.add_blocks([self.material_model.C_inv[None, :, :]])
 
-        # TODO: assuming prismatic rods, we would have to include the different stiffnesses here
-        blocks = np.einsum(
-            "bi,i,ikl->bkl",
-            weights_matrix,  # [iBlock, qpi]
-            self.qw_int_vec * self.J_int_vec,  # [qpi]
-            self.material_model.C_inv[None, :, :],  # [qpi, uDOF, la_cDOF]
-        )
-
-        c_la_c = bsr_array(
-            (blocks[order], block_cols, indptr),
-            shape=(self.nla_c, self.nla_c),
-            blocksize=(6, 6),
-        )
         self.__cla_c = c_la_c
         self.__cla_c_inv = spsolve(
             self.c_la_c().tocsc(), eye_array(self.nla_c, format="csc")
@@ -937,26 +848,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         W_sigma_qp[0, :, 3:, :3] = gamma_bar_tilde
         W_sigma_qp[0, :, 3:, 3:] = kappa_bar_tilde
 
-        return self.add_blocks(
-            W_sigma_qp,
-            [self.NNc_int_bd, self.N_xiNc_int_bd],
-            self.qw_int_vec,
-            shape=(self.nu, self.nla_c),
-            blocksize=(6, 6),
-        )
-
-        # TODO: figure out how block_cols and indptr change
-        W_c = bsr_array(
-            (blocks[:, :, self.eps_c], block_cols_c, indptr_c),
-            shape=(self.nu, self.nla_c),
-            blocksize=(6, self.neps_c),
-        )
-        W_g = bsr_array(
-            (blocks[:, :, self.eps_g], block_cols_g, indptr_g),
-            shape=(self.nu, self.nla_g),
-            blocksize=(6, self.neps_g),
-        )
-        return W_c, W_g
+        return self.bsr_W_sigma.add_blocks(W_sigma_qp)
+        # TODO: split up W_sigma into W_c and W_g here?
 
     def Wla_sigma(self, q, la_sigma):
         la_sigma_nodes = la_sigma.reshape(self.nnodes_sigma, 6)
@@ -1020,13 +913,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
         )
 
-        return self.add_blocks(
-            Wla_sigma_qp_qbar,
-            [self.NN_int_bd, self.NN_xi_int_bd, self.N_xiN_int_bd],
-            self.qw_int_vec,
-            (self.nu, self.nq),
-            (6, 7),
-        )
+        return self.bsr_Wla_sigma_q.add_blocks(Wla_sigma_qp_qbar)
 
     ##############
     # compliance #
