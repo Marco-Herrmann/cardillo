@@ -1,6 +1,5 @@
 import numpy as np
 from scipy.sparse import bsr_array
-from cardillo.utility.coo_matrix import CooMatrix
 
 
 class SparseArrayBlocks:
@@ -9,8 +8,6 @@ class SparseArrayBlocks:
         self.blocksize = blocksize
 
         nPairs = len(pairs)
-        br, bc = blocksize
-
         neval = pairs[0][0].shape[0]
 
         block_dict = {}  # key = (row_block, col_block), value = list of (i, value)
@@ -34,7 +31,6 @@ class SparseArrayBlocks:
             for p, i, N in block_dict[*pos]:
                 self.weights_matrix[p, b, i] = N
 
-        # for bsr
         self.block_cols = block_cols[order]
         # TODO: can we find an explicit expression for indptr?
         # TODO: check if it is Na.shape[1] + 1 or Nb.shape[1] + 1
