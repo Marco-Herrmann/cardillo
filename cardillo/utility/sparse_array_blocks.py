@@ -16,39 +16,41 @@ class SparseArrayBlocks:
             assert neval == Nb.shape[0], "Dimensions missmatch"
 
             for i in range(neval):
-                Ni_outer = (Na[i][:, None] @ Nb[i][None, :]).tocoo()
-                for r, c, N in zip(Ni_outer.row, Ni_outer.col, Ni_outer.data):
-                    block_dict.setdefault((r, c), []).append((p, i, N * weights[i]))
+                Nai_col, Nai_data = Na[i].col, Na[i].data
+                Nbi_col, Nbi_data = Nb[i].col, Nb[i].data
+                wi = weights[i]
 
+                # iterate rows via Na
+                for rr, vr in zip(Nai_col, Nai_data):
+                    # iterate cols via Nb
+                    for cc, vc in zip(Nbi_col, Nbi_data):
+                        block_dict.setdefault((rr, cc), []).append((p, i, vr * vc * wi))
+
+        # get and sort block positions
         block_positions = np.array(list(block_dict.keys()))
-        block_rows, block_cols = block_positions.T
-
-        order = np.lexsort((block_cols, block_rows))
+        order = np.lexsort((block_positions[:, 1], block_positions[:, 0]))
         block_positions = block_positions[order]
 
+        # fill weight matrix
+        pos_to_idx = {tuple(pos): b for b, pos in enumerate(block_positions)}
         self.weights_matrix = np.zeros((nPairs, block_positions.shape[0], neval))
-        for b, pos in enumerate(block_positions):
-            for p, i, N in block_dict[*pos]:
+        for (r, c), entries in block_dict.items():
+            b = pos_to_idx[(r, c)]
+            for p, i, N in entries:
                 self.weights_matrix[p, b, i] = N
 
-        self.block_cols = block_cols[order]
-        # TODO: can we find an explicit expression for indptr?
-        # TODO: check if it is Na.shape[1] + 1 or Nb.shape[1] + 1
-        indptr = np.zeros(Na.shape[1] + 1, dtype=int)
-        np.add.at(indptr, block_rows + 1, 1)
-        self.indptr = np.cumsum(indptr)
+        # prepare for bsr
+        self.block_cols = block_positions[order, 1]
+        counts = np.bincount(block_positions[order, 0], minlength=Na.shape[1])
+        self.indptr = np.concatenate(([0], np.cumsum(counts)))
 
     def add_blocks(self, qp_contributions):
         # numpy equivalent to einsum ("pinm, pbi -> bnm", qp_contr, weights)
         # Note: reshape shares memory!
-        blocks = (
-            (
-                self.weights_matrix
-                @ qp_contributions.reshape(*qp_contributions.shape[:2], -1)
-            )
-            .sum(axis=0)
-            .reshape(-1, *qp_contributions.shape[2:])
+        tmp = self.weights_matrix @ qp_contributions.reshape(
+            *qp_contributions.shape[:2], -1
         )
+        blocks = tmp.sum(axis=0).reshape(-1, *qp_contributions.shape[2:])
 
         # Note: bsr like this keeps zeros
         result = bsr_array(
