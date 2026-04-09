@@ -26,6 +26,7 @@ from cardillo.math.rotations import (
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
+
 from ._base_export import RodExportBase
 from ._cross_section import CrossSectionInertias
 from .discretization.lagrange import LagrangeKnotVector
@@ -220,34 +221,40 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         ################
         # assemble matrices for block structure
         ################
-        # TODO: simplify!
-        self.bsr_Wla_sigma_q = SparseArrayBlocks((self.nu, self.nq), (6, 7))
-        self.bsr_Wla_sigma_q.create_block_dict(self.N_int, self.N_int, self.qw_int_vec)
-        self.bsr_Wla_sigma_q.create_block_dict(
-            self.N_int, self.N_xi_int, self.qw_int_vec
-        )
-        self.bsr_Wla_sigma_q.create_block_dict(
-            self.N_xi_int, self.N_int, self.qw_int_vec
-        )
+        # M
+        M_pairs = [(self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec)]
+        self.M_h_u_SAB = SparseArrayBlocks((self.nu, self.nu), (6, 6), M_pairs)
 
-        self.bsr_c_la_c = SparseArrayBlocks((self.nla_c, self.nla_c), (6, 6))
-        self.bsr_c_la_c.create_block_dict(
-            self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec
+        # c_la_c
+        c_la_c_pairs = [(self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec)]
+        self.c_la_c_SAB = SparseArrayBlocks(
+            (self.nla_c, self.nla_c), (6, 6), c_la_c_pairs
         )
 
-        self.bsr_W_sigma = SparseArrayBlocks((self.nu, self.nla_c), (6, 6))
-        self.bsr_W_sigma.create_block_dict(self.N_int, self.Nc_int, self.qw_int_vec)
-        self.bsr_W_sigma.create_block_dict(self.N_xi_int, self.Nc_int, self.qw_int_vec)
+        # c_q
+        c_q_pairs = [
+            (self.Nc_int, self.N_int, self.qw_int_vec),
+            (self.Nc_int, self.N_xi_int, self.qw_int_vec),
+        ]
+        self.c_sigma_q_SAB = SparseArrayBlocks((self.nla_c, self.nq), (6, 7), c_q_pairs)
 
-        self.bsr_c_sigma_q = SparseArrayBlocks((self.nla_c, self.nq), (6, 7))
-        self.bsr_c_sigma_q.create_block_dict(self.Nc_int, self.N_int, self.qw_int_vec)
-        self.bsr_c_sigma_q.create_block_dict(
-            self.Nc_int, self.N_xi_int, self.qw_int_vec
+        # W_sigma
+        W_sigma_pairs = [
+            (self.N_int, self.Nc_int, self.qw_int_vec),
+            (self.N_xi_int, self.Nc_int, self.qw_int_vec),
+        ]
+        self.W_sigma_SAB = SparseArrayBlocks(
+            (self.nu, self.nla_c), (6, 6), W_sigma_pairs
         )
 
-        self.bsr_M = SparseArrayBlocks((self.nu, self.nu), (6, 6))
-        self.bsr_M.create_block_dict(
-            self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec
+        # Wla_sigma_q
+        Wla_sigma_q_pairs = [
+            (self.N_int, self.N_int, self.qw_int_vec),
+            (self.N_int, self.N_xi_int, self.qw_int_vec),
+            (self.N_xi_int, self.N_int, self.qw_int_vec),
+        ]
+        self.Wla_sigma_q_SAB = SparseArrayBlocks(
+            (self.nu, self.nq), (6, 7), Wla_sigma_q_pairs
         )
 
         ################
@@ -455,14 +462,18 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.__M
 
     def _M_coo(self):
-        # TODO: make this sparse?
-        M_qp = np.empty((self.nquadrature_dyn_total, 6, 6))
-        M_qp[:, :3, :3] = eye3 * self.cross_section_inertias.A_rho0
-        M_qp[:, :3, 3:] = 0.0
-        M_qp[:, 3:, :3] = 0.0
-        M_qp[:, 3:, 3:] = self.cross_section_inertias.B_I_rho0
+        self.constant_mass_matrix = True
 
-        self.__M = self.bsr_M.add_blocks([M_qp])
+        # TODO: make this sparse?
+        M_qp = np.empty((1, self.nquadrature_dyn_total, 6, 6))
+        M_qp[0, :, :3, :3] = (
+            eye3 * self.cross_section_inertias.A_rho0
+        )  # (self.qp_dyn_vec)
+        M_qp[0, :, :3, 3:] = 0.0
+        M_qp[0, :, 3:, :3] = 0.0
+        M_qp[0, :, 3:, 3:] = self.cross_section_inertias.B_I_rho0  # (self.qp_dyn_vec)
+
+        self.__M = self.M_h_u_SAB.add_blocks(M_qp)
         return self.__M
 
     def _h(self, t, q, u):
@@ -494,7 +505,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             B_I_rho0[None, :, :], B_Omega[:, :, None], axisa=1, axisb=1, axisc=1
         ) + ax2skew(B_L)
 
-        return self.bsr_M.add_blocks([f_gyr_qp_ubar])
+        return self.M_h_u_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
 
     ###########################
     # unit-quaternion condition
@@ -815,15 +826,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         c_sigma_q_qp[0, :, :3, 3:] = B_gamma_bar_P
         c_sigma_q_qp[0, :, 3:, 3:] = B_kappa_bar_P
 
-        return self.bsr_c_sigma_q.add_blocks(c_sigma_q_qp)
+        return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
     def _c_la_c_coo(self):
-        c_la_c = self.bsr_c_la_c.add_blocks([self.material_model.C_inv[None, :, :]])
+        c_la_c = self.c_la_c_SAB.add_blocks(
+            np.array([[self.material_model.C_inv] * self.nquadrature_int_total])
+        )
 
         self.__cla_c = c_la_c
-        self.__cla_c_inv = spsolve(
-            self.c_la_c().tocsc(), eye_array(self.nla_c, format="csc")
-        )
+        self.__cla_c_inv = spsolve(c_la_c.tocsc(), eye_array(self.nla_c, format="csc"))
         return c_la_c
 
     def W_sigma(self, q):
@@ -848,7 +859,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         W_sigma_qp[0, :, 3:, :3] = gamma_bar_tilde
         W_sigma_qp[0, :, 3:, 3:] = kappa_bar_tilde
 
-        return self.bsr_W_sigma.add_blocks(W_sigma_qp)
+        return self.W_sigma_SAB.add_blocks(W_sigma_qp)
         # TODO: split up W_sigma into W_c and W_g here?
 
     def Wla_sigma(self, q, la_sigma):
@@ -913,7 +924,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
         )
 
-        return self.bsr_Wla_sigma_q.add_blocks(Wla_sigma_qp_qbar)
+        return self.Wla_sigma_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
     ##############
     # compliance #

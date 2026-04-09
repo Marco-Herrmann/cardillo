@@ -1,80 +1,64 @@
 import numpy as np
 from scipy.sparse import bsr_array
+from cardillo.utility.coo_matrix import CooMatrix
 
 
 class SparseArrayBlocks:
-    def __init__(self, shape, blocksize):
+    def __init__(self, shape, blocksize, pairs):
         self.shape = shape
         self.blocksize = blocksize
 
-        self.block_dicts = []
+        nPairs = len(pairs)
+        br, bc = blocksize
 
-    def create_block_dict(self, Na, Nb, weights=None):
+        neval = pairs[0][0].shape[0]
+
         block_dict = {}  # key = (row_block, col_block), value = list of (i, value)
-        assert Na.shape[0] == Nb.shape[0]
-        neval = Na.shape[0]
-        if weights is None:
-            weights = np.ones(neval)
-        for i in range(neval):
-            Ni_outer = (Na[i][:, None] @ Nb[i][None, :]).tocoo()
-            for r, c, N in zip(Ni_outer.row, Ni_outer.col, Ni_outer.data):
-                block_dict.setdefault((r, c), []).append((i, N * weights[i]))
+        for p, (Na, Nb, weights) in enumerate(pairs):
+            assert neval == Na.shape[0], "Dimensions missmatch"
+            assert neval == Nb.shape[0], "Dimensions missmatch"
 
-        block_positions = list(block_dict.keys())
-        nblocks = len(block_positions)
-        block_rows, block_cols = np.array(block_positions).T
+            for i in range(neval):
+                Ni_outer = (Na[i][:, None] @ Nb[i][None, :]).tocoo()
+                for r, c, N in zip(Ni_outer.row, Ni_outer.col, Ni_outer.data):
+                    block_dict.setdefault((r, c), []).append((p, i, N * weights[i]))
 
-        weights_matrix = np.zeros((nblocks, neval))
-        for b, pos in enumerate(block_positions):
-            for i, N in block_dict[pos]:
-                weights_matrix[b, i] = N
+        block_positions = np.array(list(block_dict.keys()))
+        block_rows, block_cols = block_positions.T
 
         order = np.lexsort((block_cols, block_rows))
-        if not (order == np.arange(len(order))).all():
-            block_rows = block_rows[order]
-            block_cols = block_cols[order]
+        block_positions = block_positions[order]
 
+        self.weights_matrix = np.zeros((nPairs, block_positions.shape[0], neval))
+        for b, pos in enumerate(block_positions):
+            for p, i, N in block_dict[*pos]:
+                self.weights_matrix[p, b, i] = N
+
+        # for bsr
+        self.block_cols = block_cols[order]
         # TODO: can we find an explicit expression for indptr?
         # TODO: check if it is Na.shape[1] + 1 or Nb.shape[1] + 1
         indptr = np.zeros(Na.shape[1] + 1, dtype=int)
         np.add.at(indptr, block_rows + 1, 1)
-        indptr = np.cumsum(indptr)
+        self.indptr = np.cumsum(indptr)
 
-        # TODO: indptr, cols, ... only once
-        self.block_dicts.append(
-            dict(
-                weights_matrix=weights_matrix[order],
-                block_cols=block_cols,
-                indptr=indptr,
+    def add_blocks(self, qp_contributions):
+        # numpy equivalent to einsum ("pinm, pbi -> bnm", qp_contr, weights)
+        # Note: reshape shares memory!
+        blocks = (
+            (
+                self.weights_matrix
+                @ qp_contributions.reshape(*qp_contributions.shape[:2], -1)
             )
+            .sum(axis=0)
+            .reshape(-1, *qp_contributions.shape[2:])
         )
 
-    # TODO: create function to combine block dicts
-    def add_blocks(self, qp_contributions):
-        # TODO: improve this function
-        for i, (qp_contr, bd) in enumerate(zip(qp_contributions, self.block_dicts)):
-            weights_matrix = bd["weights_matrix"]
-            block_cols = bd["block_cols"]
-            indptr = bd["indptr"]
-
-            # TODO: can this be done by matmul? or one einsum for all?
-            blocks = np.einsum(
-                "bi,ikl->bkl",
-                weights_matrix,  # [iBlock, qpi]
-                qp_contr,  # [qpi, rowDOF, colDOF]
-            )
-
-            if i == 0:
-                result = bsr_array(
-                    (blocks, block_cols, indptr),
-                    shape=self.shape,
-                    blocksize=self.blocksize,
-                )
-            else:
-                result += bsr_array(
-                    (blocks, block_cols, indptr),
-                    shape=self.shape,
-                    blocksize=self.blocksize,
-                )
+        # Note: bsr like this keeps zeros
+        result = bsr_array(
+            (blocks, self.block_cols, self.indptr),
+            shape=self.shape,
+            blocksize=self.blocksize,
+        )
 
         return result
