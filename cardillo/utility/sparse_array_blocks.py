@@ -29,14 +29,10 @@ class SparseArrayBlocks:
             for i, N in block_dict[pos]:
                 weights_matrix[b, i] = N
 
-        # TODO: check if we can avoid ordering here by ordering above the N/N_xi
         order = np.lexsort((block_cols, block_rows))
-        # assert (order == np.arange(len(order))).all()
         if not (order == np.arange(len(order))).all():
-            print("Reordered!")
             block_rows = block_rows[order]
             block_cols = block_cols[order]
-            # blocks = blocks[order]
 
         # TODO: can we find an explicit expression for indptr?
         # TODO: check if it is Na.shape[1] + 1 or Nb.shape[1] + 1
@@ -44,13 +40,12 @@ class SparseArrayBlocks:
         np.add.at(indptr, block_rows + 1, 1)
         indptr = np.cumsum(indptr)
 
-        # TODO: indptr, cols, ... only once, avoid ordering!
+        # TODO: indptr, cols, ... only once
         self.block_dicts.append(
             dict(
-                weights_matrix=weights_matrix,
+                weights_matrix=weights_matrix[order],
                 block_cols=block_cols,
                 indptr=indptr,
-                order=order,
             )
         )
 
@@ -61,7 +56,6 @@ class SparseArrayBlocks:
             weights_matrix = bd["weights_matrix"]
             block_cols = bd["block_cols"]
             indptr = bd["indptr"]
-            order = bd["order"]
 
             # TODO: can this be done by matmul? or one einsum for all?
             blocks = np.einsum(
@@ -70,18 +64,15 @@ class SparseArrayBlocks:
                 qp_contr,  # [qpi, rowDOF, colDOF]
             )
 
-            # TODO: check if we can avoid ordering here by ordering above
             if i == 0:
                 result = bsr_array(
-                    (blocks[order], block_cols, indptr),
-                    # (blocks, block_cols, indptr),
+                    (blocks, block_cols, indptr),
                     shape=self.shape,
                     blocksize=self.blocksize,
                 )
             else:
                 result += bsr_array(
-                    (blocks[order], block_cols, indptr),
-                    # (blocks, block_cols, indptr),
+                    (blocks, block_cols, indptr),
                     shape=self.shape,
                     blocksize=self.blocksize,
                 )
