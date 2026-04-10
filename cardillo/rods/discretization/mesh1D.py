@@ -1,4 +1,5 @@
 import numpy as np
+from numpy.polynomial import Polynomial
 from scipy.sparse import csr_array, bsr_array, bsr_matrix
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
@@ -312,5 +313,176 @@ class Mesh1D:
         return N_sparse
 
 
-if __name__ == "__main__":
-    print("hello world")
+class Mesh1D_equidistant:
+    def __init__(
+        self,
+        basis,
+        nelement,
+        polynomial_degere,
+        derivative_order,
+    ):
+        assert basis in ["Lagrange", "Lagrange_Disc", "Hermite"]
+
+        self.basis = basis
+        self.nelement = nelement
+        self.polynomial_degere = polynomial_degere
+        self.derivative_order = derivative_order
+
+        # element boundaries
+        self.xis_element = np.linspace(0, 1, self.nelement + 1)
+        self.element_interval = np.array(
+            [self.xis_element[:-1], self.xis_element[1:]]
+        ).T
+
+        # number of nodes
+        if basis == "Lagrange":
+            self.nnodes = polynomial_degere * nelement + 1
+            self.nnodes_element = polynomial_degere + 1
+            self.xis_nodes = np.linspace(0, 1, self.nnodes)
+            self.offset = polynomial_degere
+
+        elif basis == "Lagrange_Disc":
+            self.nnodes = (polynomial_degere + 1) * nelement
+            self.nnodes_element = polynomial_degere + 1
+            self.xis_nodes = np.concatenate(
+                [
+                    np.linspace(
+                        self.xis_element[el],
+                        self.xis_element[el + 1],
+                        self.nnodes_element,
+                    )
+                    for el in range(self.nelement)
+                ]
+            )
+            self.offset = polynomial_degere + 1
+
+        elif basis == "Hermite":
+            raise NotImplementedError
+
+        # shape functions
+        if basis in ["Lagrange", "Lagrange_Disc"]:
+            polynomials = np.empty(
+                (self.derivative_order + 1, self.nelement, self.nnodes_element),
+                dtype=Polynomial,
+            )
+
+            for el in range(self.nelement):
+                xis_nodes_element = np.linspace(
+                    self.xis_element[el],
+                    self.xis_element[el + 1],
+                    self.nnodes_element,
+                )
+
+                # TODO: put this into a function
+                # def Lagrange(xis): ...
+                for node_i in range(self.nnodes_element):
+                    xi_node_i = xis_nodes_element[node_i]
+                    poly_i = Polynomial([1.0])
+
+                    for node_j in range(self.nnodes_element):
+                        if node_i != node_j:
+                            xi_node_j = xis_nodes_element[node_j]
+                            inv_diff = 1.0 / (xi_node_i - xi_node_j)
+                            poly_i *= Polynomial([-xi_node_j * inv_diff, inv_diff])
+
+                    for d in range(self.derivative_order + 1):
+                        polynomials[d, el, node_i] = poly_i.deriv(d)
+
+        self.polynomials = polynomials
+
+    def element_number(self, xis):
+        """returns the element number(s) for xi, such that xi_{element} <= xi < xi_{element + 1}, expect for the last element, where xi_{element} <= xi <= xi_{element + 1}"""
+        xis = np.asarray(xis)
+        was_scalar = xis.ndim == 0
+        xis = np.atleast_1d(xis)
+
+        element_numbers = np.searchsorted(self.xis_element[:-1], xis, side="right") - 1
+        # also allows for out of bounds
+        element_numbers = np.clip(element_numbers, 0, self.nelement - 1)
+        return element_numbers[0] if was_scalar else element_numbers
+
+    # TODO: naming of functions
+    def shape_functions_element(self, xis, el, derivative_order):
+        xis = np.asarray(xis)
+        was_scalar = xis.ndim == 0
+        xis = np.atleast_1d(xis)
+
+        N_dense = np.zeros((derivative_order + 1, len(xis), self.nnodes_element))
+        for d in range(derivative_order + 1):
+            for node in range(self.nnodes_element):
+                N_dense[d, :, node] = self.polynomials[d, el, node](xis)
+
+        return N_dense[:, 0, :] if was_scalar else N_dense
+
+    def shape_functions_element_global(self, xis, el, derivative_order):
+        N_sparse = []
+        Nd = self.shape_functions_element(xis, el, derivative_order)
+        for d in range(derivative_order + 1):
+            Nd_sparse = csr_array((len(xis), self.nnodes))
+            col = np.arange(self.nnodes_element) + el * self.offset
+            Nd_sparse[:, col] = Nd[d]
+            N_sparse.append(Nd_sparse)
+
+        return N_sparse
+
+    def shape_functions(self, xis, els=None, derivative_order=0):
+        xis = np.atleast_1d(xis)
+        nxis = len(xis)
+        if els is None:
+            els = self.element_number(xis)
+
+        els = np.atleast_1d(els)
+        nels = len(els)
+
+        if nels != nxis:
+            assert nels == 1, "Missmatch in lengths of given xi values and elements!"
+            els = np.tile(els, nxis)
+
+        N_sparse = [
+            csr_array((len(xis), self.nnodes)) for _ in range(derivative_order + 1)
+        ]
+        for el in np.unique(els):
+            selection = els == el
+            # TODO: put the function in here
+            N_sparse_el = self.shape_functions_element_global(
+                xis[selection], el, derivative_order
+            )
+            for d in range(derivative_order + 1):
+                N_sparse[d][selection] = N_sparse_el[d]
+
+        return N_sparse
+
+    def quadrature(self, nquadrature, quadrature, derivative_order):
+        nquadrature_total = self.nelement * nquadrature
+        qp = np.empty(nquadrature_total, dtype=float)
+        qw = np.empty(nquadrature_total, dtype=float)
+        els = np.empty(nquadrature_total, dtype=int)
+
+        if quadrature == "Gauss":
+            quadrature_fct = gauss
+        elif quadrature == "Lobatto":
+            quadrature_fct = lobatto
+
+        for el in range(self.nelement):
+            idx = slice(el * nquadrature, (el + 1) * nquadrature)
+            qp[idx], qw[idx] = quadrature_fct(
+                nquadrature, interval=self.element_interval[el]
+            )
+            els[idx] = el
+
+        N = self.shape_functions(qp, els, derivative_order)
+        return dict(
+            nquadrature_total=nquadrature_total,
+            qp=qp,
+            qw=qw,
+            els=els,
+            N=N,
+        )
+
+    def shape_function_array_element(self, xi, el, derivative):
+        return np.array(
+            [
+                self.polynomials[derivative, el, node](xi)
+                for node in range(self.nnodes_element)
+            ]
+        )

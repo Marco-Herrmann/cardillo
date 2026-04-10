@@ -29,8 +29,7 @@ from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 from ._base_export import RodExportBase
 from ._cross_section import CrossSectionInertias
-from .discretization.lagrange import LagrangeKnotVector
-from .discretization.mesh1D import Mesh1D
+from .discretization.mesh1D import Mesh1D_equidistant
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -80,73 +79,46 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nelement = nelement
         self.polynomial_degree = polynomial_degree
 
-        # TODO: also add posibility to switch from Gauss to Lobatto/Trapezoidal
-        self.nquadrature_int = nquadrature_int
-        self.nquadrature_dyn = nquadrature_dyn
-
-        # TODO: check where else this is used
-        self.nquadrature = nquadrature_dyn
-
-        self.knot_vector = LagrangeKnotVector(polynomial_degree, nelement)
-
-        # TODO: write new mesh!
-        # mesh for interpolation of (r, P) and (v, omega)
-        mesh_kin = Mesh1D(
-            knot_vector=self.knot_vector,
-            nquadrature=1,  # dummy value
-            dim_q=7,
-            derivative_order=1,
+        new_mesh_kin = Mesh1D_equidistant(
             basis="Lagrange",
-            dim_u=6,
+            nelement=nelement,
+            polynomial_degere=polynomial_degree,
+            derivative_order=1,
         )
-        self.mesh_kin = mesh_kin
 
         # total number of nodes and per element
-        self.nnodes = mesh_kin.nnodes
-        self.nnodes_element = mesh_kin.nnodes_per_element
+        self.nnodes = new_mesh_kin.nnodes
+        self.nnodes_element = new_mesh_kin.nnodes_element
 
-        # TODO: this should be in the knot vector!
-        self.xis_nodes = np.linspace(0, 1, self.nnodes)
-        self.xis_element_boundaries = self.xis_nodes[::polynomial_degree]
+        self.xis_nodes = new_mesh_kin.xis_nodes
+        self.xis_element_boundaries = new_mesh_kin.xis_element
 
         # total number of generalized position and velocity coordinates
-        self.nq = mesh_kin.nq
-        self.nu = mesh_kin.nu
+        self.nq = self.nnodes * 7
+        self.nu = self.nnodes * 6
 
-        # TODO: update elDOFs for new ordering or can it be removed?
-        # global element connectivity
-        # qe = q[elDOF[e]] "q^e = C_q,e q"
-        self.elDOF = mesh_kin.elDOF
-
-        # TODO: clean up functions, seems handy to keep them for partial derivatives
-        # evaluate shape functions at specific xi
-        self.Nq = mesh_kin.eval_basis_matrix_q
-        self.Nu = mesh_kin.eval_basis_matrix_u
+        self.N = lambda xis, els: new_mesh_kin.shape_functions(xis, els, 0)[0]
+        self.N_element = lambda xi, el: new_mesh_kin.shape_function_array_element(
+            xi, el, 0
+        )
 
         #####################
         # quadrature points #
         #####################
-        # TODO: remove these here after new ordering works
-        self.qp_int, self.qw_int = mesh_kin.quadrature_points(self.nquadrature_int)
-        self.qp_dyn, self.qw_dyn = mesh_kin.quadrature_points(self.nquadrature_dyn)
+        quadrature_int_kin = new_mesh_kin.quadrature(nquadrature_int, "Gauss", 1)
+        self.nquadrature_int_total = quadrature_int_kin["nquadrature_total"]
+        self.qp_int_vec = quadrature_int_kin["qp"]
+        self.qw_int_vec = quadrature_int_kin["qw"]
+        self.qels_int_vec = quadrature_int_kin["els"]
+        self.N_int, self.N_xi_int = quadrature_int_kin["N"]
 
-        # quadrature
-        # TODO: get qp_int and qw_int directly vecorized
-        self.nquadrature_int_total = self.nquadrature_int * self.nelement
-        self.qp_int_vec = self.qp_int.reshape(-1)
-        self.qw_int_vec = self.qw_int.reshape(-1)
-        self.N_int, self.N_xi_int = mesh_kin.shape_functions_matrix_new(
-            self.nquadrature_int, 1
-        )
-
-        # quadrature
         # TODO: allow for trapezoidal rule
-        self.nquadrature_dyn_total = self.nquadrature_dyn * self.nelement
-        self.qp_dyn_vec = self.qp_dyn.reshape(-1)
-        self.qw_dyn_vec = self.qw_dyn.reshape(-1)
-        self.N_dyn, self.N_xi_dyn = mesh_kin.shape_functions_matrix_new(
-            self.nquadrature_dyn, 1
-        )
+        quadrature_dyn_kin = new_mesh_kin.quadrature(nquadrature_dyn, "Gauss", 1)
+        self.nquadrature_dyn_total = quadrature_dyn_kin["nquadrature_total"]
+        self.qp_dyn_vec = quadrature_dyn_kin["qp"]
+        self.qw_dyn_vec = quadrature_dyn_kin["qw"]
+        self.qels_dyn_vec = quadrature_dyn_kin["els"]
+        self.N_dyn, self.N_xi_dyn = quadrature_dyn_kin["N"]
 
         # referential generalized position coordinates, initial generalized
         # position and velocity coordinates
@@ -172,46 +144,28 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         ###############################
         # compliance and constrtaints #
         ###############################
-        # TODO: check all from below here if used
-        self.knot_vector_sigma = LagrangeKnotVector(polynomial_degree - 1, nelement)
-        self.xis_nodes_sigma = self.knot_vector_sigma.data
-
-        # mesh for interpolation of (B_n, B_m) Resultant Contact Stresses
-        mesh_rcs = Mesh1D(
-            knot_vector=self.knot_vector_sigma,
-            nquadrature=1,  # dummy value
-            dim_q=6,
-            derivative_order=0,
+        mesh_cg = Mesh1D_equidistant(
             basis="Lagrange_Disc",
-            dim_u=6,
+            nelement=nelement,
+            polynomial_degere=polynomial_degree - 1,
+            derivative_order=0,
         )
 
-        # TODO: check what actually is used from here and prepare for hard constraint
-
         # total number of nodes
-        self.nnodes_sigma = mesh_rcs.nnodes
-
-        # number of nodes per element
-        self.nnodes_element_sigma = mesh_rcs.nnodes_per_element
+        self.nnodes_sigma = mesh_cg.nnodes
 
         # total number of compliance coordinates
-        self.nla_sigma = mesh_rcs.nq
-        if (nla_c := int(mesh_rcs.nq / 6 * self.n_impressed)) > 0:
+        self.nla_sigma = self.nnodes_sigma * 6
+        if (nla_c := self.nnodes_sigma * self.n_impressed) > 0:
             self.nla_c = nla_c
-        if (nla_g := int(mesh_rcs.nq / 6 * self.n_constrained)) > 0:
+        if (nla_g := self.nnodes_sigma * self.n_constrained) > 0:
             self.nla_g = nla_g
 
-        # number of compliance coordinates per element
-        self.nla_sigma_element = mesh_rcs.nq_per_element
+        self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
+        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
 
-        # evaluate shape functions at specific xi
-        self.basis_functions_la_c = mesh_rcs.eval_basis
-
-        self.Nc = mesh_rcs.shape_functions_matrix(self.nquadrature_int, 0)[0][0]
-        self.Nc_int = mesh_rcs.shape_functions_matrix_new(self.nquadrature_int, 0)[0]
-
-        # TODO: this splits c and g from l_c_el
-        self.cDOF_el = np.arange(self.nla_sigma_element)
+        quadrature_int_cg = mesh_cg.quadrature(nquadrature_int, "Gauss", 0)
+        self.Nc_int = quadrature_int_cg["N"][0]
 
         # TODO: do inner dict with enum as key or use a class instead of dict
         self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
@@ -257,68 +211,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.nu, self.nq), (6, 7), Wla_sigma_q_pairs
         )
 
-        ################
-        # permutations #
-        ################
-        # TODO: remove permutations
-        # from ordering componentwise (old) to nodewise (new)
-        # gen. positions q
-        iq = np.arange(self.nnodes)[:, None]
-        jq = np.arange(7)[None, :]
-
-        idxq_new = jq + iq * 7
-        idxq_old = iq + jq * self.nnodes
-
-        self.permutation_comp2node_q = idxq_old.ravel()[np.argsort(idxq_new.ravel())]
-        self.permutation_node2comp_q = idxq_new.ravel()[np.argsort(idxq_old.ravel())]
-
-        iq = np.arange(self.nnodes_element)[:, None]
-        jq = np.arange(7)[None, :]
-
-        idxq_new = jq + iq * 7
-        idxq_old = iq + jq * self.nnodes_element
-
-        self.permutation_comp2node_q_el = idxq_old.ravel()[np.argsort(idxq_new.ravel())]
-        self.permutation_node2comp_q_el = idxq_new.ravel()[np.argsort(idxq_old.ravel())]
-
-        # gen. velocities u
-        iu = np.arange(self.nnodes)[:, None]
-        ju = np.arange(6)[None, :]
-
-        idxu_new = ju + iu * 6
-        idxu_old = iu + ju * self.nnodes
-
-        self.permutation_comp2node_u = idxu_old.ravel()[np.argsort(idxu_new.ravel())]
-        self.permutation_node2comp_u = idxu_new.ravel()[np.argsort(idxu_old.ravel())]
-
-        iu = np.arange(self.nnodes_element)[:, None]
-        ju = np.arange(6)[None, :]
-
-        idxu_new = ju + iu * 6
-        idxu_old = iu + ju * self.nnodes_element
-
-        self.permutation_comp2node_u_el = idxu_old.ravel()[np.argsort(idxu_new.ravel())]
-        self.permutation_node2comp_u_el = idxu_new.ravel()[np.argsort(idxu_old.ravel())]
-
-        # generalized forces la_c
-        ic = np.arange(self.nnodes_sigma)[:, None]
-        jc = np.arange(6)[None, :]
-
-        idxc_new = jc + ic * 6
-        idxc_old = ic + jc * self.nnodes_sigma
-
-        self.permutation_comp2node_c = idxc_old.ravel()[np.argsort(idxc_new.ravel())]
-        self.permutation_node2comp_c = idxc_new.ravel()[np.argsort(idxc_old.ravel())]
-
-        ic = np.arange(self.nnodes_element_sigma)[:, None]
-        jc = np.arange(6)[None, :]
-
-        idxc_new = jc + ic * 6
-        idxc_old = ic + jc * self.nnodes_element_sigma
-
-        self.permutation_comp2node_c_el = idxc_old.ravel()[np.argsort(idxc_new.ravel())]
-        self.permutation_node2comp_c_el = idxc_new.ravel()[np.argsort(idxc_old.ravel())]
-
     def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
         P_IB = N @ qbar_nodes[:, 3:]
@@ -351,16 +243,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
-
-    # TODO: maybe it is more practical to set up a function to return
-    # TODO: use it with line distributed force
-    # qp, qw, J, [(Nq, Nq_xi) or (Nu, Nu_xi)] for given number of quadrature points
-    def get_quadrature(self, nquadrature, deriv, field):
-        """Number of quadrature point, how many derivatives, and what filed (r, P, q, v, Om, u, n, m, la_c)"""
-
-    # TODO: When are these functions called? Do we need and can we speed them up?
-    def element_interval(self, el):
-        return self.knot_vector.element_interval(el)
 
     ############################
     # export of centerline nodes
@@ -552,13 +434,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 el = self.element_number(xi)
                 nnodes = self.nnodes_element
 
-                # TODO: avoid using Nq and Nu from the mesh
-                Nq = self.Nq(xi, el, 0)
-                Nu = self.Nu(xi, el, 0)
-                N = Nq[0, :3]
+                N = self.N_element(xi, el)
+                Nq = np.zeros((7, 7 * nnodes))
+                rows = np.arange(7)[:, None]
+                cols = rows + 7 * np.arange(nnodes)
+                Nq[rows, cols] = N
 
-                Nq = Nq[:, self.permutation_comp2node_q_el]
-                Nu = Nu[:, self.permutation_comp2node_u_el]
+                Nu = np.zeros((6, 6 * nnodes))
+                rows = np.arange(6)[:, None]
+                cols = rows + 6 * np.arange(nnodes)
+                Nu[rows, cols] = N
 
                 qDOF = self.elDOF_P(xi)
                 uDOF = self.elDOF_P_u(xi)

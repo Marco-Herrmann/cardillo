@@ -9,6 +9,38 @@ from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.approx_fprime import approx_fprime
 
 
+def get_permutation(nnodes, nnodes_element, n_per_node):
+    ################
+    # permutations #
+    ################
+    # from ordering componentwise (old) to nodewise (new)
+    i = np.arange(nnodes)[:, None]
+    j = np.arange(n_per_node)[None, :]
+
+    idx_new = j + i * n_per_node
+    idx_old = i + j * nnodes
+
+    permutation_comp2node = idx_old.ravel()[np.argsort(idx_new.ravel())]
+    permutation_node2comp = idx_new.ravel()[np.argsort(idx_old.ravel())]
+
+    # element wise
+    i = np.arange(nnodes_element)[:, None]
+    j = np.arange(n_per_node)[None, :]
+
+    idx_new = j + i * n_per_node
+    idx_old = i + j * nnodes_element
+
+    permutation_comp2node_el = idx_old.ravel()[np.argsort(idx_new.ravel())]
+    permutation_node2comp_el = idx_new.ravel()[np.argsort(idx_old.ravel())]
+
+    return dict(
+        permutation_comp2node=permutation_comp2node,
+        permutation_node2comp=permutation_node2comp,
+        permutation_comp2node_el=permutation_comp2node_el,
+        permutation_node2comp_el=permutation_node2comp_el,
+    )
+
+
 def test_implementation(n_test=1_000):
     constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0]))
     cross_section = CircularCrossSection(0.1)
@@ -52,12 +84,15 @@ def test_implementation(n_test=1_000):
     system_new.assemble()
 
     # get permutations
-    perm_n2c_q = rod_new.permutation_node2comp_q
-    perm_c2n_q = rod_new.permutation_comp2node_q
-    perm_n2c_u = rod_new.permutation_node2comp_u
-    perm_c2n_u = rod_new.permutation_comp2node_u
-    perm_n2c_c = rod_new.permutation_node2comp_c
-    perm_c2n_c = rod_new.permutation_comp2node_c
+    perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
+    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
+    perm_c = get_permutation(rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6)
+    perm_n2c_q = perm_q["permutation_node2comp"]
+    perm_c2n_q = perm_q["permutation_comp2node"]
+    perm_n2c_u = perm_u["permutation_node2comp"]
+    perm_c2n_u = perm_u["permutation_comp2node"]
+    perm_n2c_c = perm_c["permutation_node2comp"]
+    perm_c2n_c = perm_c["permutation_comp2node"]
 
     # fmt: off
     functions = [
@@ -276,12 +311,15 @@ def compare_performance(n_test=1_000):
     system_new.assemble()
 
     # get permutations
-    perm_n2c_q = rod_new.permutation_node2comp_q
-    perm_c2n_q = rod_new.permutation_comp2node_q
-    perm_n2c_u = rod_new.permutation_node2comp_u
-    perm_c2n_u = rod_new.permutation_comp2node_u
-    perm_n2c_c = rod_new.permutation_node2comp_c
-    perm_c2n_c = rod_new.permutation_comp2node_c
+    perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
+    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
+    perm_c = get_permutation(rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6)
+    perm_n2c_q = perm_q["permutation_node2comp"]
+    perm_c2n_q = perm_q["permutation_comp2node"]
+    perm_n2c_u = perm_u["permutation_node2comp"]
+    perm_c2n_u = perm_u["permutation_comp2node"]
+    perm_n2c_c = perm_c["permutation_node2comp"]
+    perm_c2n_c = perm_c["permutation_comp2node"]
 
     # fmt: off
     functions = [
@@ -313,7 +351,7 @@ def compare_performance(n_test=1_000):
         ["v_P", ("t", "q", "u", "xi", "B_r_CP"), True],
         ["a_P", ("t", "q", "u", "u_dot", "xi", "B_r_CP"), True],
 
-        ["A_IB", ("t", "q", "xi"), True],
+        ["A_IB", ("t", "q", "xi"), True], # this one is cached in cardillo
         ["B_Omega", ("t", "q", "u", "xi"), True],
         ["B_Psi", ("t", "q", "u", "u_dot", "xi"), True],
 
@@ -326,7 +364,7 @@ def compare_performance(n_test=1_000):
 
         ["B_J_R", ("t", "q", "xi"), True],
         ["B_J_R_q", ("t", "q", "xi"), True],
-        ["A_IB_q", ("t", "q", "xi"), True],
+        ["A_IB_q", ("t", "q", "xi"), True], # this one is cached in cardillo
         ["B_Omega_q", ("t", "q", "u", "xi"), True],
         ["B_Psi_q", ("t", "q", "u", "u_dot", "xi"), True],
         ["B_Psi_u", ("t", "q", "u", "u_dot", "xi"), True],
