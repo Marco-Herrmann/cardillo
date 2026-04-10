@@ -79,7 +79,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nelement = nelement
         self.polynomial_degree = polynomial_degree
 
-        new_mesh_kin = Mesh1D_equidistant(
+        mesh_kin = Mesh1D_equidistant(
             basis="Lagrange",
             nelement=nelement,
             polynomial_degere=polynomial_degree,
@@ -87,25 +87,23 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
 
         # total number of nodes and per element
-        self.nnodes = new_mesh_kin.nnodes
-        self.nnodes_element = new_mesh_kin.nnodes_element
+        self.nnodes = mesh_kin.nnodes
+        self.nnodes_element = mesh_kin.nnodes_element
 
-        self.xis_nodes = new_mesh_kin.xis_nodes
-        self.xis_element_boundaries = new_mesh_kin.xis_element
+        self.xis_nodes = mesh_kin.xis_nodes
+        self.xis_element_boundaries = mesh_kin.xis_element
 
         # total number of generalized position and velocity coordinates
         self.nq = self.nnodes * 7
         self.nu = self.nnodes * 6
 
-        self.N = lambda xis, els: new_mesh_kin.shape_functions(xis, els, 0)[0]
-        self.N_element = lambda xi, el: new_mesh_kin.shape_function_array_element(
-            xi, el, 0
-        )
+        self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 0)[0]
+        self.N_element = lambda xi, el: mesh_kin.shape_function_array_element(xi, el, 0)
 
         #####################
         # quadrature points #
         #####################
-        quadrature_int_kin = new_mesh_kin.quadrature(nquadrature_int, "Gauss", 1)
+        quadrature_int_kin = mesh_kin.quadrature(nquadrature_int, "Gauss", 1)
         self.nquadrature_int_total = quadrature_int_kin["nquadrature_total"]
         self.qp_int_vec = quadrature_int_kin["qp"]
         self.qw_int_vec = quadrature_int_kin["qw"]
@@ -113,7 +111,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_int, self.N_xi_int = quadrature_int_kin["N"]
 
         # TODO: allow for trapezoidal rule
-        quadrature_dyn_kin = new_mesh_kin.quadrature(nquadrature_dyn, "Gauss", 1)
+        quadrature_dyn_kin = mesh_kin.quadrature(nquadrature_dyn, "Gauss", 1)
         self.nquadrature_dyn_total = quadrature_dyn_kin["nquadrature_total"]
         self.qp_dyn_vec = quadrature_dyn_kin["qp"]
         self.qw_dyn_vec = quadrature_dyn_kin["qw"]
@@ -124,13 +122,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # position and velocity coordinates
         self.q0 = Q.copy() if q0 is None else q0
         self.u0 = np.zeros(self.nu, dtype=float) if u0 is None else u0
-
-        ##############
-        # new ordering
-        ##############
-        Q = Q.reshape(-1, self.nnodes).reshape(-1, order="F")
-        self.q0 = self.q0.reshape(-1, self.nnodes).reshape(-1, order="F")
-        self.u0 = self.u0.reshape(-1, self.nnodes).reshape(-1, order="F")
 
         # unit quaternion constraints
         dim_g_S = 1
@@ -959,12 +950,12 @@ def make_BoostedCosseratRod(
             z0 = np.zeros(nnodes)
             r_OP = np.vstack((x0, y0, z0))
             p = Log_SO3_quat(A_IB0)
-            rP = np.zeros((7, nnodes), dtype=float)
+            rP = np.zeros((nnodes, 7), dtype=float)
             for i in range(nnodes):
-                rP[:3, i] = r_OP0 + A_IB0 @ r_OP[:, i]
-                rP[3:, i] = p
+                rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
+                rP[i, 3:] = p
 
-            return rP.reshape(-1, order="C")
+            return rP.reshape(-1)
 
         # TODO: also copy&paste the other configurations
         # TODO: change order

@@ -73,16 +73,6 @@ def test_implementation(n_test=1_000):
         cross_section_inertias=cross_section_inertia,
     )
 
-    print(f"q0s: {np.linalg.norm(q0_old - q0_new)}")
-
-    system_old = System()
-    system_old.add(rod_old)
-    system_old.assemble()
-
-    system_new = System()
-    system_new.add(rod_new)
-    system_new.assemble()
-
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
     perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
@@ -93,6 +83,16 @@ def test_implementation(n_test=1_000):
     perm_c2n_u = perm_u["permutation_comp2node"]
     perm_n2c_c = perm_c["permutation_node2comp"]
     perm_c2n_c = perm_c["permutation_comp2node"]
+
+    print(f"q0s: {np.linalg.norm(q0_old[perm_c2n_q] - q0_new)}")
+
+    system_old = System()
+    system_old.add(rod_old)
+    system_old.assemble()
+
+    system_new = System()
+    system_new.add(rod_new)
+    system_new.assemble()
 
     # fmt: off
     functions = [
@@ -446,7 +446,7 @@ def compare_performance(n_test=1_000):
         result_str = f"{function_name:<25}: t_new: {t_new:8.3f}, t_old: {t_old:8.3f}, ratio (t_new/t_old): {(t_new / t_old):8.3f}"
 
         if ratio >= 1.0:
-            result_str += "   --> no improvement!"
+            result_str += f"   --> no improvement!"
         else:
             result_str += f"   --> speedup: {(1 - ratio) * 100:.2f}%!"
 
