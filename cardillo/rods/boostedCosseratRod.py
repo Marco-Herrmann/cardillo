@@ -83,6 +83,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             derivative_order=1,
         )
 
+        # element intervals
+        self.element_interval = mesh_kin.element_interval
+        self.element_number = mesh_kin.element_number
+
         # total number of nodes and per element
         self.nnodes = mesh_kin.nnodes
         self.nnodes_element = mesh_kin.nnodes_element
@@ -94,7 +98,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nq = self.nnodes * 7
         self.nu = self.nnodes * 6
 
-        self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 0)[0]
+        self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 1)
         self.N_element = lambda xi, el: mesh_kin.shape_function_array_element(xi, el, 0)
 
         #####################
@@ -186,6 +190,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if len(self.idx_db) > 0:
             # TODO: add h and h_q DB
             raise NotImplementedError
+            self._nDB = len(self.idx_db)
+        else:
+            self._nDB = 0
 
         self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
         self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
@@ -268,12 +275,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
 
-        _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(
+        _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(
             self.N_int, self.N_xi_int, self.Q
         )
-        self.J_int_vec = np.linalg.norm(B_gamma_bar, axis=1)
-        self.B_gamma0_bar = B_gamma_bar
-        self.B_kappa0_bar = B_kappa_bar
+        self.J_int_vec = np.linalg.norm(B_gamma0_bar, axis=1)
+        self.B_gamma0_bar = B_gamma0_bar
+        self.B_kappa0_bar = B_kappa0_bar
 
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
@@ -508,7 +515,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##########################
     # r_OP / A_IB contribution
     ##########################
-    # TODO: move up to interactions?
+    # TODO: move to mesh and vectorize
     def node_number(self, xi):
         """For given xi in I = [0.0, 1.0], returns node number if xi is a node, otherwise False"""
         idx = np.where(self.xis_nodes == xi)[0]
@@ -516,9 +523,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             return idx[0]
         else:
             return False
-
-    def element_number(self, xi):
-        return np.where(self.xis_element_boundaries[:-1] <= xi)[0][-1]
 
     # cardillo functions
     def r_OP(self, t, qi, xi, B_r_CP=zeros3):
@@ -856,9 +860,90 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ########################
     # evaluation functions #
     ########################
-    def _eval_stresses(self, t, q, la_c, la_g, num_per_element): ...
+    def _eval_logic(self, n_per_element, n_ges):
+        assert (n_per_element is not None) != (
+            n_ges is not None
+        ), "Either n_per_element or n_ges must be specified (not both)"
 
-    def _eval_straints(self, t, q, la_c, la_g, num_per_element): ...
+        if n_ges is not None:
+            xis = np.linspace(0, 1, n_ges)
+            els = self.element_number(xis)
+
+        else:
+            xis = []
+            els = []
+            for el in range(self.nelement):
+                element_interval = self.element_interval[el]
+                xis.append(
+                    np.linspace(element_interval[0], element_interval[1], n_per_element)
+                )
+                els.append(np.tile(el, n_per_element))
+            xis = np.concatenate(xis)
+            els = np.concatenate(els)
+
+        return xis, els
+
+    def eval_stresses(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
+
+        # TODO: are there problems, if everything is DB?
+        # stresses due to compliance and constraints
+        Nc = self.Nc(xis, els)
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if self._nla_c > 0:
+            la_sigma_nodes[:, self.idx_c] = la_c[self.la_cDOF].reshape(
+                self.nnodes_sigma, -1
+            )
+        if self._nla_g > 0:
+            la_sigma_nodes[:, self.idx_g] = la_g[self.la_gDOF].reshape(
+                self.nnodes_sigma, -1
+            )
+        sigma = Nc @ la_sigma_nodes
+
+        # stresses due to displacement based
+        if self._nDB > 0:
+            raise NotImplementedError
+            N, N_xi = self.N(xis, els)
+            # reference strains
+            _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            # current strains
+            _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
+
+            # TODO: vectorize material
+            sigma += self.material_model.sigma(...)
+
+        return xis, sigma[:, :3], sigma[:, 3:]
+
+    def eval_strains(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
+
+        epsilon = np.zeros((len(xis), 6))
+        if self._nDB > 0:
+            N, N_xi = self.N(xis, els)
+            # reference strains
+            _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            # current strains
+            _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
+
+            epsilon[:, :3] = (B_gamma_bar - B_gamma0_bar) / J[:, None]
+            epsilon[:, 3:] = (B_kappa_bar - B_kappa0_bar) / J[:, None]
+
+        # strains from compliance
+        if self._nla_c > 0:
+            Nc = self.Nc(xis, els)
+            la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
+            la_sigma = Nc @ la_c_nodes
+
+            C_inv = self.material_model.C_inv[self.idx_c[:, None], self.idx_c]
+            # TODO: position dependent material law
+            epsilon[:, self.idx_c] = la_sigma @ C_inv.T
+
+        # strains from constraints are always 0
+        epsilon[:, self.idx_g] = 0.0
+
+        return xis, epsilon[:, :3], epsilon[:, 3:]
 
 
 def make_BoostedCosseratRod(
