@@ -657,17 +657,40 @@ def T_SO3_inv_quat_(P, normalize=True):
     return np.vstack((-p, p0 * eye3 + ax2skew(p))) / 2
 
 
-def T_SO3_quat_P(P, normalize=True):
-    P = np.asarray(P)
-    was_1d = P.ndim == 1
-    P = np.atleast_2d(P)
-    assert P.shape[1] == 4
+def T_SO3_quat_P(P_IB, normalize=True):
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
 
-    # TODO: vectorize and optimize
-    result = np.array([T_SO3_quat_P_(Pi, normalize=normalize) for Pi in P])
+    n = P_IB.shape[0]
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    result = np.zeros((n, 3, 4, 4), dtype=np.result_type(P_IB, 1.0))
+    result[:, :, 0, 1:] = -2.0 * eye3
+    result[:, :, 1:, 0] = 2.0 * eye3
+    result[:, :, 1:, 1:] = -2.0 * ax2skew_a()
+
+    if normalize:
+        P2_inv = 1 / np.sum(P_IB * P_IB, axis=1)
+        result *= P2_inv[:, None, None, None]
+
+        # matrix = 2 * [ -p , p0*I - skew(p) ]
+        matrix = np.empty((n, 3, 4), dtype=result.dtype)
+        matrix[:, :, 0] = -2.0 * p
+        matrix[:, :, 1:] = 2.0 * (p0[:, None, None] * eye3 - ax2skew(p))
+
+        result += (
+            matrix[:, :, :, None]
+            * (-2.0 * P2_inv**2)[:, None, None, None]
+            * P_IB[:, None, None, :]
+        )
+
+    # TODO: clean up
+    # result_ = np.array([T_SO3_quat_P_(P_IBi, normalize=normalize) for P_IBi in P_IB])
+    # print(np.linalg.norm(result_ - result))
     return result[0] if was_1d else result
 
-
+# TODO: clean up
 def T_SO3_quat_P_(P, normalize=True):
     p0, p = P[0], P[1:]
     T_P = np.zeros((3, 4, 4), dtype=np.result_type(P, 1.0))

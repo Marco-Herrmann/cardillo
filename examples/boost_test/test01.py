@@ -103,11 +103,15 @@ def test_implementation(n_test=1_000):
 
     system_old = System()
     system_old.add(rod_old)
-    system_old.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    system_old.assemble(
+        options=SolverOptions(compute_consistent_initial_conditions=False)
+    )
 
     system_new = System()
     system_new.add(rod_new)
-    system_new.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    system_new.assemble(
+        options=SolverOptions(compute_consistent_initial_conditions=False)
+    )
 
     # fmt: off
     functions = [
@@ -332,11 +336,15 @@ def compare_performance(n_test=1_000):
 
     system_old = System()
     system_old.add(rod_old)
-    system_old.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    system_old.assemble(
+        options=SolverOptions(compute_consistent_initial_conditions=False)
+    )
 
     system_new = System()
     system_new.add(rod_new)
-    system_new.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    system_new.assemble(
+        options=SolverOptions(compute_consistent_initial_conditions=False)
+    )
 
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
