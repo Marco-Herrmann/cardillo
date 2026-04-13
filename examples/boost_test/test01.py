@@ -7,6 +7,7 @@ from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.approx_fprime import approx_fprime
+from cardillo.solver import SolverOptions
 
 
 def get_permutation(nnodes, nnodes_element, n_per_node):
@@ -47,13 +48,20 @@ def test_implementation(n_test=1_000):
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
-    nelement = 2
+    nelement = 4
     polynomial_degree = 2
+    constraints = [0, 1, 5]
+    constraints = [0, 1]
 
     Rod_old = make_CosseratRod(
-        interpolation="Quaternion", mixed=True, polynomial_degree=polynomial_degree
+        interpolation="Quaternion",
+        mixed=True,
+        polynomial_degree=polynomial_degree,
+        constraints=constraints,
     )
-    Rod_new = make_BoostedCosseratRod(polynomial_degree=polynomial_degree)
+    Rod_new = make_BoostedCosseratRod(
+        polynomial_degree=polynomial_degree, idx_constraints=constraints
+    )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
     rod_old = Rod_old(
@@ -76,23 +84,30 @@ def test_implementation(n_test=1_000):
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
     perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
-    perm_c = get_permutation(rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6)
+    perm_c = get_permutation(
+        rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
+    )
+    perm_g = get_permutation(
+        rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
+    )
     perm_n2c_q = perm_q["permutation_node2comp"]
     perm_c2n_q = perm_q["permutation_comp2node"]
     perm_n2c_u = perm_u["permutation_node2comp"]
     perm_c2n_u = perm_u["permutation_comp2node"]
     perm_n2c_c = perm_c["permutation_node2comp"]
     perm_c2n_c = perm_c["permutation_comp2node"]
+    perm_n2c_g = perm_g["permutation_node2comp"]
+    perm_c2n_g = perm_g["permutation_comp2node"]
 
     print(f"q0s: {np.linalg.norm(q0_old[perm_c2n_q] - q0_new)}")
 
     system_old = System()
     system_old.add(rod_old)
-    system_old.assemble()
+    system_old.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     system_new = System()
     system_new.add(rod_new)
-    system_new.assemble()
+    system_new.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     # fmt: off
     functions = [
@@ -108,6 +123,11 @@ def test_implementation(n_test=1_000):
         ["c_la_c", (), (perm_c2n_c[:, None], perm_c2n_c), True],
         ["W_c", ("t", "q"), (perm_c2n_u[:, None], perm_c2n_c), True],
         ["Wla_c_q", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_q), True],
+        # constraint equations
+        ["g", ("t", "q"), perm_c2n_g, False],
+        ["g_q", ("t", "q"), (perm_c2n_g[:, None], perm_c2n_q), True],
+        ["W_g", ("t", "q"), (perm_c2n_u[:, None], perm_c2n_g), True],
+        ["Wla_g_q", ("t", "q", "la_g"), (perm_c2n_u[:, None], perm_c2n_q), True],
         # dynamic forces
         ["M", ("t", "q"), (perm_c2n_u[:, None], perm_c2n_u), True],
         ["Mu_q", ("t", "q", "u"), (perm_c2n_u[:, None], perm_c2n_q), True],
@@ -118,7 +138,6 @@ def test_implementation(n_test=1_000):
         ["g_S", ("t", "q"), (), False],
         ["g_S_q", ("t", "q"), (..., perm_c2n_q), True],
     ]
-    # functions = []
     interactions = [
         ["r_OP", ("t", "q", "B_r_CP")],
         ["v_P", ("t", "q", "u", "B_r_CP")],
@@ -151,6 +170,7 @@ def test_implementation(n_test=1_000):
         u_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
         u_dot_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
         la_c_test__new = system_new.la_c0 + np.random.rand(system_new.nla_c) * 5
+        la_g_test__new = system_new.la_g0 + np.random.rand(system_new.nla_g) * 5
 
         # TODO: maybe step callback!
         arguments__new = dict(
@@ -159,6 +179,7 @@ def test_implementation(n_test=1_000):
             u=u_test__new,
             u_dot=u_dot_test__new,
             la_c=la_c_test__new,
+            la_g=la_g_test__new,
         )
         arguments__old = dict(
             t=t_test,
@@ -166,6 +187,7 @@ def test_implementation(n_test=1_000):
             u=u_test__new[perm_n2c_u],
             u_dot=u_dot_test__new[perm_n2c_u],
             la_c=la_c_test__new[perm_n2c_c],
+            la_g=la_g_test__new[perm_n2c_g],
         )
 
         # system functions
@@ -279,10 +301,16 @@ def compare_performance(n_test=1_000):
     nelement = 500
     polynomial_degree = 2
 
+    constraints = [0, 1, 5]
     Rod_old = make_CosseratRod(
-        interpolation="Quaternion", mixed=True, polynomial_degree=polynomial_degree
+        interpolation="Quaternion",
+        mixed=True,
+        polynomial_degree=polynomial_degree,
+        constraints=constraints,
     )
-    Rod_new = make_BoostedCosseratRod(polynomial_degree=polynomial_degree)
+    Rod_new = make_BoostedCosseratRod(
+        polynomial_degree=polynomial_degree, idx_constraints=constraints
+    )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
     rod_old = Rod_old(
@@ -304,22 +332,29 @@ def compare_performance(n_test=1_000):
 
     system_old = System()
     system_old.add(rod_old)
-    system_old.assemble()
+    system_old.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     system_new = System()
     system_new.add(rod_new)
-    system_new.assemble()
+    system_new.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
     perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
-    perm_c = get_permutation(rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6)
+    perm_c = get_permutation(
+        rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
+    )
+    perm_g = get_permutation(
+        rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
+    )
     perm_n2c_q = perm_q["permutation_node2comp"]
     perm_c2n_q = perm_q["permutation_comp2node"]
     perm_n2c_u = perm_u["permutation_node2comp"]
     perm_c2n_u = perm_u["permutation_comp2node"]
     perm_n2c_c = perm_c["permutation_node2comp"]
     perm_c2n_c = perm_c["permutation_comp2node"]
+    perm_n2c_g = perm_g["permutation_node2comp"]
+    perm_c2n_g = perm_g["permutation_comp2node"]
 
     # fmt: off
     functions = [
@@ -335,6 +370,11 @@ def compare_performance(n_test=1_000):
         # ["c_la_c", (), False],                        # c_la_c is a getter function
         ["W_c", ("t", "q"), False],
         ["Wla_c_q", ("t", "q", "la_c"), False],
+        # constraint equation
+        ["g", ("t", "q"), False],
+        ["g_q", ("t", "q"), False],
+        ["W_g", ("t", "q"), False],
+        ["Wla_g_q", ("t", "q", "la_g"), False],
         # dynamic forces
         # ["M", ("t", "q"), False],                     # M is a getter function
         # ["Mu_q", ("t", "q", "u"), False],             # rod has no Mu_q (only system)
@@ -376,6 +416,7 @@ def compare_performance(n_test=1_000):
     u_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
     u_dot_test__new = system_new.u0 + np.random.rand(system_new.nu) * 5
     la_c_test__new = system_new.la_c0 + np.random.rand(system_new.nla_c) * 5
+    la_g_test__new = system_new.la_g0 + np.random.rand(system_new.nla_g) * 5
     xi = np.random.rand()
     B_r_CP = np.random.rand(3)
 
@@ -389,6 +430,7 @@ def compare_performance(n_test=1_000):
         u=u_test__new,
         u_dot=u_dot_test__new,
         la_c=la_c_test__new,
+        la_g=la_g_test__new,
         xi=xi,
         B_r_CP=B_r_CP,
     )
@@ -398,6 +440,7 @@ def compare_performance(n_test=1_000):
         u=u_test__new[perm_n2c_u],
         u_dot=u_dot_test__new[perm_n2c_u],
         la_c=la_c_test__new[perm_n2c_c],
+        la_g=la_g_test__new[perm_n2c_g],
         xi=xi,
         B_r_CP=B_r_CP,
     )

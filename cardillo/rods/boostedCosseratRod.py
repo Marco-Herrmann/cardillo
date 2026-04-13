@@ -41,7 +41,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         cross_section,
         material_model,
         cross_section_inertias,
-        constraints,
+        idx_constraints,
+        idx_displacement_based,
         nelement,
         polynomial_degree,
         nquadrature_int,
@@ -64,15 +65,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             self.h = self._h
             self.h_u = self._h_u
 
-        # TODO: rename these in idx_c and idx_g also add idx_d for disaplcement-based and add h accodingly --> should only bes used for non-convex constitutive laws
-        self.idx_impressed = np.setdiff1d(np.arange(6), np.atleast_1d(constraints))
-        self.idx_constrained = np.setdiff1d(
-            np.arange(6), np.atleast_1d(self.idx_impressed)
+        self.idx_g = idx_constraints
+        self.idx_db = idx_displacement_based
+        self.idx_c = np.setdiff1d(
+            np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
         )
-
-        # TODO: remove these as only used once
-        self.n_constrained = len(self.idx_constrained)
-        self.n_impressed = len(self.idx_impressed)
 
         self.name = "Cosserat_rod" if name is None else name
 
@@ -147,10 +144,48 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # total number of compliance coordinates
         self.nla_sigma = self.nnodes_sigma * 6
-        if (nla_c := self.nnodes_sigma * self.n_impressed) > 0:
-            self.nla_c = nla_c
-        if (nla_g := self.nnodes_sigma * self.n_constrained) > 0:
-            self.nla_g = nla_g
+        if (nla_c := self.nnodes_sigma * len(self.idx_c)) > 0:
+            self.nla_c = self._nla_c = nla_c
+
+            ##############
+            # compliance #
+            # c = c_la_c @ la_c - l_c
+            ##############
+            # la_c = -c_la_c @ c(q, u, 0)
+            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q, u)[0]
+            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q, u)[0]
+            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q, u)[0]
+            self.c_la_c = lambda: self.__cla_c
+            self.W_c = lambda t, q: self.W_sigma(q)[0]
+            self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
+        else:
+            self._nla_c = 0
+
+        if (nla_g := self.nnodes_sigma * len(self.idx_g)) > 0:
+            self.nla_g = self._nla_g = nla_g
+
+            #############
+            # constraints
+            #  g = - l_g
+            #############
+            self.nu_zeros = np.zeros(self.nu)
+            self.g = lambda t, q: -self.l_sigma(q, self.nu_zeros)[1]
+            self.g_q = lambda t, q: -self.l_sigma_q(q, self.nu_zeros)[1]
+            self.W_g = lambda t, q: self.W_sigma(q)[1]
+            self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
+
+            # TODO:
+            self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
+            self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
+            self.g_dot_q = lambda t, q, u: ...
+            self.g_ddot = lambda t, q, u, u_dot: np.zeros(self.nla_g)
+
+        else:
+            self._nla_g = 0
+
+        if len(self.idx_db) > 0:
+            # TODO: add h and h_q DB
+            raise NotImplementedError
 
         self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
         self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
@@ -173,7 +208,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # c_la_c
         c_la_c_pairs = [(self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec)]
         self.c_la_c_SAB = SparseArrayBlocks(
-            (self.nla_c, self.nla_c), (6, 6), c_la_c_pairs
+            (self.nla_c, self.nla_c), (len(self.idx_c), len(self.idx_c)), c_la_c_pairs
         )
 
         # c_q
@@ -181,7 +216,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.Nc_int, self.N_int, self.qw_int_vec),
             (self.Nc_int, self.N_xi_int, self.qw_int_vec),
         ]
-        self.c_sigma_q_SAB = SparseArrayBlocks((self.nla_c, self.nq), (6, 7), c_q_pairs)
+        self.c_sigma_q_SAB = SparseArrayBlocks(
+            (self.nla_sigma, self.nq),
+            (6, 7),
+            c_q_pairs,
+            [(self.idx_c, ...), (self.idx_g, ...)],
+        )
 
         # W_sigma
         W_sigma_pairs = [
@@ -189,7 +229,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.N_xi_int, self.Nc_int, self.qw_int_vec),
         ]
         self.W_sigma_SAB = SparseArrayBlocks(
-            (self.nu, self.nla_c), (6, 6), W_sigma_pairs
+            (self.nu, self.nla_sigma),
+            (6, 6),
+            W_sigma_pairs,
+            [(..., self.idx_c), (..., self.idx_g)],
         )
 
         # Wla_sigma_q
@@ -677,11 +720,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         l = self.Nc_int.T @ (epsilon_bar * self.qw_int_vec[:, None])
 
-        # l_c = l[:, self.eps_c].reshape(-1)
-        # l_g = l[:, self.eps_g].reshape(-1)
-        return l.reshape(-1)
+        l_c = l[:, self.idx_c].reshape(-1)
+        l_g = l[:, self.idx_g].reshape(-1)
+        return l_c, l_g
 
-    def c_sigma_q(self, q, u):
+    def l_sigma_q(self, q, u):
         # compute W_sigma
         A_IB, T, B_gamma_bar_P, B_kappa_bar_P = self._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=True
@@ -705,8 +748,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
     def _c_la_c_coo(self):
+        C_qp = self.material_model.C_inv[self.idx_c[:, None], self.idx_c]
         c_la_c = self.c_la_c_SAB.add_blocks(
-            np.array([[self.material_model.C_inv] * self.nquadrature_int_total])
+            np.array([[C_qp] * self.nquadrature_int_total])
         )
 
         self.__cla_c = c_la_c
@@ -736,10 +780,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         W_sigma_qp[0, :, 3:, 3:] = kappa_bar_tilde
 
         return self.W_sigma_SAB.add_blocks(W_sigma_qp)
-        # TODO: split up W_sigma into W_c and W_g here?
 
-    def Wla_sigma(self, q, la_sigma):
-        la_sigma_nodes = la_sigma.reshape(self.nnodes_sigma, 6)
+    def Wla_sigma(self, q, la_c=None, la_g=None):
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if la_c is not None:
+            la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
+        if la_g is not None:
+            la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
         sigma_qp = self.Nc_int @ la_sigma_nodes
 
         # compute Wla_sigma
@@ -765,8 +812,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         ) + self.N_xi_int.T @ (Wla_sigma_qp[1] * self.qw_int_vec[:, None])
         return Wla_sigma_nodes.reshape(-1)
 
-    def Wla_sigma_q(self, q, la_sigma):
-        la_sigma_nodes = la_sigma.reshape(self.nnodes_sigma, 6)
+    def Wla_sigma_q(self, q, la_c=None, la_g=None):
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if la_c is not None:
+            la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
+        if la_g is not None:
+            la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
         sigma_qp = self.Nc_int @ la_sigma_nodes
 
         # compute W_sigma
@@ -802,40 +853,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         return self.Wla_sigma_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
-    ##############
-    # compliance #
-    # c = c_la_c @ la_c - l_c
-    ##############
-    # la_c = -c_la_c @ c(q, u, 0)
-    def la_c(self, t, q, u):
-        return self.__cla_c_inv @ self.l_sigma(q, u)
-
-    def c(self, t, q, u, la_c):
-        return self.__cla_c @ la_c - self.l_sigma(q, u)
-
-    def c_q(self, t, q, u, la_c):
-        return -self.c_sigma_q(q, u)
-
-    def c_la_c(self):
-        return self.__cla_c
-
-    def W_c(self, t, q):
-        return self.W_sigma(q)
-
-    def Wla_c_q(self, t, q, la_c):
-        return self.Wla_sigma_q(q, la_c)
-
-    ###############
-    # constraints #
-    ###############
-    def _g(self, t, q): ...
-
-    def _g_q(self, t, q): ...
-
-    def _W_g(self, t, q): ...
-
-    def _Wla_g_q(self, t, q, la_g): ...
-
     ########################
     # evaluation functions #
     ########################
@@ -847,15 +864,38 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 def make_BoostedCosseratRod(
     *,
     polynomial_degree=None,
-    constraints=None,
+    idx_constraints=None,
+    idx_displacement_based=None,
     nquadrature_int=None,
     nquadrature_dyn=None,
 ):
-    if constraints is not None:
+    # check if constraint indices are valid
+    if idx_constraints is not None:
         if not (
-            (np.array(constraints) >= 0).all() & (np.array(constraints) <= 5).all()
+            (np.array(idx_constraints) >= 0).all()
+            & (np.array(idx_constraints) <= 5).all()
         ):
             raise ValueError("constraint values must between 0 and 5")
+    else:
+        idx_constraints = np.array([], dtype=int)
+    idx_constraints = np.sort(idx_constraints)
+
+    # check if displacement based indices are valid
+    if idx_displacement_based is not None:
+        if not (
+            (np.array(idx_displacement_based) >= 0).all()
+            & (np.array(idx_displacement_based) <= 5).all()
+        ):
+            raise ValueError("displacement_based values must between 0 and 5")
+    else:
+        idx_displacement_based = np.array([], dtype=int)
+    idx_displacement_based = np.sort(idx_displacement_based)
+
+    # check that no index is in both lists
+    inter_g_DB = np.intersect1d(idx_constraints, idx_displacement_based)
+    assert (
+        inter_g_DB.size == 0
+    ), f"the index {inter_g_DB} is both constrained and displacement based"
 
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 
@@ -924,7 +964,8 @@ def make_BoostedCosseratRod(
                 cross_section,
                 material_model,
                 cross_section_inertias,
-                constraints,
+                idx_constraints,
+                idx_displacement_based,
                 nelement,
                 polynomial_degree,
                 nquadrature_int,
