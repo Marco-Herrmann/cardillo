@@ -5,6 +5,7 @@ from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from .lagrange import LagrangeBasis
 from .gauss import gauss, lobatto
+from .interpolations import lagrange, hermite
 
 
 class Mesh1D:
@@ -321,7 +322,7 @@ class Mesh1D_equidistant:
         polynomial_degere,
         derivative_order,
     ):
-        assert basis in ["Lagrange", "Lagrange_Disc", "Hermite"]
+        assert basis in ["Lagrange", "Lagrange_Disc", "Hermite_C0", "Hermite_C1"]
 
         self.basis = basis
         self.nelement = nelement
@@ -336,59 +337,94 @@ class Mesh1D_equidistant:
 
         # number of nodes
         if basis == "Lagrange":
-            self.nnodes = polynomial_degere * nelement + 1
-            self.nnodes_element = polynomial_degere + 1
-            self.xis_nodes = np.linspace(0, 1, self.nnodes)
-            self.offset = polynomial_degere
+            self.nnodes = self.npolynoms = polynomial_degere * nelement + 1
+            self.nnodes_element = self.npolynoms_element = polynomial_degere + 1
+            self.col = (
+                lambda el: np.arange(self.npolynoms_element) + el * polynomial_degere
+            )
+            polynom_generator = lagrange
 
         elif basis == "Lagrange_Disc":
-            self.nnodes = (polynomial_degere + 1) * nelement
-            self.nnodes_element = polynomial_degere + 1
-            self.xis_nodes = np.concatenate(
-                [
-                    np.linspace(
-                        self.xis_element[el],
-                        self.xis_element[el + 1],
-                        self.nnodes_element,
-                    )
-                    for el in range(self.nelement)
-                ]
+            self.nnodes = self.npolynoms = (polynomial_degere + 1) * nelement
+            self.nnodes_element = self.npolynoms_element = polynomial_degere + 1
+            self.col = lambda el: np.arange(self.npolynoms_element) + el * (
+                polynomial_degere + 1
             )
-            self.offset = polynomial_degere + 1
+            polynom_generator = lagrange
 
-        elif basis == "Hermite":
+        elif basis == "Hermite_C0":
+            assert polynomial_degere % 2 == 1, "polynomial_degere must be odd"
+            self.nnodes = (polynomial_degere - 1) // 2 * nelement + 1
+            self.nnodes_element = (polynomial_degere + 1) // 2
+            self.npolynoms = polynomial_degere * nelement + 1
+            self.npolynoms_element = polynomial_degere + 1
+            polynom_generator = hermite
+
+            def col(el):
+                # ordering is (rs, ts^+, ts, ts^-)
+                DOF_r = np.arange(self.nnodes_element) + el * (self.nnodes_element - 1)
+                DOF_t_plus = self.nnodes + el
+                DOF_t_middle = (
+                    self.nnodes
+                    + self.nelement
+                    + np.arange(self.nnodes_element - 2)
+                    + el * (self.nnodes_element - 2)
+                )
+                DOF_t_minus = (
+                    self.nnodes + self.nelement * (self.nnodes_element - 1) + el
+                )
+                return np.array([*DOF_r, DOF_t_plus, *DOF_t_middle, DOF_t_minus])
+
+            self.col = col
+
+        elif basis == "Hermite_C1":
             raise NotImplementedError
+            # assert polynomial_degere % 2 == 1, "polynomial_degere must be odd"
+            # self.nnodes = (polynomial_degere - 1) // 2 * nelement + 1
+            # self.nnodes_element = (polynomial_degere + 1) // 2
+            # self.npolynoms = 2 * self.nnodes
+            # self.npolynoms_element = 2 * self.nnodes_element
+            # self.offset = polynomial_degere
+            polynom_generator = hermite
+
+        # xis in element
+        xis_nodes_element = np.array(
+            [
+                np.linspace(
+                    self.xis_element[el], self.xis_element[el + 1], self.nnodes_element
+                )
+                for el in range(self.nelement)
+            ]
+        )
+
+        if basis in ["Lagrange", "Hermite_C0", "Hermite_C1"]:
+            self.xis_nodes = np.linspace(0, 1, self.nnodes)
+        elif basis == "Lagrange_Disc":
+            self.xis_nodes = np.concatenate(xis_nodes_element)
 
         # shape functions
-        if basis in ["Lagrange", "Lagrange_Disc"]:
-            polynomials = np.empty(
-                (self.derivative_order + 1, self.nelement, self.nnodes_element),
-                dtype=Polynomial,
+        polynomials = np.empty(
+            (self.derivative_order + 1, self.nelement, self.npolynoms_element),
+            dtype=Polynomial,
+        )
+
+        for el in range(self.nelement):
+            polynomials[:, el, :] = polynom_generator(
+                xis_nodes_element[el], self.derivative_order
             )
 
-            for el in range(self.nelement):
-                xis_nodes_element = np.linspace(
-                    self.xis_element[el],
-                    self.xis_element[el + 1],
-                    self.nnodes_element,
-                )
-
-                # TODO: put this into a function
-                # def Lagrange(xis): ...
-                for node_i in range(self.nnodes_element):
-                    xi_node_i = xis_nodes_element[node_i]
-                    poly_i = Polynomial([1.0])
-
-                    for node_j in range(self.nnodes_element):
-                        if node_i != node_j:
-                            xi_node_j = xis_nodes_element[node_j]
-                            inv_diff = 1.0 / (xi_node_i - xi_node_j)
-                            poly_i *= Polynomial([-xi_node_j * inv_diff, inv_diff])
-
-                    for d in range(self.derivative_order + 1):
-                        polynomials[d, el, node_i] = poly_i.deriv(d)
-
         self.polynomials = polynomials
+
+    # TODO: vectorize
+    # def node_numer(self, xis):
+    def node_number(self, xi):
+        # TODO: check to be consistent with element number for lagrange disc!
+        """For given xi in I = [0.0, 1.0], returns node number if xi is a node, otherwise False"""
+        idx = np.where(self.xis_nodes == xi)[0]
+        if len(idx) == 1:
+            return idx[0]
+        else:
+            return False
 
     def element_number(self, xis):
         """returns the element number(s) for xi, such that xi_{element} <= xi < xi_{element + 1}, expect for the last element, where xi_{element} <= xi <= xi_{element + 1}"""
@@ -407,19 +443,19 @@ class Mesh1D_equidistant:
         was_scalar = xis.ndim == 0
         xis = np.atleast_1d(xis)
 
-        N_dense = np.zeros((derivative_order + 1, len(xis), self.nnodes_element))
+        N_dense = np.zeros((derivative_order + 1, len(xis), self.npolynoms_element))
         for d in range(derivative_order + 1):
-            for node in range(self.nnodes_element):
-                N_dense[d, :, node] = self.polynomials[d, el, node](xis)
+            for p in range(self.npolynoms_element):
+                N_dense[d, :, p] = self.polynomials[d, el, p](xis)
 
         return N_dense[:, 0, :] if was_scalar else N_dense
 
     def shape_functions_element_global(self, xis, el, derivative_order):
         N_sparse = []
         Nd = self.shape_functions_element(xis, el, derivative_order)
+        col = self.col(el)
         for d in range(derivative_order + 1):
-            Nd_sparse = csr_array((len(xis), self.nnodes))
-            col = np.arange(self.nnodes_element) + el * self.offset
+            Nd_sparse = csr_array((len(xis), self.npolynoms))
             Nd_sparse[:, col] = Nd[d]
             N_sparse.append(Nd_sparse)
 
@@ -439,11 +475,10 @@ class Mesh1D_equidistant:
             els = np.tile(els, nxis)
 
         N_sparse = [
-            csr_array((len(xis), self.nnodes)) for _ in range(derivative_order + 1)
+            csr_array((len(xis), self.npolynoms)) for _ in range(derivative_order + 1)
         ]
         for el in np.unique(els):
             selection = els == el
-            # TODO: put the function in here
             N_sparse_el = self.shape_functions_element_global(
                 xis[selection], el, derivative_order
             )
@@ -482,7 +517,7 @@ class Mesh1D_equidistant:
     def shape_function_array_element(self, xi, el, derivative):
         return np.array(
             [
-                self.polynomials[derivative, el, node](xi)
-                for node in range(self.nnodes_element)
+                self.polynomials[derivative, el, p](xi)
+                for p in range(self.npolynoms_element)
             ]
         )

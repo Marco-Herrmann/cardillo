@@ -86,13 +86,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # element intervals
         self.element_interval = mesh_kin.element_interval
         self.element_number = mesh_kin.element_number
+        self.node_number = mesh_kin.node_number
 
         # total number of nodes and per element
         self.nnodes = mesh_kin.nnodes
         self.nnodes_element = mesh_kin.nnodes_element
-
-        self.xis_nodes = mesh_kin.xis_nodes
-        self.xis_element_boundaries = mesh_kin.xis_element
 
         # total number of generalized position and velocity coordinates
         self.nq = self.nnodes * 7
@@ -205,6 +203,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # reference strains for weight of blocks
         self.set_reference_strains(Q)
+
         ################
         # assemble matrices for block structure
         ################
@@ -307,17 +306,24 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             A_IB = self._A_IB(qnodes[:, 3:])
             return qnodes[:, :3], A_IB[:, :, 0], A_IB[:, :, 1], A_IB[:, :, 2]
 
-    # def frames(self, qsystem, num=10):
-    #     qbody = qsystem[self.qDOF]
-    #     qnodes = qbody.reshape(self.nnodes, -1)
+    def centerline(self, q, num=100):
+        xis = np.linspace(0, 1, num)
+        els = self.element_number(xis)
+        N = self.N(xis, els)[0]
+        q_body = q[self.qDOF]
+        q_nodes = q_body.reshape(self.nnodes, -1)
+        r_OC = N @ q_nodes[:, :3]
+        return r_OC.T
 
-    #     # maybe cache the N matrix
-    #     # TODO: update on how to get N
-    #     N = self.mesh_kin.N(np.linspace(0, 1, num=num))
-    #     qpoints = N @ qnodes
-    #     rs = qpoints[:, :3].T
-    #     A_IBs = self._A_IB(qpoints[:, 3:])
-    #     return rs, A_IBs[:, :, 0].T, A_IBs[:, :, 1].T, A_IBs[:, :, 2].T
+    def frames(self, q, num=10):
+        xis = np.linspace(0, 1, num)
+        els = self.element_number(xis)
+        N = self.N(xis, els)[0]
+        q_body = q[self.qDOF]
+        q_nodes = q_body.reshape(self.nnodes, -1)
+        rP = N @ q_nodes
+        A_IB = self._A_IB(rP[:, 3:])
+        return rP[:, :3].T, A_IB[:, :, 0].T, A_IB[:, :, 1].T, A_IB[:, :, 2].T
 
     ##################
     # abstract methods
@@ -515,16 +521,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##########################
     # r_OP / A_IB contribution
     ##########################
-    # TODO: move to mesh and vectorize
-    def node_number(self, xi):
-        """For given xi in I = [0.0, 1.0], returns node number if xi is a node, otherwise False"""
-        idx = np.where(self.xis_nodes == xi)[0]
-        if len(idx) == 1:
-            return idx[0]
-        else:
-            return False
-
-    # cardillo functions
     def r_OP(self, t, qi, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
