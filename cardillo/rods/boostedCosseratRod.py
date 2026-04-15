@@ -59,11 +59,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.material_model = material_model
         if cross_section_inertias == None:
             self.cross_section_inertias = CrossSectionInertias()
+            include_f_gyr = False
         else:
-            #
             self.cross_section_inertias = cross_section_inertias
-            self.h = self._h
-            self.h_u = self._h_u
+            include_f_gyr = True
 
         self.idx_g = idx_constraints
         self.idx_db = idx_displacement_based
@@ -144,6 +143,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # total number of nodes
         self.nnodes_sigma = mesh_cg.nnodes
 
+        self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
+        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
+
+        quadrature_int_cg = mesh_cg.quadrature(nquadrature_int, "Gauss", 0)
+        self.Nc_int = quadrature_int_cg["N"][0]
+
         # total number of compliance coordinates
         self.nla_sigma = self.nnodes_sigma * 6
         if (nla_c := self.nnodes_sigma * len(self.idx_c)) > 0:
@@ -154,9 +159,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             # c = c_la_c @ la_c - l_c
             ##############
             # la_c = -c_la_c @ c(q, u, 0)
-            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q, u)[0]
-            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q, u)[0]
-            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q, u)[0]
+            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q)[0]
+            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q)[0]
+            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q)[0]
             self.c_la_c = lambda: self.__cla_c
             self.W_c = lambda t, q: self.W_sigma(q)[0]
             self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
@@ -171,8 +176,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             #  g = - l_g
             #############
             self.nu_zeros = np.zeros(self.nu)
-            self.g = lambda t, q: -self.l_sigma(q, self.nu_zeros)[1]
-            self.g_q = lambda t, q: -self.l_sigma_q(q, self.nu_zeros)[1]
+            self.g = lambda t, q: -self.l_sigma(q)[1]
+            self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
             self.W_g = lambda t, q: self.W_sigma(q)[1]
             self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
 
@@ -186,23 +191,31 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             self._nla_g = 0
 
         if len(self.idx_db) > 0:
-            # TODO: add h and h_q DB
-            raise NotImplementedError
             self._nDB = len(self.idx_db)
+            include_f_pot = True
         else:
             self._nDB = 0
+            include_f_pot = False
 
-        self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
-        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
-
-        quadrature_int_cg = mesh_cg.quadrature(nquadrature_int, "Gauss", 0)
-        self.Nc_int = quadrature_int_cg["N"][0]
-
-        # TODO: do inner dict with enum as key or use a class instead of dict
-        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
+        # compose h vector
+        if include_f_gyr:
+            if include_f_pot:
+                self.h = lambda t, q, u: self.f_gyr(u) + self.f_pot(q)
+                self.h_q = lambda t, q, u: self.f_pot_q(q)
+                self.h_u = lambda t, q, u: self.f_gyr_u(u)
+            else:
+                self.h = lambda t, q, u: self.f_gyr(u)
+                self.h_u = lambda t, q, u: self.f_gyr_u(u)
+        else:
+            if include_f_pot:
+                self.h = lambda t, q, u: self.f_pot(q)
+                self.h_q = lambda t, q, u: self.f_pot_q(q)
 
         # reference strains for weight of blocks
         self.set_reference_strains(Q)
+
+        # TODO: do inner dict with enum as key or use a class instead of dict
+        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
 
         ################
         # assemble matrices for block structure
@@ -211,21 +224,26 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         M_pairs = [(self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec)]
         self.M_h_u_SAB = SparseArrayBlocks((self.nu, self.nu), (6, 6), M_pairs)
 
-        # c_la_c
-        c_la_c_pairs = [(self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec)]
-        self.c_la_c_SAB = SparseArrayBlocks(
-            (self.nla_c, self.nla_c), (len(self.idx_c), len(self.idx_c)), c_la_c_pairs
-        )
+        if self._nla_c > 0:
+            # c_la_c
+            c_la_c_pairs = [
+                (self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec)
+            ]
+            self.c_la_c_SAB = SparseArrayBlocks(
+                (self.nla_c, self.nla_c),
+                (len(self.idx_c), len(self.idx_c)),
+                c_la_c_pairs,
+            )
 
-        # c_q
-        c_q_pairs = [
+        # c_sigma
+        c_sigma_q_pairs = [
             (self.Nc_int, self.N_int, self.qw_int_vec),
             (self.Nc_int, self.N_xi_int, self.qw_int_vec),
         ]
         self.c_sigma_q_SAB = SparseArrayBlocks(
             (self.nla_sigma, self.nq),
             (6, 7),
-            c_q_pairs,
+            c_sigma_q_pairs,
             [(self.idx_c, ...), (self.idx_g, ...)],
         )
 
@@ -242,14 +260,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
 
         # Wla_sigma_q
-        Wla_sigma_q_pairs = [
+        h_pot_q_pairs = [
             (self.N_int, self.N_int, self.qw_int_vec),
             (self.N_int, self.N_xi_int, self.qw_int_vec),
             (self.N_xi_int, self.N_int, self.qw_int_vec),
+            (self.N_xi_int, self.N_xi_int, self.qw_int_vec),
         ]
-        self.Wla_sigma_q_SAB = SparseArrayBlocks(
-            (self.nu, self.nq), (6, 7), Wla_sigma_q_pairs
-        )
+        self.h_pot_q_SAB = SparseArrayBlocks((self.nu, self.nq), (6, 7), h_pot_q_pairs)
 
     def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
@@ -260,8 +277,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         T = self._T_IB(P_IB)
 
         B_gamma_bar = np.einsum("ijk,ij->ik", A_IB, qbar_xi[:, :3])
+        B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
         if not deval:
-            B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
             return A_IB, B_gamma_bar, B_kappa_bar
 
         # using my magic property
@@ -269,7 +286,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         T_IB_P = self._T_IB_P(P_IB)
         B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
-        return A_IB, T, B_gamma_bar_P, B_kappa_bar_P
+        return (A_IB, B_gamma_bar, B_kappa_bar), (T, B_gamma_bar_P, B_kappa_bar_P)
 
     def set_reference_strains(self, Q):
         self.Q = Q.copy()
@@ -280,6 +297,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.J_int_vec = np.linalg.norm(B_gamma0_bar, axis=1)
         self.B_gamma0_bar = B_gamma0_bar
         self.B_kappa0_bar = B_kappa0_bar
+
+        if self._nDB > 0:
+            self.epsilon0 = (
+                np.hstack([B_gamma0_bar, B_kappa0_bar]) / self.J_int_vec[:, None]
+            )
 
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
@@ -330,7 +352,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ##################
     def assembler_callback(self):
         self._M_coo()
-        self._c_la_c_coo()
+        if self._nla_c > 0:
+            self._c_la_c_coo()
 
     #####################
     # kinematic equations
@@ -405,7 +428,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.__M = self.M_h_u_SAB.add_blocks(M_qp)
         return self.__M
 
-    def _h(self, t, q, u):
+    def f_gyr(self, u):
         unodes = u.reshape(self.nnodes, -1)
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
@@ -420,7 +443,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
         return f_gyr.reshape(-1)
 
-    def _h_u(self, t, q, u):
+    def f_gyr_u(self, u):
         unodes = u.reshape(self.nnodes, -1)
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
@@ -693,23 +716,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     #########################
     # internal virtual work #
     #########################
-    # TODO: we need the mesh
-    # TODO: can we use the same function for
-    #   W_g and W_c
-    #   g   and c
-    # and use the same mesh?
-
-    # Idea: make a W_compliance function, that is W_c for no constraints and W_g for fully constraint with caching and then
-    #   W_g = W_compliance[:, gDOF]
-    #   W_c = W_compliance[:, cDOF]
-    # and similarly for g and c: l_compliance
-    #   g = l_compliance[gDOF]
-    #   c = l_compliance[cDOF] (+ Kc @ la_c)
-
-    ########################
-    # vectorized functions #
-    ########################
-    def l_sigma(self, q, u):
+    def l_sigma(self, q):
         _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(
             self.N_int, self.N_xi_int, q
         )
@@ -724,15 +731,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         l_g = l[:, self.idx_g].reshape(-1)
         return l_c, l_g
 
-    def l_sigma_q(self, q, u):
+    def l_sigma_q(self, q):
         # compute W_sigma
-        A_IB, T, B_gamma_bar_P, B_kappa_bar_P = self._eval_internal_vec(
+        _eval, _deval = self._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=True
         )
+        A_IB = _eval[0]
+        T, B_gamma_bar_P, B_kappa_bar_P = _deval
 
         # TODO: make sparse?
-
-        # c_sigma_q_qp[qpi, N/N_xi, la_cDOF, qDOF]
+        # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF]
         c_sigma_q_qp = np.empty((2, self.nquadrature_int_total, 6, 7))
         # to be multiplied with N_xi
         c_sigma_q_qp[1, :, :3, :3] = A_IB.transpose((0, 2, 1))
@@ -766,7 +774,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         gamma_bar_tilde = ax2skew(B_gamma_bar)
         kappa_bar_tilde = ax2skew(B_kappa_bar)
 
-        # W_sigma_qp[qpi, N/N_xi, uDOF, la_cDOF]
+        # W_sigma_qp[N/N_xi, qpi, uDOF, la_cDOF]
         W_sigma_qp = np.empty((2, self.nquadrature_int_total, 6, 6))
         # to be multiplied with N_xi
         W_sigma_qp[1, :, :3, :3] = -A_IB
@@ -787,30 +795,30 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
         if la_g is not None:
             la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
-        sigma_qp = self.Nc_int @ la_sigma_nodes
+        _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        return self.h_pot(_eval, self.Nc_int @ la_sigma_nodes)
 
-        # compute Wla_sigma
-        A_IB, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(
-            self.N_int, self.N_xi_int, q
-        )
+    def h_pot(self, _eval, sigma_qp):
+        # compute generalized internal forces based on evaluation and forces at quadrature points
+        A_IB, B_gamma_bar, B_kappa_bar = _eval
 
-        # Wla_sigma_qp[qpi, N/N_xi, uDOF]
-        Wla_sigma_qp = np.empty((2, self.nquadrature_int_total, 6))
+        # f_pot_qp[N/N_xi, qpi, uDOF]
+        f_pot_qp = np.empty((2, self.nquadrature_int_total, 6))
         # to be multiplied with N_xi
-        Wla_sigma_qp[1, :, :3] = -np.einsum("ijk,ik->ij", A_IB, sigma_qp[:, :3])
-        Wla_sigma_qp[1, :, 3:] = -sigma_qp[:, 3:]
+        f_pot_qp[1, :, :3] = -np.einsum("ijk,ik->ij", A_IB, sigma_qp[:, :3])
+        f_pot_qp[1, :, 3:] = -sigma_qp[:, 3:]
 
         # to be multiplied with N
-        Wla_sigma_qp[0, :, :3] = 0.0
-        Wla_sigma_qp[0, :, 3:] = np.cross(B_gamma_bar, sigma_qp[:, :3]) + np.cross(
+        f_pot_qp[0, :, :3] = 0.0
+        f_pot_qp[0, :, 3:] = np.cross(B_gamma_bar, sigma_qp[:, :3]) + np.cross(
             B_kappa_bar, sigma_qp[:, 3:]
         )
 
         # add together and multiply with quadrature weights
-        Wla_sigma_nodes = self.N_int.T @ (
-            Wla_sigma_qp[0] * self.qw_int_vec[:, None]
-        ) + self.N_xi_int.T @ (Wla_sigma_qp[1] * self.qw_int_vec[:, None])
-        return Wla_sigma_nodes.reshape(-1)
+        f_pot_nodes = self.N_int.T @ (
+            f_pot_qp[0] * self.qw_int_vec[:, None]
+        ) + self.N_xi_int.T @ (f_pot_qp[1] * self.qw_int_vec[:, None])
+        return f_pot_nodes.reshape(-1)
 
     def Wla_sigma_q(self, q, la_c=None, la_g=None):
         la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
@@ -820,11 +828,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
         sigma_qp = self.Nc_int @ la_sigma_nodes
 
-        # compute W_sigma
-        A_IB, T, B_gamma_bar_P, B_kappa_bar_P = self._eval_internal_vec(
+        _eval, _deval = self._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=True
         )
-
+        A_IB = _eval[0]
+        T, B_gamma_bar_P, B_kappa_bar_P = _deval
         I_n_P = np.einsum(
             "ijk,ikl->ijl",
             A_IB,
@@ -832,8 +840,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
 
         # TODO: make sparse?
-        # W_sigma_qp[qpi, N/N_xi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros((3, self.nquadrature_int_total, 6, 7))
+        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
+        Wla_sigma_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, 7))
         # to be multiplied with N_xi <-> N
         Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
 
@@ -850,8 +858,101 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
             + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
         )
+        return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
-        return self.Wla_sigma_q_SAB.add_blocks(Wla_sigma_qp_qbar)
+    def f_pot(self, q):
+        _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+        sigma_db = self.material_model.sigma(epsilon, self.epsilon0)
+
+        sigma_qp = np.zeros((self.nquadrature_int_total, 6))
+        sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
+
+        return self.h_pot(_eval, sigma_qp)
+
+    def f_pot_q(self, q):
+        _eval, _deval = self._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=True
+        )
+        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+        sigma_db = self.material_model.sigma(epsilon, self.epsilon0)
+
+        sigma_qp = np.zeros((self.nquadrature_int_total, 6))
+        sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
+
+        A_IB, B_gamma_bar, B_kappa_bar = _eval
+        T, B_gamma_bar_P, B_kappa_bar_P = _deval
+
+        ######################
+        # material stiffness #
+        ######################
+        A_IB_transpose_to_J = A_IB.transpose(0, 2, 1) / self.J_int_vec[:, None, None]
+        T_to_J = T / self.J_int_vec[:, None, None]
+
+        B_n_gamma, B_n_kappa, B_m_gamma, B_m_kappa = self.material_model.sigma_epsilon(
+            epsilon, self.epsilon0
+        )
+
+        # fmt: off
+        B_n_P = (B_n_gamma @ B_gamma_bar_P + B_n_kappa @ B_kappa_bar_P) / self.J_int_vec[:, None, None]
+        B_m_P = (B_m_gamma @ B_gamma_bar_P + B_m_kappa @ B_kappa_bar_P) / self.J_int_vec[:, None, None]
+        # fmt: on
+
+        # TODO: make sparse?
+        # h_pot_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
+        h_pot_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, 7))
+        # to be multiplied with N_xi <-> N_xi
+        h_pot_qp_qbar[3, :, :3, :3] = -A_IB @ B_n_gamma @ A_IB_transpose_to_J
+        h_pot_qp_qbar[3, :, :3, 3:] = -A_IB @ B_n_kappa @ T_to_J
+        h_pot_qp_qbar[3, :, 3:, :3] = -B_m_gamma @ A_IB_transpose_to_J
+        h_pot_qp_qbar[3, :, 3:, 3:] = -B_m_kappa @ T_to_J
+
+        # to be multiplied with N_xi <-> N
+        h_pot_qp_qbar[2, :, :3, 3:] = -A_IB @ B_n_P
+        h_pot_qp_qbar[2, :, 3:, 3:] = -B_m_P
+
+        # to be multiplied with N <-> N_xi
+        h_pot_qp_qbar[1, :, 3:, :3] = (
+            np.cross(B_gamma_bar[:, :, None], B_n_gamma, axisa=1, axisb=1, axisc=1)
+            + np.cross(B_kappa_bar[:, :, None], B_m_gamma, axisa=1, axisb=1, axisc=1)
+        ) @ A_IB_transpose_to_J
+        h_pot_qp_qbar[1, :, 3:, 3:] = (
+            np.cross(B_gamma_bar[:, :, None], B_n_kappa, axisa=1, axisb=1, axisc=1)
+            + np.cross(B_kappa_bar[:, :, None], B_m_kappa, axisa=1, axisb=1, axisc=1)
+        ) @ T_to_J
+
+        # to be multiplied with N <-> N
+        h_pot_qp_qbar[0, :, 3:, 3:] = np.cross(
+            B_gamma_bar[:, :, None], B_n_P, axisa=1, axisb=1, axisc=1
+        ) + np.cross(B_kappa_bar[:, :, None], B_m_P, axisa=1, axisb=1, axisc=1)
+
+        ##################
+        # geometric part #
+        ##################
+        # TODO: can we use this from Wla_sigma_q?
+        I_n_P = np.einsum(
+            "ijk,ikl->ijl",
+            A_IB,
+            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
+        )
+
+        # to be multiplied with N_xi <-> N
+        h_pot_qp_qbar[2, :, :3, 3:] += I_n_P
+
+        # to be multiplied with N <-> N_xi
+        h_pot_qp_qbar[1, :, 3:, :3] -= np.cross(
+            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
+        )  # A_IB.T in gamma -> axisb=2
+        h_pot_qp_qbar[1, :, 3:, 3:] -= np.cross(
+            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
+        )
+
+        # to be multiplied with N <-> N
+        h_pot_qp_qbar[0, :, 3:, 3:] -= np.cross(
+            sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1
+        ) + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
+
+        return self.h_pot_q_SAB.add_blocks(h_pot_qp_qbar)
 
     ########################
     # evaluation functions #
@@ -869,10 +970,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             xis = []
             els = []
             for el in range(self.nelement):
-                element_interval = self.element_interval[el]
-                xis.append(
-                    np.linspace(element_interval[0], element_interval[1], n_per_element)
-                )
+                xi0, xi1 = self.element_interval[el]
+                xis.append(np.linspace(xi0, xi1, n_per_element))
                 els.append(np.tile(el, n_per_element))
             xis = np.concatenate(xis)
             els = np.concatenate(els)
@@ -898,7 +997,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # stresses due to displacement based
         if self._nDB > 0:
-            raise NotImplementedError
             N, N_xi = self.N(xis, els)
             # reference strains
             _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
@@ -906,8 +1004,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             # current strains
             _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
 
-            # TODO: vectorize material
-            sigma += self.material_model.sigma(...)
+            epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
+            epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
+            sigma_db = self.material_model.sigma(epsilon, epsilon0)
+            sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
 
         return xis, sigma[:, :3], sigma[:, 3:]
 
@@ -1014,7 +1114,7 @@ def make_BoostedCosseratRod(
                 of area.
             material_model: RodMaterialModel
                 Constitutive law of Cosserat rod which relates the rod strain
-                measures B_Gamma and B_Kappa with the contact forces B_n and couples
+                measures B_gamma and B_kappa with the contact forces B_n and couples
                 B_m in the cross-section-fixed B-basis.
             nelement : int
                 Number of rod elements.
@@ -1061,8 +1161,8 @@ def make_BoostedCosseratRod(
         def straight_configuration(
             nelement,
             L,
-            r_OP0=np.zeros(3, dtype=float),
-            A_IB0=np.eye(3, dtype=float),
+            r_OP0=zeros3,
+            A_IB0=eye3,
         ):
             """Compute generalized position coordinates for straight configuration."""
             nnodes = polynomial_degree * nelement + 1
@@ -1078,6 +1178,39 @@ def make_BoostedCosseratRod(
                 rP[i, 3:] = p
 
             return rP.reshape(-1)
+
+        @staticmethod
+        def pose_configuration(
+            nelement,
+            r_OP,
+            A_IB,
+            xi1=1.0,
+            r_OP0=zeros3,
+            A_IB0=eye3,
+        ):
+            """Compute generalized position coordinates for a pre-curved rod with centerline curve r_OP and orientation of A_IB."""
+            assert callable(r_OP), "r_OP must be callable!"
+            assert callable(A_IB), "A_IB must be callable!"
+
+            nnodes = polynomial_degree * nelement + 1
+            xis = np.linspace(0, xi1, nnodes)
+
+            # nodal positions and unit quaternions
+            r0 = np.zeros((nnodes, 3))
+            p0 = np.zeros((nnodes, 4))
+
+            for i, xii in enumerate(xis):
+                r0[i] = r_OP0 + A_IB0 @ r_OP(xii)
+                A_IBi = A_IB0 @ A_IB(xii)
+                p0[i] = Log_SO3_quat(A_IBi)
+
+            # check for the right quaternion hemisphere
+            for i in range(nnodes - 1):
+                inner = p0[i] @ p0[i + 1]
+                if inner < 0:
+                    p0[i + 1] *= -1
+
+            return np.hstack([r0, p0]).reshape(-1)
 
         # TODO: also copy&paste the other configurations
         # TODO: change order

@@ -38,6 +38,32 @@ class RodMaterialModel(ABC):
         """Derivative of contact couple w.r.t. strain B_Kappa."""
         ...
 
+    def sigma(self, epsilon, epsilon0):
+        B_n = self.B_n(epsilon[:, :3], epsilon0[:, :3], epsilon[:, 3:], epsilon0[:, 3:])
+        B_m = self.B_m(epsilon[:, :3], epsilon0[:, :3], epsilon[:, 3:], epsilon0[:, 3:])
+        return np.hstack([B_n, B_m])
+
+    def sigma_epsilon(self, epsilon, epsilon0):
+        n = epsilon.shape[0]
+        B_gamma = epsilon[:, :3]
+        B_gamma0 = epsilon0[:, :3]
+        B_kappa = epsilon[:, 3:]
+        B_kappa0 = epsilon0[:, 3:]
+        # TODO: what a dirty fix. Ask tianxiang how he did the interface
+        B_n_B_Gamma = np.array(
+            n * [self.B_n_B_Gamma(B_gamma, B_gamma0, B_kappa, B_kappa0)]
+        )
+        B_n_B_Kappa = np.array(
+            n * [self.B_n_B_Kappa(B_gamma, B_gamma0, B_kappa, B_kappa0)]
+        )
+        B_m_B_Gamma = np.array(
+            n * [self.B_m_B_Gamma(B_gamma, B_gamma0, B_kappa, B_kappa0)]
+        )
+        B_m_B_Kappa = np.array(
+            n * [self.B_m_B_Kappa(B_gamma, B_gamma0, B_kappa, B_kappa0)]
+        )
+        return B_n_B_Gamma, B_n_B_Kappa, B_m_B_Gamma, B_m_B_Kappa
+
 
 class Simo1986(RodMaterialModel):
     def __init__(self, Ei, Fi):
@@ -81,12 +107,14 @@ class Simo1986(RodMaterialModel):
         return 0.5 * B_n @ self.C_n_inv @ B_n + 0.5 * B_m @ self.C_m_inv @ B_m
 
     def B_n(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
+        # TODO: allow for xi as argument
+        # Idea: write a function "prepare_quadrature(self, qpi)" that takes all qpi as vector and write C_ni and C_mi
         dG = B_Gamma - B_Gamma0
-        return self.C_n @ dG
+        return dG @ self.C_n
 
     def B_m(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         dK = B_Kappa - B_Kappa0
-        return self.C_m @ dK
+        return dK @ self.C_m
 
     def B_n_B_Gamma(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         return self.C_n
