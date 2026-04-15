@@ -268,6 +268,7 @@ class Mesh1D:
 
         return N
 
+
 class Mesh1D_equidistant:
     def __init__(
         self,
