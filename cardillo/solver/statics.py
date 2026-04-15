@@ -5,6 +5,7 @@ from tqdm import tqdm
 from cardillo.math.fsolve import fsolve
 from cardillo.solver.solver_options import SolverOptions
 from cardillo.solver.solution import Solution
+from cardillo.utility.coo_matrix import CooMatrix
 
 
 class Newton:
@@ -61,34 +62,21 @@ class Newton:
         self.x[0] = x0
 
         # allocate for coo
-        preallocate = True
-        preallocate = False
-        if preallocate:
-            # fmt: off
-            self.W_g_coo = system.W_g(self.load_steps[0], system.q0, format=None)
-            self.W_c_coo = system.W_c(self.load_steps[0], system.q0, format=None)
-            self.W_N_coo = system.W_N(self.load_steps[0], system.q0, format=None)
-            self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format=None)
-            self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format=None)
-            self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format=None)
-            self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format=None)
-            self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format=None)
-            self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format=None)
-            self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format=None)
-            self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format=None)
-            # fmt: on
-        else:
-            self.W_g_coo = None
-            self.W_c_coo = None
-            self.W_N_coo = None
-            self.h_q_coo = None
-            self.Wla_g_q_coo = None
-            self.Wla_c_q_coo = None
-            self.Wla_N_q_coo = None
-            self.g_q_coo = None
-            self.g_S_q_coo = None
-            self.c_q_coo = None
-            self.g_N_q_coo = None
+        self.jac_coo = CooMatrix((nx, nx))
+        self.K_coo = CooMatrix((self.nu, self.nq))
+        # fmt: off
+        self.W_g_coo = system.W_g(self.load_steps[0], system.q0, format="Coo")
+        self.W_c_coo = system.W_c(self.load_steps[0], system.q0, format="Coo")
+        self.W_N_coo = system.W_N(self.load_steps[0], system.q0, format="Coo")
+        self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format="Coo")
+        self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format="Coo")
+        self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format="Coo")
+        self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format="Coo")
+        self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format="Coo")
+        self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format="Coo")
+        self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format="Coo")
+        self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format="Coo")
+        # fmt: on
 
     def fun(self, x, t):
         # unpack unknowns
@@ -123,11 +111,17 @@ class Newton:
 
         # evaluate additionally required quantites for computing the jacobian
         # coo is used for efficient bmat
-        K = (
-            self.system.h_q(t, q, self.u0, coo=self.h_q_coo)
-            + self.system.Wla_g_q(t, q, la_g, coo=self.Wla_g_q_coo)
-            + self.system.Wla_c_q(t, q, la_c, coo=self.Wla_c_q_coo)
-            + self.system.Wla_N_q(t, q, la_N, coo=self.Wla_N_q_coo)
+        self.K_coo["h_q", :, :] = self.system.h_q(
+            t, q, self.u0, format="Coo", coo=self.h_q_coo
+        )
+        self.K_coo["Wla_g_q", :, :] = self.system.Wla_g_q(
+            t, q, la_g, format="Coo", coo=self.Wla_g_q_coo
+        )
+        self.K_coo["Wla_c_q", :, :] = self.system.Wla_c_q(
+            t, q, la_c, format="Coo", coo=self.Wla_c_q_coo
+        )
+        self.K_coo["Wla_N_q", :, :] = self.system.Wla_N_q(
+            t, q, la_N, format="Coo", coo=self.Wla_N_q_coo
         )
         g_q = self.system.g_q(t, q, coo=self.g_q_coo)
         g_S_q = self.system.g_S_q(t, q, coo=self.g_S_q_coo)
@@ -147,12 +141,20 @@ class Newton:
                 Rla_N_q[i] = g_N_q[i]
 
         # fmt: off
-        return bmat([[      K, self.W_g, self.W_c,   self.W_N], 
-                     [    g_q,     None,     None,       None],
-                     [    c_q,     None,   c_la_c,       None],
-                     [  g_S_q,     None,     None,       None],
-                     [Rla_N_q,     None,     None, Rla_N_la_N]], format="csc")
+        sf0, sf1, sf2, sf3 = self.split_f
+        sx0, sx1, sx2 = self.split_x
+        self.jac_coo["K"         ,    :sf0,    :sx0] = self.K_coo
+        self.jac_coo["W_g"       ,    :sf0, sx0:sx1] = self.W_g
+        self.jac_coo["W_c"       ,    :sf0, sx1:sx2] = self.W_c
+        self.jac_coo["W_N"       ,    :sf0, sx2:   ] = self.W_N
+        self.jac_coo["g_q"       , sf0:sf1,    :sx0] = g_q
+        self.jac_coo["c_q"       , sf1:sf2,    :sx0] = c_q
+        self.jac_coo["c_la_c"    , sf1:sf2, sx1:sx2] = c_la_c
+        self.jac_coo["g_S_q"     , sf2:sf3,    :sx0] = g_S_q
+        self.jac_coo["Rla_N_q"   , sf3:   ,    :sx0] = Rla_N_q
+        self.jac_coo["Rla_N_la_N", sf3:   , sf3:   ] = Rla_N_la_N
         # fmt: on
+        return self.jac_coo.asformat("csc")
 
     def __pbar_text(self, force_iter, newton_iter, error):
         return (
