@@ -690,6 +690,7 @@ def T_SO3_quat_P(P_IB, normalize=True):
     # print(np.linalg.norm(result_ - result))
     return result[0] if was_1d else result
 
+
 # TODO: clean up
 def T_SO3_quat_P_(P, normalize=True):
     p0, p = P[0], P[1:]
@@ -733,18 +734,34 @@ def T_SO3_inv_quat_P(P, normalize=True):
     return T_inv_P
 
 
-def quatprod(P, Q):
+def quatprod(P_IB, Q_IB):
     """Quaternion product, see Egeland2002 (6.190).
 
     References:
     -----------
     Egeland2002: https://folk.ntnu.no/oe/Modeling%20and%20Simulation.pdf
     """
-    p0, p = P[0], P[1:]
-    q0, q = Q[0], Q[1:]
-    z0 = p0 * q0 - p @ q
-    z = p0 * q + q0 * p + cross3(p, q)
-    return np.array([z0, *z])
+    P_IB = np.asarray(P_IB)
+    Q_IB = np.asarray(Q_IB)
+
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    Q_IB = np.atleast_2d(Q_IB)
+
+    assert P_IB.shape == Q_IB.shape
+    assert P_IB.shape[1] == 4
+
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    q0, q = Q_IB[:, 0], Q_IB[:, 1:]
+
+    # scalar part
+    z0 = p0 * q0 - np.sum(p * q, axis=1)
+
+    # vectorial part
+    z = p0[:, None] * q + q0[:, None] * p + np.cross(p, q)
+
+    result = np.concatenate((z0[:, None], z), axis=1)
+    return result[0] if was_1d else result
 
 
 def axis_angle2quat(axis, angle):
