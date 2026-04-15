@@ -1,6 +1,6 @@
 import numpy as np
 from numpy.polynomial import Polynomial
-from scipy.sparse import csr_array, bsr_array, bsr_matrix
+from scipy.sparse import lil_array
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from .lagrange import LagrangeBasis
@@ -268,52 +268,6 @@ class Mesh1D:
 
         return N
 
-    def shape_functions_matrix(self, nquadrature, derivative_order):
-        shape_q = (self.nelement, nquadrature, self.dim_q, self.nq_per_element)
-        shape_u = (self.nelement, nquadrature, self.dim_u, self.nu_per_element)
-
-        Nq = [np.zeros(shape_q, dtype=float) for _ in range(derivative_order + 1)]
-        Nu = [np.zeros(shape_u, dtype=float) for _ in range(derivative_order + 1)]
-
-        shape_functions = self.shape_functions(nquadrature, derivative_order)
-
-        eye_q = np.eye(self.dim_q, dtype=float)
-        eye_u = np.eye(self.dim_u, dtype=float)
-        for el in range(self.nelement):
-            for i in range(nquadrature):
-                for node in range(self.nnodes_per_element):
-                    qDOF = self.nodalDOF_element[node]
-                    uDOF = self.nodalDOF_element_u[node]
-
-                    for d in range(derivative_order + 1):
-                        Nq[d][el, i, :, qDOF] = shape_functions[d][el, i, node] * eye_q
-                        Nu[d][el, i, :, uDOF] = shape_functions[d][el, i, node] * eye_u
-
-        return Nq, Nu
-
-    def shape_functions_matrix_new(self, nquadrature, derivative_order):
-        N_sparse = [
-            csr_array((self.nelement * nquadrature, self.nnodes))
-            for _ in range(derivative_order + 1)
-        ]
-        shape_functions = self.shape_functions(nquadrature, derivative_order)
-
-        if self.basis == "Lagrange":
-            offset = self.degree
-        elif self.basis == "Lagrange_Disc":
-            offset = self.degree + 1
-
-        for el in range(self.nelement):
-            for i in range(nquadrature):
-                row = el * nquadrature + i
-                for node in range(self.nnodes_per_element):
-                    col = el * offset + node
-                    for d in range(derivative_order + 1):
-                        N_sparse[d][row, col] = shape_functions[d][el, i, node]
-
-        return N_sparse
-
-
 class Mesh1D_equidistant:
     def __init__(
         self,
@@ -455,7 +409,7 @@ class Mesh1D_equidistant:
         Nd = self.shape_functions_element(xis, el, derivative_order)
         col = self.col(el)
         for d in range(derivative_order + 1):
-            Nd_sparse = csr_array((len(xis), self.npolynoms))
+            Nd_sparse = lil_array((len(xis), self.npolynoms))
             Nd_sparse[:, col] = Nd[d]
             N_sparse.append(Nd_sparse)
 
@@ -475,7 +429,7 @@ class Mesh1D_equidistant:
             els = np.tile(els, nxis)
 
         N_sparse = [
-            csr_array((len(xis), self.npolynoms)) for _ in range(derivative_order + 1)
+            lil_array((len(xis), self.npolynoms)) for _ in range(derivative_order + 1)
         ]
         for el in np.unique(els):
             selection = els == el
@@ -484,6 +438,9 @@ class Mesh1D_equidistant:
             )
             for d in range(derivative_order + 1):
                 N_sparse[d][selection] = N_sparse_el[d]
+
+        for d in range(derivative_order + 1):
+            N_sparse[d] = N_sparse[d].tocsr()
 
         return N_sparse
 
