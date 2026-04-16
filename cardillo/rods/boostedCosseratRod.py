@@ -412,9 +412,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     #    --> we put a warning when there are db and mx deformations
     def _E_pot_comp(self, t, q, la_c):
         if self._nDB > 0:
-            warn(
-                "E_pot_comp might not be correct if there are displacement based deformations."
-            )
+            msg = "E_pot_comp might not be correct if there are displacement-based deformations."
+            warn(msg)
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon_db = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
 
@@ -461,6 +460,38 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         E_kin = np.sum(E_kin_i * self.qw_dyn_vec * self.J_dyn_vec)
         return E_kin
+
+    def linear_momentum(self, t, q, u):
+        unodes = u.reshape(self.nnodes, -1)
+        v = self.N_dyn @ unodes[:, :3]
+        A_rho0 = self.cross_section_inertias.A_rho0
+        linear_momentum_qp = v * A_rho0
+        linear_momentum = np.sum(
+            linear_momentum_qp * (self.J_dyn_vec * self.qw_dyn_vec)[:, None], axis=0
+        )
+        return linear_momentum
+
+    def angular_momentum(self, t, q, u):
+        qnodes = q.reshape(self.nnodes, -1)
+        rP = self.N_dyn @ qnodes
+        r_OC = rP[:, :3]
+        A_IB = self._A_IB(rP[:, 3:])
+
+        unodes = u.reshape(self.nnodes, -1)
+        vO = self.N_dyn @ unodes
+        v_C = vO[:, :3]
+        B_Omega = vO[:, 3:]
+
+        A_rho0 = self.cross_section_inertias.A_rho0
+        B_I_rho0 = self.cross_section_inertias.B_I_rho0
+
+        angular_momentum_qp = np.cross(r_OC, v_C) * A_rho0 + np.einsum(
+            "ijk,kl,il->ij", A_IB, B_I_rho0, B_Omega
+        )
+        angular_momentum = np.sum(
+            angular_momentum_qp * (self.J_dyn_vec * self.qw_dyn_vec)[:, None], axis=0
+        )
+        return angular_momentum
 
     #########################################
     # equations of motion
