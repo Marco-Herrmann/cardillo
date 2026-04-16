@@ -43,24 +43,35 @@ def get_permutation(nnodes, nnodes_element, n_per_node):
 
 
 def test_implementation(n_test=1_000):
-    constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0]))
+    constitutive_law = Simo1986(
+        np.array([1.0, 2.0, 3.0]), np.array([40.0, 50.0, 60.0])
+    )
     cross_section = CircularCrossSection(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
     nelement = 4
-    polynomial_degree = 2
+    polynomial_degree = 1
     constraints = [0, 1, 5]
     constraints = [0, 1]
+    constraints = []
 
+    mixed = True
+    # mixed = False
+    if not mixed:
+        idx_db = np.setdiff1d(np.arange(6), constraints)
+    else:
+        idx_db = []
     Rod_old = make_CosseratRod(
         interpolation="Quaternion",
-        mixed=True,
+        mixed=mixed,
         polynomial_degree=polynomial_degree,
-        constraints=constraints,
+        constraints=None if len(constraints) == 0 else constraints,
     )
     Rod_new = make_BoostedCosseratRod(
-        polynomial_degree=polynomial_degree, idx_constraints=constraints
+        polynomial_degree=polynomial_degree,
+        idx_constraints=constraints,
+        idx_displacement_based=idx_db,
     )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
@@ -83,21 +94,30 @@ def test_implementation(n_test=1_000):
 
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
-    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
-    perm_c = get_permutation(
-        rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
-    )
-    perm_g = get_permutation(
-        rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
-    )
     perm_n2c_q = perm_q["permutation_node2comp"]
     perm_c2n_q = perm_q["permutation_comp2node"]
+    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
     perm_n2c_u = perm_u["permutation_node2comp"]
     perm_c2n_u = perm_u["permutation_comp2node"]
-    perm_n2c_c = perm_c["permutation_node2comp"]
-    perm_c2n_c = perm_c["permutation_comp2node"]
-    perm_n2c_g = perm_g["permutation_node2comp"]
-    perm_c2n_g = perm_g["permutation_comp2node"]
+    if mixed:
+        perm_c = get_permutation(
+            rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
+        )
+        perm_n2c_c = perm_c["permutation_node2comp"]
+        perm_c2n_c = perm_c["permutation_comp2node"]
+    else:
+        perm_n2c_c = np.arange(0)
+        perm_c2n_c = np.arange(0)
+        rod_old.la_cDOF = np.arange(0)
+    if len(constraints) > 0:
+        perm_g = get_permutation(
+            rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
+        )
+        perm_n2c_g = perm_g["permutation_node2comp"]
+        perm_c2n_g = perm_g["permutation_comp2node"]
+    else:
+        perm_n2c_g = np.arange(0)
+        perm_c2n_g = np.arange(0)
 
     print(f"q0s: {np.linalg.norm(q0_old[perm_c2n_q] - q0_new)}")
 
@@ -141,6 +161,12 @@ def test_implementation(n_test=1_000):
         # quaternion constraint
         ["g_S", ("t", "q"), (), False],
         ["g_S_q", ("t", "q"), (..., perm_c2n_q), True],
+        # energies and momentum
+        ["E_pot_comp", ("t", "q", "la_c"), (), False],
+        ["E_pot", ("t", "q"), (), False],
+        ["E_kin", ("t", "q", "u"), (), False],
+        ["linear_momentum", ("t", "q", "u"), (), False],
+        ["angular_momentum", ("t", "q", "u"), (), False],
     ]
     interactions = [
         ["r_OP", ("t", "q", "B_r_CP")],
@@ -206,6 +232,9 @@ def test_implementation(n_test=1_000):
                     results.append(result.toarray())
                 else:
                     results.append(result)
+
+                if isinstance(result, (float, int)):
+                    results[-1] = np.array(result)
 
             error = np.linalg.norm(results[0] - results[1][permutation])
             if error > 1e-10:
@@ -305,15 +334,18 @@ def compare_performance(n_test=1_000):
     nelement = 500
     polynomial_degree = 2
 
+    mixed = False
     constraints = [0, 1, 5]
     Rod_old = make_CosseratRod(
         interpolation="Quaternion",
-        mixed=True,
+        mixed=mixed,
         polynomial_degree=polynomial_degree,
         constraints=constraints,
     )
     Rod_new = make_BoostedCosseratRod(
-        polynomial_degree=polynomial_degree, idx_constraints=constraints
+        polynomial_degree=polynomial_degree,
+        idx_constraints=constraints,
+        idx_displacement_based=[] if mixed else np.setdiff1d(np.arange(6), constraints),
     )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
@@ -348,21 +380,23 @@ def compare_performance(n_test=1_000):
 
     # get permutations
     perm_q = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 7)
-    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
-    perm_c = get_permutation(
-        rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
-    )
-    perm_g = get_permutation(
-        rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
-    )
     perm_n2c_q = perm_q["permutation_node2comp"]
-    perm_c2n_q = perm_q["permutation_comp2node"]
+    perm_u = get_permutation(rod_old.nnodes_r, rod_old.nnodes_element_r, 6)
     perm_n2c_u = perm_u["permutation_node2comp"]
-    perm_c2n_u = perm_u["permutation_comp2node"]
-    perm_n2c_c = perm_c["permutation_node2comp"]
-    perm_c2n_c = perm_c["permutation_comp2node"]
-    perm_n2c_g = perm_g["permutation_node2comp"]
-    perm_c2n_g = perm_g["permutation_comp2node"]
+    if len(constraints) < 6 and mixed:
+        perm_c = get_permutation(
+            rod_old.nnodes_la_c, rod_old.nnodes_element_la_c, 6 - len(constraints)
+        )
+        perm_n2c_c = perm_c["permutation_node2comp"]
+    else:
+        perm_n2c_c = np.arange(0)
+    if len(constraints) > 0:
+        perm_g = get_permutation(
+            rod_old.nnodes_la_g, rod_old.nnodes_element_la_g, len(constraints)
+        )
+        perm_n2c_g = perm_g["permutation_node2comp"]
+    else:
+        perm_n2c_g = np.arange(0)
 
     # fmt: off
     functions = [
@@ -370,14 +404,14 @@ def compare_performance(n_test=1_000):
         ["q_dot", ("t", "q", "u"), False],
         ["q_dot_q", ("t", "q", "u"), False],
         # ["q_dot_u", ("t", "q"), False],               # q_dot_u of old is very slow!
-        # compliance equation
-        ["la_c", ("t", "q", "u"), False],
-        ["c", ("t", "q", "u", "la_c"), False],
-        ["c_q", ("t", "q", "u", "la_c"), False],
-        # ["c_u", ("t", "q", "u", "la_c"), False],      # rod has no c_u (only system)
-        # ["c_la_c", (), False],                        # c_la_c is a getter function
-        ["W_c", ("t", "q"), False],
-        ["Wla_c_q", ("t", "q", "la_c"), False],
+        # # compliance equation
+        # ["la_c", ("t", "q", "u"), False],
+        # ["c", ("t", "q", "u", "la_c"), False],
+        # ["c_q", ("t", "q", "u", "la_c"), False],
+        # # ["c_u", ("t", "q", "u", "la_c"), False],      # rod has no c_u (only system)
+        # # ["c_la_c", (), False],                        # c_la_c is a getter function
+        # ["W_c", ("t", "q"), False],
+        # ["Wla_c_q", ("t", "q", "la_c"), False],
         # constraint equation
         ["g", ("t", "q"), False],
         ["g_q", ("t", "q"), False],
@@ -387,7 +421,7 @@ def compare_performance(n_test=1_000):
         # ["M", ("t", "q"), False],                     # M is a getter function
         # ["Mu_q", ("t", "q", "u"), False],             # rod has no Mu_q (only system)
         ["h", ("t", "q", "u"), False],
-        # ["h_q", ("t", "q", "u"), False],              # rod has no h_q (only system)
+        ["h_q", ("t", "q", "u"), False],              # rod has no h_q (only system)
         ["h_u", ("t", "q", "u"), False],
         # quaternion constraint
         ["g_S", ("t", "q"), False],
@@ -417,6 +451,16 @@ def compare_performance(n_test=1_000):
         ["B_Psi_q", ("t", "q", "u", "u_dot", "xi"), True],
         ["B_Psi_u", ("t", "q", "u", "u_dot", "xi"), True],
     ]
+    # functions = [
+    #     ["c_q", ("t", "q", "u", "la_c"), False],
+    #     ["W_c", ("t", "q"), False],
+    #     ["Wla_c_q", ("t", "q", "la_c"), False],
+    #     ["h_u", ("t", "q", "u"), False],
+    # ]
+    # functions = [
+    #     # ["q_dot_u", ("t", "q"), False],
+    #     ["Wla_c_q", ("t", "q", "la_c"), False],
+    # ]
     # fmt: on
 
     t_test = np.random.rand()
@@ -428,8 +472,8 @@ def compare_performance(n_test=1_000):
     xi = np.random.rand()
     B_r_CP = np.random.rand(3)
 
-    xi = 0.0
-    B_r_CP = np.zeros(3)
+    # xi = 0.0
+    # B_r_CP = np.zeros(3)
 
     # TODO: maybe step callback!
     arguments__new = dict(
