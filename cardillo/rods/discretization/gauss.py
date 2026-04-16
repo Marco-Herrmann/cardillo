@@ -77,3 +77,12 @@ def lobatto(n, interval=np.array([-1, 1])):
     weights = (interval[1] - interval[0]) / 2 * weights
 
     return points, weights
+
+
+def trapezoidal(n, interval=np.array([-1, 1])):
+    assert n >= 2, "Number of points must be at least 2."
+    points = np.linspace(interval[0], interval[1], n)
+    weights = np.ones(n)
+    weights[0] = weights[-1] = 0.5
+    weights /= (interval[1] - interval[0]) / (n - 1)
+    return points, weights

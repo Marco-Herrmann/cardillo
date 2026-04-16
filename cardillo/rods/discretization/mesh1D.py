@@ -4,7 +4,7 @@ from scipy.sparse import lil_array
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 from .lagrange import LagrangeBasis
-from .gauss import gauss, lobatto
+from .gauss import gauss, lobatto, trapezoidal
 from .interpolations import lagrange, hermite
 
 
@@ -455,6 +455,10 @@ class Mesh1D_equidistant:
             quadrature_fct = gauss
         elif quadrature == "Lobatto":
             quadrature_fct = lobatto
+        elif quadrature == "Trapezoidal":
+            quadrature_fct = trapezoidal
+        else:
+            raise ValueError(f"Unknown quadrature {quadrature}")
 
         for el in range(self.nelement):
             idx = slice(el * nquadrature, (el + 1) * nquadrature)

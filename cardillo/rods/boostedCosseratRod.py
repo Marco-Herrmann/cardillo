@@ -45,8 +45,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         idx_displacement_based,
         nelement,
         polynomial_degree,
-        nquadrature_int,
-        nquadrature_dyn,
+        quadrature_int,
+        quadrature_dyn,
         Q,
         q0,
         u0,
@@ -101,7 +101,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         #####################
         # quadrature points #
         #####################
-        quadrature_int_kin = mesh_kin.quadrature(nquadrature_int, "Gauss", 1)
+        quadrature_int_kin = mesh_kin.quadrature(*quadrature_int, 1)
         self.nquadrature_int_total = quadrature_int_kin["nquadrature_total"]
         self.qp_int_vec = quadrature_int_kin["qp"]
         self.qw_int_vec = quadrature_int_kin["qw"]
@@ -109,7 +109,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.N_int, self.N_xi_int = quadrature_int_kin["N"]
 
         # TODO: allow for trapezoidal rule
-        quadrature_dyn_kin = mesh_kin.quadrature(nquadrature_dyn, "Gauss", 1)
+        quadrature_dyn_kin = mesh_kin.quadrature(*quadrature_dyn, 1)
         self.nquadrature_dyn_total = quadrature_dyn_kin["nquadrature_total"]
         self.qp_dyn_vec = quadrature_dyn_kin["qp"]
         self.qw_dyn_vec = quadrature_dyn_kin["qw"]
@@ -146,7 +146,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
         self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
 
-        quadrature_int_cg = mesh_cg.quadrature(nquadrature_int, "Gauss", 0)
+        quadrature_int_cg = mesh_cg.quadrature(*quadrature_int, 0)
         self.Nc_int = quadrature_int_cg["N"][0]
 
         # total number of compliance coordinates
@@ -738,22 +738,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         ) @ ax2skew(B_r_CP)
         return self._A_IB(P) @ B_a_CP_B_Omega @ point_dict["Nu"][3:]
 
-    # TODO: cache and move to init or upwards!
-    def _A_IB(self, P):
-        return Exp_SO3_quat(P)
-
-    # TODO: cache
-    def _A_IB_P(self, P):
-        return Exp_SO3_quat_P(P)
-
-    def _T_IB(self, P):
-        # TODO: update this function in rotations
-        return T_SO3_quat(P)
-
-    def _T_IB_P(self, P):
-        # TODO: update this function in rotations
-        return T_SO3_quat_P(P)
-
     def A_IB(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
         N = point_dict["N"]
@@ -1132,8 +1116,9 @@ def make_BoostedCosseratRod(
     polynomial_degree=None,
     idx_constraints=None,
     idx_displacement_based=None,
-    nquadrature_int=None,
-    nquadrature_dyn=None,
+    quadrature_int=None,
+    quadrature_dyn=None,
+    parametrization=None,
 ):
     # check if constraint indices are valid
     if idx_constraints is not None:
@@ -1163,16 +1148,37 @@ def make_BoostedCosseratRod(
 
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 
-    nquadrature_int = polynomial_degree if nquadrature_int == None else nquadrature_int
-    # TODO: take trapezoidal rule as default?
-    nquadrature_dyn = (
-        int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
-        if nquadrature_dyn == None
-        else nquadrature_dyn
-    )
+    # quadrature
+    if quadrature_int == None:
+        quadrature_int = (polynomial_degree, "Gauss")
+    elif isinstance(quadrature_int, int):
+        quadrature_int = (quadrature_int, "Gauss")
+    elif not isinstance(quadrature_int, tuple):
+        raise ValueError(
+            "quadrature_int must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
+        )
 
-    print(f"{nquadrature_int = }")
-    print(f"{nquadrature_dyn = }")
+    if quadrature_dyn == None:
+        # TODO: take trapezoidal rule as default?
+        quadrature_dyn = (polynomial_degree + 1, "Trapezoidal")
+        n_full = int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
+        quadrature_dyn = (n_full, "Gauss")
+        print(f"quadrature_dyn: {quadrature_dyn}")
+    elif isinstance(quadrature_dyn, int):
+        quadrature_dyn = (quadrature_dyn, "Gauss")
+    elif not isinstance(quadrature_dyn, tuple):
+        raise ValueError(
+            "quadrature_dyn must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
+        )
+
+    # parametrization
+    if parametrization is None:
+        parametrization = "Quaternion"
+
+    # assert parametrization in ["Quaternion", "R12"], f"parametrization {parametrization} is not supported!"
+    assert parametrization in [
+        "Quaternion"
+    ], f"parametrization {parametrization} is not supported!"
 
     class BoostedCosseratRod_PetrovGalerkin(CosseratRod_PetrovGalerkin):
         def __init__(
@@ -1223,6 +1229,12 @@ def make_BoostedCosseratRod(
             name : str
                 Name of contribution.
             """
+            # functions for orientation
+            if parametrization == "Quaternion":
+                self._A_IB = Exp_SO3_quat
+                self._A_IB_P = Exp_SO3_quat_P
+                self._T_IB = T_SO3_quat
+                self._T_IB_P = T_SO3_quat_P
 
             super().__init__(
                 cross_section,
@@ -1232,8 +1244,8 @@ def make_BoostedCosseratRod(
                 idx_displacement_based,
                 nelement,
                 polynomial_degree,
-                nquadrature_int,
-                nquadrature_dyn,
+                quadrature_int,
+                quadrature_dyn,
                 Q,
                 q0,
                 u0,
