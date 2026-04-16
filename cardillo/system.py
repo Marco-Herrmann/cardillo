@@ -417,7 +417,7 @@ class System:
                 self.__M_contr[self.I_M]
             ):  # only loop over variable mass parts
                 coo[i, contr.uDOF, contr.uDOF] = contr.M(t, q[contr.qDOF])
-            return coo.asformat(format)
+            return coo.asformat(format) + self._M0.asformat(format)
         else:
             return self._M0.asformat(format)
 
