@@ -451,7 +451,19 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
     ############################
     # total energies and momenta
     ############################
+    def E_pot_comp(self, t, q, la_c):
+        if hasattr(self, "la_c"):
+            if self.nla_c > 0:
+                return la_c @ (
+                    -self.c(t, q, np.zeros(self.nu), np.zeros(self.nla_c))
+                    - 0.5 * self.c_la_c().tocsr() @ la_c
+                )
+        return 0.0
+
     def E_pot(self, t, q):
+        if hasattr(self, "nla_c"):
+            if self.nla_c > 0:
+                return 0.0
         E_pot = 0.0
         for el in range(self.nelement):
             elDOF = self.elDOF[el]

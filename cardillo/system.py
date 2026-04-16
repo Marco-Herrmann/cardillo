@@ -11,7 +11,8 @@ from cardillo.visualization import Export
 
 properties = []
 
-properties.extend(["E_kin", "E_pot"])
+properties.extend(["E_kin", "E_pot", "E_pot_comp"])
+properties.extend(["linear_momentum", "angular_momentum"])
 
 properties.extend(["M", "Mu_q"])
 
@@ -374,17 +375,35 @@ class System:
     ################
     # total energies
     ################
+    def E_pot_comp(self, t, q, la_c):
+        E_pot_comp = 0.0
+        for contr in self.__E_pot_comp_contr:
+            E_pot_comp += contr.E_pot_comp(t, q[contr.qDOF], la_c[contr.la_cDOF])
+        return E_pot_comp
+
     def E_pot(self, t, q):
-        E_pot = 0
+        E_pot = 0.0
         for contr in self.__E_pot_contr:
             E_pot += contr.E_pot(t, q[contr.qDOF])
         return E_pot
 
     def E_kin(self, t, q, u):
-        E_kin = 0
+        E_kin = 0.0
         for contr in self.__E_kin_contr:
             E_kin += contr.E_kin(t, q[contr.qDOF], u[contr.uDOF])
         return E_kin
+
+    def linear_momentum(self, t, q, u):
+        linear_momentum = np.zeros(3, dtype=float)
+        for contr in self.__linear_momentum_contr:
+            linear_momentum += contr.linear_momentum(t, q[contr.qDOF], u[contr.uDOF])
+        return linear_momentum
+
+    def angular_momentum(self, t, q, u):
+        angular_momentum = np.zeros(3, dtype=float)
+        for contr in self.__angular_momentum_contr:
+            angular_momentum += contr.angular_momentum(t, q[contr.qDOF], u[contr.uDOF])
+        return angular_momentum
 
     #####################
     # equations of motion

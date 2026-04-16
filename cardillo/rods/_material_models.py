@@ -96,6 +96,7 @@ class Simo1986(RodMaterialModel):
         self.C_n_inv = np.linalg.inv(self.C_n)
         self.C_m_inv = np.linalg.inv(self.C_m)
 
+        self.C = np.diag(np.concatenate([Ei, Fi]))
         self.C_inv = np.diag(1 / np.concatenate([Ei, Fi]))
 
     def potential(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
@@ -103,8 +104,15 @@ class Simo1986(RodMaterialModel):
         dK = B_Kappa - B_Kappa0
         return 0.5 * dG @ self.C_n @ dG + 0.5 * dK @ self.C_m @ dK
 
+    def potential_vec(self, epsilon, epsilon0):
+        eps = epsilon - epsilon0
+        return 0.5 * np.einsum("ij,jk,ik->i", eps, self.C, eps)
+
     def complementary_potential(self, B_n, B_m):
         return 0.5 * B_n @ self.C_n_inv @ B_n + 0.5 * B_m @ self.C_m_inv @ B_m
+
+    def potential_comp_vec(self, sigma):
+        return 0.5 * np.einsum("ij,jk,ik->i", sigma, self.C_inv, sigma)
 
     def B_n(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         # TODO: allow for xi as argument
