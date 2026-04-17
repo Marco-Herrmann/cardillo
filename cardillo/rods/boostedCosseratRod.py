@@ -43,10 +43,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         cross_section_inertias,
         idx_constraints,
         idx_displacement_based,
+        distributed_load,
         nelement,
         polynomial_degree,
         quadrature_int,
         quadrature_dyn,
+        quadrature_ext,
         Q,
         q0,
         u0,
@@ -108,13 +110,33 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.qels_int_vec = quadrature_int_kin["els"]
         self.N_int, self.N_xi_int = quadrature_int_kin["N"]
 
-        # TODO: allow for trapezoidal rule
         quadrature_dyn_kin = mesh_kin.quadrature(*quadrature_dyn, 1)
         self.nquadrature_dyn_total = quadrature_dyn_kin["nquadrature_total"]
         self.qp_dyn_vec = quadrature_dyn_kin["qp"]
         self.qw_dyn_vec = quadrature_dyn_kin["qw"]
         self.qels_dyn_vec = quadrature_dyn_kin["els"]
         self.N_dyn, self.N_xi_dyn = quadrature_dyn_kin["N"]
+
+        # line distributed forces
+        if (distributed_load[0] == None) and (distributed_load[1] == None):
+            include_f_ext = False
+        else:
+            include_f_ext = True
+
+            # quadrature
+            quadrature_ext = mesh_kin.quadrature(*quadrature_ext, 1)
+            self.nquadrature_ext_total = quadrature_ext["nquadrature_total"]
+            self.qp_ext_vec = quadrature_ext["qp"]
+            self.qw_ext_vec = quadrature_ext["qw"]
+            self.qels_ext_vec = quadrature_ext["els"]
+            self.N_ext, self.N_xi_ext = quadrature_ext["N"]
+
+            zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
+            self.distributed_load = distributed_load
+            if self.distributed_load[0] is None:
+                self.distributed_load[0] = lambda t, xis: zeros_ext
+            if self.distributed_load[1] is None:
+                self.distributed_load[1] = lambda t, xis: zeros_ext
 
         # referential generalized position coordinates, initial generalized
         # position and velocity coordinates
@@ -200,18 +222,35 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             include_f_pot = False
 
         # compose h vector
+        # first collect contributions
+        h_functions = []
+        h_q_functions = []
+        h_u_functions = []
+        # gyroscopic forces
         if include_f_gyr:
-            if include_f_pot:
-                self.h = lambda t, q, u: self.f_gyr(u) + self.f_pot(q)
-                self.h_q = lambda t, q, u: self.f_pot_q(q)
-                self.h_u = lambda t, q, u: self.f_gyr_u(u)
-            else:
-                self.h = lambda t, q, u: self.f_gyr(u)
-                self.h_u = lambda t, q, u: self.f_gyr_u(u)
-        else:
-            if include_f_pot:
-                self.h = lambda t, q, u: self.f_pot(q)
-                self.h_q = lambda t, q, u: self.f_pot_q(q)
+            h_functions.append(self.f_gyr)
+            h_u_functions.append(self.f_gyr_u)
+
+        # displacement based potential forces
+        if include_f_pot:
+            h_functions.append(self.f_pot)
+            h_q_functions.append(self.f_pot_q)
+
+        # line distributed forces
+        if include_f_ext:
+            h_functions.append(self.f_ext)
+
+        # second add them up
+        if len(h_functions) > 0:
+            self.h = lambda t, q, u: np.sum([hi(t, q, u) for hi in h_functions], axis=0)
+        if len(h_q_functions) > 0:
+            self.h_q = lambda t, q, u: np.sum(
+                [hi_q(t, q, u) for hi_q in h_q_functions], axis=0
+            )
+        if len(h_u_functions) > 0:
+            self.h_u = lambda t, q, u: np.sum(
+                [hi_u(t, q, u) for hi_u in h_u_functions], axis=0
+            )
 
         # reference strains for weight of blocks
         self.set_reference_strains(Q)
@@ -305,6 +344,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
+
+        if hasattr(self, "N_ext"):
+            _, B_gamma_bar, _ = self._eval_internal_vec(
+                self.N_ext, self.N_xi_ext, self.Q
+            )
+            J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
+            self.weights_ext = J_ext_vec * self.qw_ext_vec
 
     ############################
     # export of centerline nodes
@@ -514,7 +560,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.__M = self.M_h_u_SAB.add_blocks(M_qp)
         return self.__M
 
-    def f_gyr(self, u):
+    def f_gyr(self, t, q, u):
         unodes = u.reshape(self.nnodes, -1)
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
@@ -529,7 +575,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
         return f_gyr.reshape(-1)
 
-    def f_gyr_u(self, u):
+    def f_gyr_u(self, t, q, u):
         unodes = u.reshape(self.nnodes, -1)
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
@@ -784,6 +830,19 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return point_dict["zero_3_nui"]
 
     #########################
+    # external virtual work #
+    # by distributed load   #
+    #########################
+    def f_ext(self, t, q, u):
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)
+
+        f_ext = np.empty((self.nnodes, 6))
+        f_ext[:, :3] = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
+        f_ext[:, 3:] = self.N_ext.T @ (B_c_qp * self.weights_ext[:, None])
+        return f_ext.reshape(-1)
+
+    #########################
     # internal virtual work #
     #########################
     def l_sigma(self, q):
@@ -930,7 +989,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         )
         return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
-    def f_pot(self, q):
+    def f_pot(self, t, q, u):
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
         sigma_db = self.material_model.sigma(epsilon, self.epsilon0_int)
@@ -940,7 +999,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         return self.h_pot(_eval, sigma_qp)
 
-    def f_pot_q(self, q):
+    def f_pot_q(self, t, q, u):
         _eval, _deval = self._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=True
         )
@@ -1118,6 +1177,7 @@ def make_BoostedCosseratRod(
     idx_displacement_based=None,
     quadrature_int=None,
     quadrature_dyn=None,
+    quadrature_ext=None,
     parametrization=None,
 ):
     # check if constraint indices are valid
@@ -1171,6 +1231,19 @@ def make_BoostedCosseratRod(
             "quadrature_dyn must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
         )
 
+    if quadrature_ext == None:
+        # TODO: take trapezoidal rule as default?
+        quadrature_ext = (polynomial_degree + 1, "Trapezoidal")
+        n_full = int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
+        quadrature_ext = (n_full, "Gauss")
+        print(f"quadrature_ext: {quadrature_ext}")
+    elif isinstance(quadrature_ext, int):
+        quadrature_ext = (quadrature_ext, "Gauss")
+    elif not isinstance(quadrature_ext, tuple):
+        raise ValueError(
+            "quadrature_ext must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
+        )
+
     # parametrization
     if parametrization is None:
         parametrization = "Quaternion"
@@ -1190,6 +1263,7 @@ def make_BoostedCosseratRod(
             Q,
             q0=None,
             u0=None,
+            distributed_load=[None, None],
             cross_section_inertias=CrossSectionInertias(),
             name="Cosserat_rod",
         ):
@@ -1222,6 +1296,9 @@ def make_BoostedCosseratRod(
                 centerline velocity v_P_i in R^3 together with the cross-section
                 angular velocity represented in the cross-section-fixed B-basis
                 B_omega_IB.
+            distributed_load : list (2,)
+                distributed_load[0] : I_b(t, xis) callable function for distributed force or None
+                distributed_load[1] : B_c(t, xis) callable function for distributed moment or None
             cross_section_inertias : CrossSectionInertias
                 Inertia properties of cross-sections: Cross-section mass density and
                 Cross-section inertia tensor represented in the cross-section-fixed
@@ -1242,10 +1319,12 @@ def make_BoostedCosseratRod(
                 cross_section_inertias,
                 idx_constraints,
                 idx_displacement_based,
+                distributed_load,
                 nelement,
                 polynomial_degree,
                 quadrature_int,
                 quadrature_dyn,
+                quadrature_ext,
                 Q,
                 q0,
                 u0,

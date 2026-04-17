@@ -59,6 +59,7 @@ def flexible_double_pendulum(Rod, show_plots, name):
     r_OP1 = r_OP0 + A_IB0 @ np.array([length, 0.0, 0.0])
 
     g = np.array([0.0, 0.0, -9.81 * A * rho])
+    b = lambda t, xis: g if isinstance(xis, (float, int)) else np.array([g] * len(xis))
 
     # compute straight initial configuration of cantilever
     q0s = [
@@ -74,18 +75,16 @@ def flexible_double_pendulum(Rod, show_plots, name):
             nelements,
             Q=q0i,
             q0=q0i,
+            distributed_load=[b, None],
             cross_section_inertias=cross_section_inertias,
             name=f"Rod{i}",
         )
         for i, q0i in enumerate(q0s)
     ]
 
-    #
-    gravities = [Force_line_distributed(g, rod) for rod in rods]
-
     # initialize system
     system = System()
-    system.add(*rods, *gravities)
+    system.add(*rods)
 
     joint0 = Revolute(rods[0], system.origin, 1, xi1=0.0)
     joint1 = Revolute(rods[1], rods[0], 1, xi1=0.0, xi2=1.0)
@@ -155,11 +154,13 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
 
 if __name__ == "__main__":
+    pDeg = 2
     flexible_double_pendulum(
-        make_BoostedCosseratRod(polynomial_degree=2), show_plots=True, name="boosted"
-    )
-    flexible_double_pendulum(
-        make_CosseratRod(interpolation="Quaternion", mixed=True, polynomial_degree=2),
+        make_BoostedCosseratRod(
+            polynomial_degree=pDeg,
+            quadrature_dyn=(pDeg + 1, "Trapezoidal"),
+            quadrature_ext=(pDeg + 1, "Trapezoidal"),
+        ),
         show_plots=True,
-        name="default",
+        name="boosted",
     )

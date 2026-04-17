@@ -38,6 +38,7 @@ class Force_line_distributed:
         self.qp, self.qw = mesh.quadrature_points(self.nquadrature)
 
         if isinstance(rod, CosseratRod_PetrovGalerkin):
+            raise NotImplementedError("add the distributed load to the rod directly!")
             self.h = self.h_new
 
             # TODO: think of a convenient way to get all the stuff

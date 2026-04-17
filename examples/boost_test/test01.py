@@ -43,9 +43,7 @@ def get_permutation(nnodes, nnodes_element, n_per_node):
 
 
 def test_implementation(n_test=1_000):
-    constitutive_law = Simo1986(
-        np.array([1.0, 2.0, 3.0]), np.array([40.0, 50.0, 60.0])
-    )
+    constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([40.0, 50.0, 60.0]))
     cross_section = CircularCrossSection(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
