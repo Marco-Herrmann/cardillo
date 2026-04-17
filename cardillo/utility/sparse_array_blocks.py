@@ -99,8 +99,8 @@ class SparseArrayBlocks:
                 self.weights_matrix[p, b, i] = N
 
         # prepare for bsr
-        self.block_cols = block_positions[order, 1]
-        counts = np.bincount(block_positions[order, 0], minlength=Na.shape[1])
+        self.block_cols = block_positions[:, 1]
+        counts = np.bincount(block_positions[:, 0], minlength=Na.shape[1])
         self.indptr = np.concatenate(([0], np.cumsum(counts)))
 
     def add_blocks(self, qp_contributions):

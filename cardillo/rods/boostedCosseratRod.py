@@ -1180,7 +1180,10 @@ def make_BoostedCosseratRod(
     quadrature_ext=None,
     parametrization=None,
 ):
-    # check if constraint indices are valid
+    # polynomila degree
+    polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
+
+    # constraints
     if idx_constraints is not None:
         idx_constraints = np.asarray(idx_constraints, dtype=int)
         if not ((idx_constraints >= 0).all() & (idx_constraints <= 5).all()):
@@ -1189,7 +1192,7 @@ def make_BoostedCosseratRod(
         idx_constraints = np.array([], dtype=int)
     idx_constraints = np.sort(idx_constraints)
 
-    # check if displacement based indices are valid
+    # displacement based
     if idx_displacement_based is not None:
         idx_displacement_based = np.asarray(idx_displacement_based, dtype=int)
         if not (
@@ -1205,8 +1208,6 @@ def make_BoostedCosseratRod(
     assert (
         inter_g_DB.size == 0
     ), f"the index {inter_g_DB} is both constrained and displacement based"
-
-    polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 
     # quadrature
     if quadrature_int == None:
