@@ -66,6 +66,7 @@ def bent_45(
 
     # create rod
     q0 = Rod.pose_configuration(nelements, r_OP0, A_IB0)
+    # q0 = Rod.straight_configuration(nelements, R * np.pi / 4)
     rod = Rod(cross_section, material_model, nelements, Q=q0)
     system.add(rod)
 
@@ -108,9 +109,9 @@ def bent_45(
 
     # read solution
     t = sol.t
-    q = sol.q
-    la_c = sol.la_c
-    la_g = sol.la_g
+    q_step = sol.q
+    la_c_step = sol.la_c
+    la_g_step = sol.la_g
 
     #################
     # post-processing
@@ -128,17 +129,17 @@ def bent_45(
         scale = R / 1.5
         fig_animate, ax, anim = animate_beam(
             t,
-            q,
+            q_step,
             [rod],
             scale=scale,
             scale_di=0.05 * R,
             show=False,
             n_frames=rod.nelement + 1,
-            repeat=True,
+            repeat=False,
         )
         # plot animation
-        ax.azim = 30 + 180
-        ax.elev = 25
+        # ax.azim = 30 + 180
+        # ax.elev = 25
 
         # move axes around
         ax.set_xlim3d(left=-0.5 * scale, right=1.5 * scale)
@@ -154,7 +155,7 @@ def bent_45(
         delta_tip = np.zeros((4, n_load_steps + 1), dtype=float)
         for i in range(n_load_steps + 1):
             delta_tip[0, i] = t[i] * tip_force
-            qe = q[i][rod.qDOF][qDOF_tip]
+            qe = q_step[i][rod.qDOF][qDOF_tip]
             delta_tip[1:, i] = rod.r_OP(t[i], qe, 1) - r_OP0_tip
 
         fig.suptitle(f"Tip displacement {name}")
@@ -183,8 +184,9 @@ def bent_45(
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
     if new_eval:
+        # TODO: can we not slice like sol[-1]?
         xis, B_n, B_m = rod.eval_stresses(
-            t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+            t[-1], q_step[-1], la_c_step[-1], la_g_step[-1], n_per_element=nxi_el
         )
         stresses = np.hstack([xis[:, None], B_n, B_m]).T
     else:
@@ -195,7 +197,7 @@ def bent_45(
                 idx = el * nxi_el + i
                 stresses[0, idx] = xi_el[i]
                 B_n, B_m = rod.eval_stresses(
-                    t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el
+                    t[-1], q_step[-1], la_c_step[-1], la_g_step[-1], xi_el[i], el
                 )
                 stresses[1:, idx] = *B_n, *B_m
 
@@ -210,6 +212,96 @@ def bent_45(
     ax2[0].set_ylabel(r"$_B n$")
     ax2[1].set_ylabel(r"$_B m$")
     ax2[1].set_xlabel(r"$\xi$")
+
+    #######################
+    # degree of asymmetry #
+    #######################
+    from scipy.sparse.linalg import norm as sparse_norm
+    from scipy.sparse import coo_array
+
+    for iStep in range(n_load_steps + 1):
+        t_step = sol.t[iStep]
+        q_step, la_g_step, la_c_step, la_N_step = (
+            sol.q[iStep],
+            sol.la_g[iStep],
+            sol.la_c[iStep],
+            sol.la_N[iStep],
+        )
+        x_step = np.concatenate([q_step, la_g_step, la_c_step, la_N_step])
+        # update W_g, W_c, ...
+        f_step = solver.fun(x_step, t_step)
+        # compute jacobian
+        J_step = solver.jac(x_step, t_step)
+
+        # method a: take whole iteration matrix at static equilibrium
+        frob_Ka = sparse_norm(J_step, "fro")
+        frob_Ka_a = sparse_norm(0.5 * (J_step - J_step.T), "fro")
+        da_a = frob_Ka_a / frob_Ka
+
+        # method b: eliminate constraints
+        nx = solver.x.shape[1]
+        qDOF_c = np.arange(0, solver.split_x[0])
+        la_gDOF_c = np.arange(solver.split_x[0], solver.split_x[1])
+        la_cDOF_c = np.arange(solver.split_x[1], solver.split_x[2])
+        la_NDOF_c = np.arange(solver.split_x[2], nx)
+        cDOF = np.concatenate([qDOF_c[7:], la_cDOF_c, la_NDOF_c])
+
+        uDOF_r = np.arange(0, solver.split_f[0])
+        la_gDOF_r = np.arange(solver.split_f[0], solver.split_f[1])
+        la_cDOF_r = np.arange(solver.split_f[1], solver.split_f[2])
+        la_SDOF_r = np.arange(solver.split_f[2], solver.split_f[3])
+        la_NDOF_r = np.arange(solver.split_f[3], nx)
+        rDOF = np.concatenate([uDOF_r[6:], la_cDOF_r, la_SDOF_r[1:], la_NDOF_r])
+
+        J_elim = J_step[rDOF[:, None], cDOF]
+        frob_Kb = sparse_norm(J_elim, "fro")
+        frob_Kb_a = sparse_norm(0.5 * (J_elim - J_elim.T), "fro")
+        db_a = frob_Kb_a / frob_Kb
+
+        # method c: only use h_q @ B
+        c_split = np.cumsum(np.array([rod.nu - 6, rod._nla_c, rod._nla_g], dtype=int))
+        B = system.q_dot_u(t_step, q_step)[7:, 6:]
+
+        hs_q = []
+        if hasattr(rod, "h_q"):
+            hs_q.append(rod.h_q(t_step, q_step[rod.qDOF], np.zeros(rod.nu)))
+        if hasattr(rod, "Wla_c_q"):
+            hs_q.append(rod.Wla_c_q(t_step, q_step[rod.qDOF], la_c_step[rod.la_cDOF]))
+        if hasattr(rod, "Wla_g_q"):
+            hs_q.append(rod.Wla_g_q(t_step, q_step[rod.qDOF], la_g_step[rod.la_gDOF]))
+
+        K = sum(hs_q).tocoo()[6:, 7:] @ B
+
+        # compose projected jacobian
+        J_c = coo_array((c_split[-1], c_split[-1]))
+        J_c[: c_split[0], : c_split[0]] = K
+
+        if rod._nla_c > 0:
+            J_c[: c_split[0], c_split[0] : c_split[1]] = rod.W_c(
+                t_step, q_step[rod.qDOF]
+            ).tocoo()[6:]
+            J_c[c_split[0] : c_split[1], : c_split[0]] = (
+                rod.c_q(
+                    t_step, q_step[rod.qDOF], np.zeros(rod.nu), la_c_step[rod.la_cDOF]
+                ).tocoo()[:, 7:]
+                @ B
+            )
+            J_c[c_split[0] : c_split[1], c_split[0] : c_split[1]] = rod.c_la_c()
+
+        if rod._nla_g > 0:
+            print("Not tested yet!")
+            J_c[: c_split[1], c_split[1] : c_split[2]] = rod.W_g(
+                t_step, q_step[rod.qDOF]
+            ).tocoo()[6:]
+            J_c[c_split[1] : c_split[2], : c_split[1]] = (
+                rod.g_q(t_step, q_step[rod.qDOF]).tocoo()[:, 7:] @ B
+            )
+
+        frob_Kc = sparse_norm(J_c, "fro")
+        frob_Kc_a = sparse_norm(0.5 * (J_c - J_c.T), "fro")
+        dc_a = frob_Kc_a / frob_Kc
+
+        print(f"step {iStep:>2}, da_a: {da_a:.5f}, db_a: {db_a:.5f}, db_c: {dc_a:.5f}")
 
     if save_stresses:
         path_stresses = Path(dir_name, "csv", f"slen_{slenderness:1.0e}", "stresses")
@@ -227,31 +319,19 @@ def bent_45(
 
 
 if __name__ == "__main__":
-    formulation = "old"
-    formulation = "boosted"
-
-    if formulation == "old":
-        Rod = make_CosseratRod(
-            interpolation="Quaternion",
-            mixed=False,
-            polynomial_degree=2,
-            reduced_integration=True,
-        )
-    elif formulation == "boosted":
-        Rod = make_BoostedCosseratRod(
-            polynomial_degree=2,
-            # idx_constraints=[0, 1, 2, 4],
-            idx_displacement_based=[0, 1, 2, 3, 4, 5],
-        )
+    Rod = make_BoostedCosseratRod(
+        polynomial_degree=2,
+        # idx_displacement_based=[0, 1, 2, 3, 4, 5],
+    )
 
     bent_45(
         Rod,
         Simo1986,
-        nelements=4,
+        nelements=10,
         slenderness=1e1,
         tolType="MX",
         n_load_steps=20,
         show_plots=True,
         name="bent 45",
-        new_eval=not (formulation == "old"),
+        new_eval=True,
     )
