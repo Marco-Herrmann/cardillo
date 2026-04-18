@@ -204,11 +204,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             self.W_g = lambda t, q: self.W_sigma(q)[1]
             self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
 
-            # TODO:
+            # TODO: without approx_fprime and without q_dot as this is inconsistent!
+            # we have to take the time derivative in the continous equations and then insert the interpolations!
             self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
             self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
-            self.g_dot_q = lambda t, q, u: ...
-            self.g_ddot = lambda t, q, u, u_dot: np.zeros(self.nla_g)
+            self.g_dot_q = lambda t, q, u: approx_fprime(
+                q, lambda q_: self.g_dot(t, q_, u)
+            )
+            self.g_ddot = lambda t, q, u, u_dot: self.g_dot_u(
+                t, q
+            ) @ u_dot + self.g_dot_q(t, q, u) @ self.q_dot(t, q, u)
 
         else:
             self._nla_g = 0
@@ -216,13 +221,13 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if len(self.idx_db) > 0:
             self._nDB = len(self.idx_db)
             include_f_pot = True
-            self.E_pot = self._E_pot
         else:
             self._nDB = 0
             include_f_pot = False
 
-        # compose h vector
+        # compose h vector and potential energy
         # first collect contributions
+        E_pot_functions = []
         h_functions = []
         h_q_functions = []
         h_u_functions = []
@@ -233,14 +238,20 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # displacement based potential forces
         if include_f_pot:
+            E_pot_functions.append(self.E_pot_int)
             h_functions.append(self.f_pot)
             h_q_functions.append(self.f_pot_q)
 
         # line distributed forces
         if include_f_ext:
+            E_pot_functions.append(self.E_pot_ext)
             h_functions.append(self.f_ext)
 
         # second add them up
+        if len(E_pot_functions) > 0:
+            self.E_pot = lambda t, q: np.sum(
+                [Ei(t, q) for Ei in E_pot_functions], axis=0
+            )
         if len(h_functions) > 0:
             self.h = lambda t, q, u: np.sum([hi(t, q, u) for hi in h_functions], axis=0)
         if len(h_q_functions) > 0:
@@ -475,7 +486,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
 
-    def _E_pot(self, t, q):
+    def E_pot_int(self, t, q):
         if self._nla_c > 0:
             warn("E_pot might not be correct if there are compliant deformations.")
         if self._nla_g > 0:
@@ -833,6 +844,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     # external virtual work #
     # by distributed load   #
     #########################
+    def E_pot_ext(self, t, q):
+        qnodes = q.reshape(self.nnodes, -1)
+        r_OC = self.N_ext @ qnodes[:, :3]
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
+
     def f_ext(self, t, q, u):
         b_qp = self.distributed_load[0](t, self.qp_ext_vec)
         B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)

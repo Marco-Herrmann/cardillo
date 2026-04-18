@@ -86,8 +86,8 @@ def flexible_double_pendulum(Rod, show_plots, name):
     system = System()
     system.add(*rods)
 
-    joint0 = Revolute(rods[0], system.origin, 1, xi1=0.0)
-    joint1 = Revolute(rods[1], rods[0], 1, xi1=0.0, xi2=1.0)
+    joint0 = Revolute(rods[0], system.origin, 1, xi1=0.0, name="rev_origin_rod0")
+    joint1 = Revolute(rods[1], rods[0], 1, xi1=0.0, xi2=1.0, name="rev_rod0_rod1")
     system.add(joint0, joint1)
 
     ###########
@@ -130,6 +130,17 @@ def flexible_double_pendulum(Rod, show_plots, name):
     prof.enable()
     sol = solver.solve()
     prof.disable()
+
+    E_pot = np.zeros(len(sol.t))
+    E_kin = np.zeros(len(sol.t))
+    for i in range(len(sol.t)):
+        E_pot[i] = system.E_pot(sol.t[i], sol.q[i])
+        E_kin[i] = system.E_kin(sol.t[i], sol.q[i], sol.u[i])
+
+    fig, ax = plt.subplots()
+    ax.plot(sol.t, E_pot)
+    ax.plot(sol.t, E_kin)
+    ax.plot(sol.t, E_kin + E_pot)
 
     # save solution
     path = Path(__file__)
