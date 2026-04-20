@@ -14,14 +14,20 @@ from warnings import warn
 from cardillo.math.algebra import norm, cross3, ax2skew
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.math.rotations import (
+    Log_SO3_quat,
     Exp_SO3_quat,
     Exp_SO3_quat_P,
-    Log_SO3_quat,
     T_SO3_quat,
     T_SO3_quat_P,
-    T_SO3_quat_Q_P,
     T_SO3_inv_quat,
     T_SO3_inv_quat_P,
+    Log_SO3_R9,
+    Exp_SO3_R9,
+    Exp_SO3_R9_R9,
+    T_SO3_R9,
+    T_SO3_R9_R9,
+    T_SO3_inv_R9,
+    T_SO3_inv_R9_R9,
 )
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
@@ -94,7 +100,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.nnodes_element = mesh_kin.nnodes_element
 
         # total number of generalized position and velocity coordinates
-        self.nq = self.nnodes * 7
+        self.nq = self.nnodes * self.nq_node
         self.nu = self.nnodes * 6
 
         self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 1)
@@ -144,13 +150,19 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.u0 = np.zeros(self.nu, dtype=float) if u0 is None else u0
 
         # unit quaternion constraints
-        dim_g_S = 1
+        dim_g_S = self.nq_node - 6
         self.nla_S = self.nnodes * dim_g_S
         self.la_S0 = np.zeros(self.nla_S, dtype=float)
+        if self.nq_node == 12:
+            warn("g_S rows and columns are completely wrong!")
         self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
         self._g_S_q_col = (
             (3 + 7 * np.arange(self.nnodes))[:, None] + np.arange(4)
         ).ravel()
+
+        # step callbacks
+        if self.nq_node == 7:
+            self.step_callback = self._step_callback
 
         ###############################
         # compliance and constrtaints #
@@ -294,7 +306,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         ]
         self.c_sigma_q_SAB = SparseArrayBlocks(
             (self.nla_sigma, self.nq),
-            (6, 7),
+            (6, self.nq_node),
             c_sigma_q_pairs,
             [(self.idx_c, ...), (self.idx_g, ...)],
         )
@@ -318,7 +330,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.N_xi_int, self.N_int, self.qw_int_vec),
             (self.N_xi_int, self.N_xi_int, self.qw_int_vec),
         ]
-        self.h_pot_q_SAB = SparseArrayBlocks((self.nu, self.nq), (6, 7), h_pot_q_pairs)
+        self.h_pot_q_SAB = SparseArrayBlocks(
+            (self.nu, self.nq), (6, self.nq_node), h_pot_q_pairs
+        )
 
     def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
@@ -416,44 +430,44 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     # kinematic equations
     #####################
     def q_dot(self, t, q, u):
-        qnodes = q.reshape(self.nnodes, 7)
+        qnodes = q.reshape(self.nnodes, self.nq_node)
         unodes = u.reshape(self.nnodes, 6)
 
-        qnodes_dot = np.empty((self.nnodes, 7), dtype=np.common_type(q, u))
+        qnodes_dot = np.empty((self.nnodes, self.nq_node), dtype=np.common_type(q, u))
         qnodes_dot[:, :3] = unodes[:, :3]
         qnodes_dot[:, 3:] = np.einsum(
-            "ijk,ik->ij", T_SO3_inv_quat(qnodes[:, 3:]), unodes[:, 3:]
+            "ijk,ik->ij", self._T_IB_inv(qnodes[:, 3:]), unodes[:, 3:]
         )
 
         return qnodes_dot.reshape(-1)
 
     def q_dot_q(self, t, q, u):
-        qnodes = q.reshape(self.nnodes, 7)
+        qnodes = q.reshape(self.nnodes, self.nq_node)
         unodes = u.reshape(self.nnodes, 6)
 
-        blocks = np.empty((self.nnodes, 7, 7))
+        blocks = np.empty((self.nnodes, self.nq_node, self.nq_node))
         blocks[:, :3] = 0.0
         blocks[:, 3:, :3] = 0.0
         blocks[:, 3:, 3:] = np.einsum(
             "ijkl,ik->ijl",
-            T_SO3_inv_quat_P(qnodes[:, 3:])[None, :, :, :],
+            self._T_IB_inv_P(qnodes[:, 3:])[None, :, :, :],
             unodes[:, 3:],
         )
 
         return csr_array(block_diag(blocks))
 
     def q_dot_u(self, t, q):
-        qnodes = q.reshape(self.nnodes, 7)
+        qnodes = q.reshape(self.nnodes, self.nq_node)
 
-        blocks = np.empty((self.nnodes, 7, 6))
+        blocks = np.empty((self.nnodes, self.nq_node, 6))
         blocks[:, :3, :3] = eye3
         blocks[:, :3, 3:] = 0.0
         blocks[:, 3:, :3] = 0.0
-        blocks[:, 3:, 3:] = T_SO3_inv_quat(qnodes[:, 3:])
+        blocks[:, 3:, 3:] = self._T_IB_inv(qnodes[:, 3:])
 
         return csr_array(block_diag(blocks))  # this keeps the 0's
 
-    def step_callback(self, t, q, u):
+    def _step_callback(self, t, q, u):
         """ "Quaternion normalization after each time step."""
         qnodes = q.reshape(self.nnodes, -1)
         qnodes[:, 3:] /= np.linalg.norm(qnodes[:, 3:], axis=1)[:, None]
@@ -637,10 +651,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if not (xi in self.interaction_points.keys()):
             if (node_number := self.node_number(xi)) is not False:
                 nnodes = 1
-                qDOF = np.arange(7) + 7 * node_number
+                qDOF = np.arange(self.nq_node) + self.nq_node * node_number
                 uDOF = np.arange(6) + 6 * node_number
 
-                Nq = np.eye(7)
+                Nq = np.eye(self.nq_node)
                 Nu = np.eye(6)
                 N = np.array([1.0])
             else:
@@ -648,9 +662,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 nnodes = self.nnodes_element
 
                 N = self.N_element(xi, el)
-                Nq = np.zeros((7, 7 * nnodes))
-                rows = np.arange(7)[:, None]
-                cols = rows + 7 * np.arange(nnodes)
+                Nq = np.zeros((self.nq_node, self.nq_node * nnodes))
+                rows = np.arange(self.nq_node)[:, None]
+                cols = rows + self.nq_node * np.arange(nnodes)
                 Nq[rows, cols] = N
 
                 Nu = np.zeros((6, 6 * nnodes))
@@ -672,9 +686,11 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 P_q=Nq[3:],
                 J_C=Nu[:3],
                 B_J_R=Nu[3:],
-                zero_3_nqi=np.zeros((3, 7 * nnodes), dtype=float),
+                zero_3_nqi=np.zeros((3, self.nq_node * nnodes), dtype=float),
                 zero_3_nui=np.zeros((3, 6 * nnodes), dtype=float),
-                zero_3_nui_nqi=np.zeros((3, 6 * nnodes, 7 * nnodes), dtype=float),
+                zero_3_nui_nqi=np.zeros(
+                    (3, 6 * nnodes, self.nq_node * nnodes), dtype=float
+                ),
             )
         return self.interaction_points[xi]
 
@@ -887,7 +903,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # TODO: make sparse?
         # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF]
-        c_sigma_q_qp = np.empty((2, self.nquadrature_int_total, 6, 7))
+        c_sigma_q_qp = np.empty((2, self.nquadrature_int_total, 6, self.nq_node))
         # to be multiplied with N_xi
         c_sigma_q_qp[1, :, :3, :3] = A_IB.transpose((0, 2, 1))
         c_sigma_q_qp[1, :, :3, 3:] = 0.0
@@ -987,7 +1003,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # TODO: make sparse?
         # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, 7))
+        Wla_sigma_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, self.nq_node))
         # to be multiplied with N_xi <-> N
         Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
 
@@ -1045,7 +1061,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
         # TODO: make sparse?
         # f_pot_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        f_pot_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, 7))
+        f_pot_qp_qbar = np.zeros((4, self.nquadrature_int_total, 6, self.nq_node))
         # to be multiplied with N_xi <-> N_xi
         f_pot_qp_qbar[3, :, :3, :3] = -A_IB @ B_n_gamma @ A_IB_transpose_to_J
         f_pot_qp_qbar[3, :, :3, 3:] = -A_IB @ B_n_kappa @ T_to_J
@@ -1266,10 +1282,29 @@ def make_BoostedCosseratRod(
     if parametrization is None:
         parametrization = "Quaternion"
 
-    # assert parametrization in ["Quaternion", "R12"], f"parametrization {parametrization} is not supported!"
     assert parametrization in [
-        "Quaternion"
+        "Quaternion",
+        "R12",
     ], f"parametrization {parametrization} is not supported!"
+
+    if parametrization == "Quaternion":
+        _Log_A_IB = Log_SO3_quat
+        _A_IB = Exp_SO3_quat
+        _A_IB_P = Exp_SO3_quat_P
+        _T_IB = T_SO3_quat
+        _T_IB_P = T_SO3_quat_P
+        _T_IB_inv = T_SO3_inv_quat
+        _T_IB_inv_P = T_SO3_inv_quat_P
+        nq_node = 7
+    elif parametrization == "R12":
+        _Log_A_IB = Log_SO3_R9
+        _A_IB = Exp_SO3_R9
+        _A_IB_P = Exp_SO3_R9_R9
+        _T_IB = T_SO3_R9
+        _T_IB_P = T_SO3_R9_R9
+        _T_IB_inv = T_SO3_inv_R9
+        _T_IB_inv_P = T_SO3_inv_R9_R9
+        nq_node = 12
 
     class BoostedCosseratRod_PetrovGalerkin(CosseratRod_PetrovGalerkin):
         def __init__(
@@ -1325,11 +1360,13 @@ def make_BoostedCosseratRod(
                 Name of contribution.
             """
             # functions for orientation
-            if parametrization == "Quaternion":
-                self._A_IB = Exp_SO3_quat
-                self._A_IB_P = Exp_SO3_quat_P
-                self._T_IB = T_SO3_quat
-                self._T_IB_P = T_SO3_quat_P
+            self._A_IB = _A_IB
+            self._A_IB_P = _A_IB_P
+            self._T_IB = _T_IB
+            self._T_IB_P = _T_IB_P
+            self._T_IB_inv = _T_IB_inv
+            self._T_IB_inv_P = _T_IB_inv_P
+            self.nq_node = nq_node
 
             super().__init__(
                 cross_section,
@@ -1359,15 +1396,13 @@ def make_BoostedCosseratRod(
             """Compute generalized position coordinates for straight configuration."""
             nnodes = polynomial_degree * nelement + 1
 
-            x0 = np.linspace(0, L, num=nnodes)
-            y0 = np.zeros(nnodes)
-            z0 = np.zeros(nnodes)
-            r_OP = np.vstack((x0, y0, z0))
-            p = Log_SO3_quat(A_IB0)
-            rP = np.zeros((nnodes, 7), dtype=float)
+            r_OP = np.zeros((3, nnodes))
+            r_OP[0] = np.linspace(0, L, num=nnodes)
+            P = _Log_A_IB(A_IB0)
+            rP = np.zeros((nnodes, nq_node), dtype=float)
             for i in range(nnodes):
                 rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
-                rP[i, 3:] = p
+                rP[i, 3:] = P
 
             return rP.reshape(-1)
 
@@ -1388,24 +1423,20 @@ def make_BoostedCosseratRod(
             xis = np.linspace(0, xi1, nnodes)
 
             # nodal positions and unit quaternions
-            r0 = np.zeros((nnodes, 3))
-            p0 = np.zeros((nnodes, 4))
-
+            rP = np.zeros((nnodes, nq_node))
             for i, xii in enumerate(xis):
-                r0[i] = r_OP0 + A_IB0 @ r_OP(xii)
+                rP[i, :3] = r_OP0 + A_IB0 @ r_OP(xii)
                 A_IBi = A_IB0 @ A_IB(xii)
-                p0[i] = Log_SO3_quat(A_IBi)
+                rP[i, 3:] = _Log_A_IB(A_IBi)
 
             # check for the right quaternion hemisphere
             for i in range(nnodes - 1):
-                inner = p0[i] @ p0[i + 1]
+                inner = rP[i, 3:] @ rP[i + 1, 3:]
                 if inner < 0:
-                    p0[i + 1] *= -1
+                    rP[i + 1, 3:] *= -1
 
-            return np.hstack([r0, p0]).reshape(-1)
+            return rP.reshape(-1)
 
         # TODO: also copy&paste the other configurations
-        # TODO: change order
-        # The order is the same!
 
     return BoostedCosseratRod_PetrovGalerkin

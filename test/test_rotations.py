@@ -20,6 +20,13 @@ from cardillo.math.rotations import (
     T_SO3_quat_P,
     T_SO3_inv_quat,
     T_SO3_inv_quat_P,
+    Exp_SO3_R9,
+    Exp_SO3_R9_R9,
+    Log_SO3_R9,
+    T_SO3_R9,
+    T_SO3_R9_R9,
+    T_SO3_inv_R9,
+    T_SO3_inv_R9_R9,
 )
 
 # arguments for Quaternions
@@ -56,7 +63,7 @@ cases_quat = np.array(list(product(arguments_quat, functions)), dtype=object)
 
 cases_quat = cases_quat[np.array([0, 1, 3, 4, 5])]
 
-cases_so3 = [
+cases_so3 = cases_R9 = [
     ({}, functions[0]),
 ]
 
@@ -69,6 +76,7 @@ q4_int = np.random.randint(1, 20, size=4)
 
 # transformation matrix to test Log_SO3
 A_test = Exp_SO3(q3)
+q9 = np.concatenate([A_test[:, 0], A_test[:, 1], A_test[:, 2]])
 
 ###############################
 # create parameters for tests #
@@ -95,6 +103,7 @@ test_parameters_Exp_SO3_q = [
     [Exp_SO3, Exp_SO3_psi, q3_int, cases_so3],
     [Exp_SO3_quat, Exp_SO3_quat_P, q4, cases_quat],
     [Exp_SO3_quat, Exp_SO3_quat_P, q4_int, cases_quat],
+    [Exp_SO3_R9, Exp_SO3_R9_R9, q9, cases_R9],
 ]
 
 # test tangent operator T_SO3
@@ -103,6 +112,7 @@ test_parameters_T_SO3 = [
     [Exp_SO3, Exp_SO3_psi, T_SO3, q3_int, cases_so3],
     [Exp_SO3_quat, Exp_SO3_quat_P, T_SO3_quat, q4, cases_quat],
     [Exp_SO3_quat, Exp_SO3_quat_P, T_SO3_quat, q4_int, cases_quat],
+    [Exp_SO3_R9, Exp_SO3_R9_R9, T_SO3_R9, q9, cases_R9],
 ]
 
 # test matrix inverse of tangent operator T_SO3_inv
@@ -111,6 +121,7 @@ test_parameters_T_SO3_inv = [
     [T_SO3, T_SO3_inv, q3_int, cases_so3],
     [T_SO3_quat, T_SO3_inv_quat, q4, cases_quat],
     [T_SO3_quat, T_SO3_inv_quat, q4_int, cases_quat],
+    [T_SO3_R9, T_SO3_inv_R9, q9, cases_R9],
 ]
 
 # test derivative of tangent operator T_SO3_q
@@ -119,6 +130,7 @@ test_parameters_T_SO3_q = [
     [T_SO3, T_SO3_psi, q3_int, cases_so3],
     [T_SO3_quat, T_SO3_quat_P, q4, cases_quat],
     [T_SO3_quat, T_SO3_quat_P, q4_int, cases_quat],
+    [T_SO3_R9, T_SO3_R9_R9, q9, cases_R9],
 ]
 
 # test derivative of matrix inverse of tangent operator T_SO3_inv_q
@@ -127,12 +139,14 @@ test_parameters_T_SO3_inv_q = [
     [T_SO3_inv, T_SO3_inv_psi, q3_int, cases_so3],
     [T_SO3_inv_quat, T_SO3_inv_quat_P, q4, cases_quat],
     [T_SO3_inv_quat, T_SO3_inv_quat_P, q4_int, cases_quat],
+    [T_SO3_inv_R9, T_SO3_inv_R9_R9, q9, cases_R9],
 ]
 
 # test inverse function of exponential function Log_SO3
 test_parameters_Log_SO3 = [
     [Exp_SO3, Log_SO3, q3, cases_so3],
     [Exp_SO3_quat, Log_SO3_quat, q3, cases_quat],
+    [Exp_SO3_R9, Log_SO3_R9, q3, cases_R9],
 ]
 
 # test derivative of inverse function of Exp_SO3 (only available for rotation vectors)
@@ -277,13 +291,15 @@ def test_Log_SO3(Exp_fct, Log_fct, psi, cases):
             # rotation vector should be equal
             # no complement needed, as 0 <= norm(psi) < 3 < pi (each random component is in [0, 1))
             e0 = np.linalg.norm(q - psi)
+        elif len(q) == 9:
+            e0 = q @ q - 3
         else:
             e0 = np.linalg.norm(q) - 1
 
         # assert same rotation vector or a unit quaternion
         assert np.isclose(
             e0, 0
-        ), f"Called f({case[1][2]}, {case[0]}), e: {e0:.5e}, psi: {psi}"
+        ), f"Called f({case[1][2]}, {case[0]}), e0: {e0:.5e}, psi: {psi}"
 
         # generate matrix with extracted coordinates
         A_ = wrapper(Exp_fct, case)(q)
@@ -292,7 +308,7 @@ def test_Log_SO3(Exp_fct, Log_fct, psi, cases):
         e1 = np.linalg.norm(A_ - A_test)
         assert np.isclose(
             e1, 0
-        ), f"Called f({case[1][2]}, {case[0]}), e: {e1:.5e}, q: {q}"
+        ), f"Called f({case[1][2]}, {case[0]}), e1: {e1:.5e}, q: {q}"
 
 
 @pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")

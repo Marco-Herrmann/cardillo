@@ -734,6 +734,103 @@ def T_SO3_inv_quat_P(P, normalize=True):
     return T_inv_P
 
 
+def Exp_SO3_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    A_IB = R9.reshape(-1, 3, 3, order="F")
+    return A_IB[0] if was_1d else A_IB
+
+
+def Exp_SO3_R9_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    A_IB_R9 = np.zeros((3, 3, 9), dtype=np.result_type(R9, 1.0))
+    A_IB_R9[:, 0, :3] = eye3
+    A_IB_R9[:, 1, 3:6] = eye3
+    A_IB_R9[:, 2, 6:] = eye3
+    return A_IB_R9 if was_1d else np.array([A_IB_R9] * R9.shape[0])
+
+
+def Log_SO3_R9(A_IB):
+    return A_IB.reshape(9, order="F")
+
+
+def T_SO3_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    T_IB = np.empty((R9.shape[0], 3, 9), dtype=np.result_type(R9, 1.0))
+    T_IB[:, 0, :3] = 0.0
+    T_IB[:, 0, 3:6] = 0.5 * R9[:, 6:]
+    T_IB[:, 0, 6:] = -0.5 * R9[:, 3:6]
+    T_IB[:, 1, :3] = -0.5 * R9[:, 6:]
+    T_IB[:, 1, 3:6] = 0.0
+    T_IB[:, 1, 6:] = 0.5 * R9[:, :3]
+    T_IB[:, 2, :3] = 0.5 * R9[:, 3:6]
+    T_IB[:, 2, 3:6] = -0.5 * R9[:, :3]
+    T_IB[:, 2, 6:] = 0.0
+    return T_IB[0] if was_1d else T_IB
+
+
+def T_SO3_R9_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    T_IB_R9 = np.zeros((3, 9, 9), dtype=np.result_type(R9, 1.0))
+    T_IB_R9[0, 3:6, 6:] = 0.5 * eye3
+    T_IB_R9[0, 6:, 3:6] = -0.5 * eye3
+    T_IB_R9[1, :3, 6:] = -0.5 * eye3
+    T_IB_R9[1, 6:, :3] = 0.5 * eye3
+    T_IB_R9[2, :3, 3:6] = 0.5 * eye3
+    T_IB_R9[2, 3:6, :3] = -0.5 * eye3
+    return T_IB_R9 if was_1d else np.array([T_IB_R9] * R9.shape[0])
+
+
+def T_SO3_inv_R9(R9):
+    # is this 4 * T_SO3_R9.T?
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    T_IB_inv = np.empty((R9.shape[0], 9, 3), dtype=np.result_type(R9, 1.0))
+    T_IB_inv[:, :3, 0] = 0.0
+    T_IB_inv[:, :3, 1] = -R9[:, 6:]
+    T_IB_inv[:, :3, 2] = R9[:, 3:6]
+
+    T_IB_inv[:, 3:6, 0] = R9[:, 6:]
+    T_IB_inv[:, 3:6, 1] = 0.0
+    T_IB_inv[:, 3:6, 2] = -R9[:, :3]
+
+    T_IB_inv[:, 6:, 0] = -R9[:, 3:6]
+    T_IB_inv[:, 6:, 1] = R9[:, :3]
+    T_IB_inv[:, 6:, 2] = 0.0
+    return T_IB_inv[0] if was_1d else T_IB_inv
+
+
+def T_SO3_inv_R9_R9(R9):
+    T_IB_inv_R9 = np.zeros((9, 3, 9), dtype=np.result_type(R9, 1.0))
+    T_IB_inv_R9[:3, 1, 6:] = -eye3
+    T_IB_inv_R9[:3, 2, 3:6] = eye3
+    T_IB_inv_R9[3:6, 0, 6:] = eye3
+    T_IB_inv_R9[3:6, 2, :3] = -eye3
+    T_IB_inv_R9[6:, 0, 3:6] = -eye3
+    T_IB_inv_R9[6:, 1, :3] = eye3
+    return T_IB_inv_R9
+    # TODO: shall we do this?`
+    return T_IB_inv_R9  # if was_1d else np.array([T_IB_inv_R9] * R9.shape[0])
+
+
 def quatprod(P_IB, Q_IB):
     """Quaternion product, see Egeland2002 (6.190).
 
