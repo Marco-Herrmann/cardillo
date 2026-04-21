@@ -4,7 +4,12 @@ from pathlib import Path
 
 from cardillo import System
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
-from cardillo.rods import RectangularCrossSection, CrossSectionInertias, Simo1986
+from cardillo.rods import (
+    RectangularCrossSection,
+    CrossSectionInertias,
+    Simo1986,
+    CircularCrossSection,
+)
 from cardillo.discrete import RigidBody, Frame
 from cardillo.constraints import RigidConnection, Prismatic
 from cardillo.forces import Force
@@ -22,6 +27,7 @@ from cardillo.solver import (
     DualStormerVerlet,
     BackwardEuler,
     SolverOptions,
+    Solution,
 )
 
 # sources:
@@ -151,6 +157,7 @@ def motion_stage():
         frame_upper = Frame(
             r_OP=r_OP,
             A_IB=A_IB,
+            name=f"frame_upper_{stat_dyn}",
         )
         constraint_upper = RigidConnection(
             cable,
@@ -220,7 +227,56 @@ def motion_stage():
 
     # vtk-export
     dir_name = Path(__file__).parent
-    system.export(dir_name, "vtk", sol_dyn, fps=25)
+    system.export(dir_name, "vtk_01", sol_dyn, fps=25)
+
+    # make nice visuals with multiple individual cables
+    ny = 10
+    nz = 2
+    r_cable = h / nz / 2
+    cross_section_vis = CircularCrossSection(radius=r_cable)
+    r_OP_vis = lambda t, q, xi, B_r_CP: cable.r_OP(
+        t, q[cable.qDOF[cable.local_qDOF_P(xi)]], xi=xi, B_r_CP=B_r_CP
+    )
+    A_IB_vis = lambda t, q, xi: cable.A_IB(
+        t, q[cable.qDOF[cable.local_qDOF_P(xi)]], xi=xi
+    )
+    system_mult = System()
+    q0s_mult = np.zeros((ny, nz, len(sol_dyn.t), cable.nq))
+    cables = np.zeros((ny, nz), dtype=object)
+    for iy in range(ny):
+        for iz in range(nz):
+            B_r_CP = (
+                np.array([0.0, iy - ny / 2 + 1 / 2, iz - nz / 2 + 1 / 2]) * r_cable * 2
+            )
+            for it in range(len(sol_dyn.t)):
+                q0 = Cable.pose_configuration(
+                    nelement,
+                    lambda xi: r_OP_vis(sol_dyn.t[it], sol_dyn.q[it], xi, B_r_CP),
+                    lambda xi: A_IB_vis(sol_dyn.t[it], sol_dyn.q[it], xi),
+                )
+                q0s_mult[iy, iz, it, :] = q0
+            cables[iy, iz] = Cable(
+                cross_section_vis,
+                material_model,
+                nelement,
+                Q=q0s_mult[iy, iz, 0, :],
+                name=f"cable_{iy:0>2d}_{iz:0>2d}",
+            )
+            system_mult.add(cables[iy, iz])
+
+    system_mult.assemble(options=assemble_options)
+    q_mult = np.zeros((len(sol_dyn.t), system_mult.nq))
+    for it in range(len(sol_dyn.t)):
+        for iy in range(ny):
+            for iz in range(nz):
+                q_mult[it, cables[iy, iz].qDOF] = q0s_mult[iy, iz, it, :]
+
+    sol_mult = Solution(
+        system_mult,
+        t=sol_dyn.t,
+        q=q_mult,
+    )
+    system_mult.export(dir_name, "vtk_01_multiple", sol_mult, fps=25)
 
 
 if __name__ == "__main__":
