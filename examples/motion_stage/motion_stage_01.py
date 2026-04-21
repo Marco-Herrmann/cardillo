@@ -210,7 +210,7 @@ def motion_stage():
 
     # prepare for dynamic simulation
     system.set_new_initial_state(
-        sol_stat.q[0], sol_stat.u[0], t0=0.0, options=assemble_options
+        sol_stat.q[-1], sol_stat.u[-1], t0=0.0, options=assemble_options
     )
     system.remove(*contr_stat_dyn[0])
     system.add(*contr_stat_dyn[1])
