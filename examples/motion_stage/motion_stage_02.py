@@ -37,36 +37,77 @@ from cardillo.solver import (
 # https://pure.tue.nl/admin/files/317778356/1722107-ThesisProjectReport.pdf
 
 
+def r_OP0_fun(xi, length, l_s, l_u, height):
+    if xi * length <= l_s:
+        return np.array([xi * length, 0.0, 0.0])
+    elif xi * length <= l_s + l_u:
+        alpha = (xi * length - l_s) / l_u
+        return np.array(
+            [
+                l_s + height / 2 * np.sin(np.pi * alpha),
+                0.0,
+                height / 2 * (1 - np.cos(np.pi * alpha)),
+            ]
+        )
+    else:
+        return np.array([l_s - (xi * length - l_u - l_s), 0.0, height])
+
+
+def A_IB0_fun(xi, length, l_s, l_u, height):
+    if xi * length <= l_s:
+        alpha = 0.0
+    elif xi * length <= l_s + l_u:
+        alpha = -(xi * length - l_s) / l_u * np.pi
+    else:
+        alpha = -np.pi
+    return A_IB_basic(alpha).y
+
+
 def motion_stage(l_x0, l_y0):
     assert -35.0 <= l_x0 <= 35.0, "Bounds for l_x0 (long stroke) are +- 35.0"
     assert -15.0 <= l_y0 <= 15.0, "Bounds for l_y0 (short stroke) are +- 20.0"
 
-    # geometry
-    length = 1.5
-    height = 0.3
-    h = 0.02
-    w = 0.1
+    # cable dimensions geometry
+    r_cable = 0.375 / 2
 
-    # material
-    E = 1.0 * 1e4
-    G = 0.5 * 1e4
+    # cable materialz
+    E = 1.0 * 1e7
+    G = 0.5 * 1e7
     density = 1.0
 
+    # geometry
+    r_OP1_lower = np.array([-42.0, 47.0, 24.3])
+    r_OP1_upper = np.array([-11.45, 47.0, 35.8])
+    r_OP2a_lower = np.array([42.0, -47.0, 24.3])
+    r_OP2a_upper = np.array([14.55, -47.0, 35.8])
+    r_OP2b_lower = np.array([17.05, -33.5, 30.3])
+    r_OP2b_upper = np.array([17.05, 12.0, 37.7])
+    length1 = 96.9
+    length2a = 100.0
+    length2b = 78.1
+
     # actuation
-    actuation_amplitude = 0.2
-    actuation_frequency = 2.0  # [1/s = Hz]
+    actuation_amplitude_long = 1e2
+    actuation_amplitude_short = 0.0
+    actuation_frequency_long = 2.0  # [1/s = Hz]
+    actuation_frequency_short = 2.0  # [1/s = Hz]
+
+    # masses of stages
+    mass_long = 1.0
+    mass_short = 1.0
 
     # discretization and model
     system = System()
-    nelement = 20
-    Cable = make_BoostedCosseratRod(
-        # idx_constraints=[0, 1, 2],
-    )
+    nelement1 = 20
+    nelement2a = 20
+    nelement2b = 20
+    Cable = make_BoostedCosseratRod()
 
     t1 = 1.0
     dt = 0.001
 
     # Rigid bodies for table, long stroke and short stroke
+    # TODO: spring-damper on table <--> system.origin do excite some dynamics
     table = RigidBody(
         mass=1.0,
         B_Theta_C=np.diag([1.0, 1.0, 1.0]),
@@ -74,22 +115,24 @@ def motion_stage(l_x0, l_y0):
         name="Table",
     )
 
+    # TODO: B_Theta_C
     long_stroke = RigidBody(
-        mass=1.0,
-        B_Theta_C=np.diag([1.0, 1.0, 1.0]),
+        mass=mass_long,
+        B_Theta_C=np.diag([1.0, 1.0, 1.0]) * mass_long,
         q0=RigidBody.pose2q(np.array([0.0, 0.0, 32.5]), np.eye(3)),
         name="long_stroke",
     )
 
+    # TODO: B_Theta_C
     short_stroke = RigidBody(
-        mass=1.0,
-        B_Theta_C=np.diag([1.0, 1.0, 1.0]),
+        mass=mass_short,
+        B_Theta_C=np.diag([1.0, 1.0, 1.0]) * mass_short,
         q0=RigidBody.pose2q(np.array([0.0, 0.0, 39.0]), np.eye(3)),
         name="short_stroke",
     )
 
     # cross section
-    cross_section = RectangularCrossSection(width=w, height=h)
+    cross_section = RectangularCrossSection(width=8*r_cable, height=2*r_cable)
     A = cross_section.area
     Ix, Iy, Iz = np.diag(cross_section.second_moment)
 
@@ -102,122 +145,215 @@ def motion_stage(l_x0, l_y0):
     cross_section_inertias = CrossSectionInertias(density, cross_section)
 
     b = lambda t, xi: np.array([0.0, 0.0, -9.81 * A * density])
-
+    
+    ########################
+    # Cable 1: Long stroke #
+    ########################
     # reference configuration
-    Q = Cable.straight_configuration(nelement, length)
+    Q1 = Cable.straight_configuration(nelement1, length2a)
 
     # initial configuration
-    l_u = np.pi * height / 2
-    l_s = (length - l_u) / 2
+    height1 = (r_OP2a_upper - r_OP2a_lower)[2]
+    l_u1 = np.pi * height1 / 2
+    l_s1 = np.abs((r_OP2a_upper - r_OP2a_lower)[0])
+    # TODO: is there an elegant way to get l_s?
+    d_x1 = (r_OP2a_upper - r_OP2a_lower)[0]
+    l_s1 = (length2a - l_u1 - d_x1) / 2
     print(
-        f"length on ground: {l_s}, length in semi-circle: {l_u},total length: {length}, height: {height}"
+        f"length on ground: {l_s1}, length in semi-circle: {l_u1},total length: {length2a}, height: {height1}"
+    )
+    q01 = Cable.pose_configuration(
+        nelement1,
+        lambda xi: r_OP0_fun(xi, length2a, l_s1, l_u1, height1),
+        lambda xi: A_IB0_fun(xi, length2a, l_s1, l_u1, height1),
+        r_OP0=r_OP2a_lower,
+        A_IB0=A_IB_basic(np.pi).z,
     )
 
-    def r_OP0(xi):
-        if xi * length <= l_s:
-            return np.array([xi * length, 0.0, 0.0])
-        elif xi * length <= l_s + l_u:
-            alpha = (xi * length - l_s) / l_u
-            return np.array(
-                [
-                    l_s + height / 2 * np.sin(np.pi * alpha),
-                    0.0,
-                    height / 2 * (1 - np.cos(np.pi * alpha)),
-                ]
-            )
-        elif xi * length <= l_s + l_u + l_s:
-            return np.array([(1 - xi) * length, 0.0, height])
-        else:
-            raise NotImplementedError
-
-    def A_IB0(xi):
-        if xi * length <= l_s:
-            alpha = 0.0
-        elif xi * length <= l_s + l_u:
-            alpha = -(xi * length - l_s) / l_u * np.pi
-        elif xi * length <= l_s + l_u + l_s:
-            alpha = -np.pi
-        return A_IB_basic(alpha).y
-
-    q0 = Cable.pose_configuration(nelement, r_OP0, A_IB0)
-
-    cable = Cable(
+    cable1 = Cable(
         cross_section=cross_section,
         material_model=material_model,
-        nelement=nelement,
+        nelement=nelement1,
         cross_section_inertias=cross_section_inertias,
-        Q=Q,
-        q0=q0,
+        Q=Q1,
+        q0=q01,
         distributed_load=[b, None],
-        name="cable",
+        name="cable1",
     )
 
-    # clamp to ground
-    constraint_lower = RigidConnection(
-        cable,
+    # clamp cable1
+    constraint1_lower = RigidConnection(
+        cable1,
         system.origin,
         xi1=0.0,
-        r_OJ0=system.origin.r_OP(0.0),
-        name="constraint0",
+        r_OJ0=r_OP2a_lower,
+        name="constraint1_lower",
+    )
+    constraint1_upper = RigidConnection(
+        cable1,
+        long_stroke,
+        xi1=1.0,
+        r_OJ0=r_OP2a_upper,
+        name="constraint1_upper",
     )
 
-    # prescribe stage movement
-    r_OP_stat = lambda t: np.array([l_x0 * t, 0.0, height])
-    omega = 2 * np.pi * actuation_frequency
-    r_OP_dyn = lambda t: r_OP_stat(1) + actuation_amplitude * np.sin(omega * t) * e1
-    contr_stat_dyn = [[], []]
-    r_OP_stat_dyn = [
-        r_OP_stat,
-        r_OP_dyn,
-    ]
-    A_IB_stat_dyn = [
-        A_IB_basic(-np.pi).y,
-        A_IB_basic(-np.pi).y,
-    ]
-
-    for i, (c, r_OP, A_IB) in enumerate(
-        zip(contr_stat_dyn, r_OP_stat_dyn, A_IB_stat_dyn)
-    ):
-        stat_dyn = "static" if i == 0 else "dynamic"
-        frame_upper = Frame(
-            r_OP=r_OP,
-            A_IB=A_IB,
-            name=f"frame_upper_{stat_dyn}",
-        )
-        constraint_upper = RigidConnection(
-            cable,
-            frame_upper,
-            xi1=1.0,
-            r_OJ0=frame_upper.r_OP(0.0),
-            name=f"constraint1_{stat_dyn}",
-        )
-        c.extend([frame_upper, constraint_upper])
-
     # contacts
-    for node in range(1, cable.nnodes - 1):
-        # connect to origin
+    frame_contact_lower = Frame(r_OP2a_lower, name="frame_contact_lower")
+    frame_contact_upper = Frame(
+        r_OP2a_upper, A_IB=A_IB_basic(np.pi).y, name="frame_contact_upper"
+    )
+    system.add(frame_contact_lower, frame_contact_upper)
+    for node in range(1, cable1.nnodes - 1):
         contact_lower = Sphere2Plane(
-            system.origin,
-            cable,
+            frame_contact_lower,
+            cable1,
             mu=0.0,
             r=0.0,
-            xi=node / (cable.nnodes - 1),
-            name=f"contact_node{node:0>2d}_lower",
+            xi=node / (cable1.nnodes - 1),
+            name=f"contact_cable1_node{node:0>2d}_lower",
         )
-        # system.add(contact_lower)
+        contact_upper = Sphere2Plane(
+            frame_contact_upper,
+            cable1,
+            mu=0.0,
+            r=0.0,
+            xi=node / (cable1.nnodes - 1),
+            name=f"contact_cable1_node{node:0>2d}_upper",
+        )
+        system.add(contact_lower, contact_upper)
 
-        # connect to stage (static and dynamic)
-        for i, c in enumerate(contr_stat_dyn):
-            stat_dyn = "static" if i == 0 else "dynamic"
-            contact_upper = Sphere2Plane(
-                c[0],
-                cable,
-                mu=0.0,
-                r=0.0,
-                xi=node / (cable.nnodes - 1),
-                name=f"contact_node{node:0>2d}_upper_{stat_dyn}",
-            )
-            c.append(contact_upper)
+    ###########################
+    # Cable 2: Long stroke    #
+    # a: table to long stroke #
+    # b: long to short stroke #
+    ###########################
+    # reference configuration
+    Q2a = Cable.straight_configuration(nelement2a, length1)
+
+    # initial configuration
+    height2a = (r_OP1_upper - r_OP1_lower)[2]
+    l_u2a = np.pi * height2a / 2
+    l_s2a = (length1 - l_u2a) / 2
+    d_x2a = (r_OP1_upper - r_OP1_lower)[0]
+    l_s2a = (length1 - l_u2a + d_x2a) / 2
+    print(
+        f"length on ground: {l_s2a}, length in semi-circle: {l_u2a},total length: {length1}, height: {height2a}"
+    )
+    q02a = Cable.pose_configuration(
+        nelement2a,
+        lambda xi: r_OP0_fun(xi, length1, l_s2a, l_u2a, height2a),
+        lambda xi: A_IB0_fun(xi, length1, l_s2a, l_u2a, height2a),
+        r_OP0=r_OP1_lower,
+    )
+
+    cable2a = Cable(
+        cross_section=cross_section,
+        material_model=material_model,
+        nelement=nelement2a,
+        cross_section_inertias=cross_section_inertias,
+        Q=Q2a,
+        q0=q02a,
+        distributed_load=[b, None],
+        name="cable2a",
+    )
+
+    # clamp cable2a
+    constraint2a_lower = RigidConnection(
+        cable2a,
+        system.origin,
+        xi1=0.0,
+        r_OJ0=r_OP1_lower,
+        name="constraint2a_lower",
+    )
+    constraint2a_upper = RigidConnection(
+        cable2a,
+        long_stroke,
+        xi1=1.0,
+        r_OJ0=r_OP1_upper,
+        name="constraint2a_upper",
+    )
+
+    # contacts
+    for node in range(1, cable2a.nnodes - 1):
+        contact_lower = Sphere2Plane(
+            frame_contact_lower,
+            cable2a,
+            mu=0.0,
+            r=0.0,
+            xi=node / (cable2a.nnodes - 1),
+            name=f"contact_cable2a_node{node:0>2d}_lower",
+        )
+        contact_upper = Sphere2Plane(
+            frame_contact_upper,
+            cable2a,
+            mu=0.0,
+            r=0.0,
+            xi=node / (cable2a.nnodes - 1),
+            name=f"contact_cable2a_node{node:0>2d}_upper",
+        )
+        system.add(contact_lower, contact_upper)
+
+    # reference configuration
+    Q2b = Cable.straight_configuration(nelement2b, length2b)
+
+    # initial configuration
+    height2b = (r_OP2b_upper - r_OP2b_lower)[2]
+    l_u2b = np.pi * height2b / 2
+    l_s2b = (length2b - l_u2b) / 2
+    d_x2b = (r_OP2b_upper - r_OP2b_lower)[1]
+    l_s2b = (length2b - l_u2b + d_x2b) / 2
+    print(
+        f"length on ground: {l_s2b}, length in semi-circle: {l_u2b},total length: {length2b}, height: {height2b}"
+    )
+    q02b = Cable.pose_configuration(
+        nelement2b,
+        lambda xi: r_OP0_fun(xi, length2b, l_s2b, l_u2b, height2b),
+        lambda xi: A_IB0_fun(xi, length2b, l_s2b, l_u2b, height2b),
+        r_OP0=r_OP2b_lower,
+        A_IB0=A_IB_basic(np.pi / 2).z,
+    )
+
+    cable2b = Cable(
+        cross_section=cross_section,
+        material_model=material_model,
+        nelement=nelement2b,
+        cross_section_inertias=cross_section_inertias,
+        Q=Q2b,
+        q0=q02b,
+        distributed_load=[b, None],
+        name="cable2b",
+    )
+
+    # clamp cable2b
+    constraint2b_lower = RigidConnection(
+        cable2b,
+        long_stroke,
+        xi1=0.0,
+        r_OJ0=r_OP2b_lower,
+        name="constraint2b_lower",
+    )
+    constraint2b_upper = RigidConnection(
+        cable2b,
+        short_stroke,
+        xi1=1.0,
+        r_OJ0=r_OP2b_upper,
+        name="constraint2b_upper",
+    )
+
+    # contacts
+    frame_contact_lower_2b = Frame(r_OP2b_lower, name="frame_contact_lower_2b")
+    system.add(frame_contact_lower_2b)
+    for node in range(1, cable2b.nnodes - 1):
+        contact_lower = Sphere2Plane(
+            frame_contact_lower_2b,
+            cable2b,
+            mu=0.0,
+            r=0.0,
+            xi=node / (cable2b.nnodes - 1),
+            name=f"contact_cable2b_node{node:0>2d}_lower",
+        )
+        # no upper contact
+        system.add(contact_lower)
 
     # constrain rigid bodies
     table_constraint = RigidConnection(system.origin, table, name="origin-table")
@@ -225,7 +361,7 @@ def motion_stage(l_x0, l_y0):
         lambda t: np.array([l_x0 * t, 0.0, 0.0]), name="frame_long_stat"
     )
     frame_short_stat = Frame(
-        lambda t: np.array([l_x0 * t, l_y0 * t, 0.0]), name="frame_long_stat"
+        lambda t: np.array([l_x0 * t, l_y0 * t, 0.0]), name="frame_short_stat"
     )
     long_stroke_constraint_stat = RigidConnection(
         long_stroke, frame_long_stat, name="long_stroke_stat"
@@ -240,18 +376,20 @@ def motion_stage(l_x0, l_y0):
         long_stroke, short_stroke, axis=1, name="long-stroke-short_stroke_dyn"
     )
 
-    force_long = (
-        lambda t: e1
-        * (long_stroke.mass + short_stroke.mass)
-        * 1e2
-        * np.cos(omega * t)
-        * 0.0
+    force_long_ampl = (
+        e1 * (long_stroke.mass + short_stroke.mass) * actuation_amplitude_long
+    )
+    force_long = lambda t: force_long_ampl * np.cos(
+        2 * np.pi * actuation_frequency_long * t
     )
     forcing_long = [
         Force(force_long, long_stroke, name="forcing_long+"),
         Force(lambda t: -force_long(t), table, name="forcing_long-"),
     ]
-    force_short = lambda t: e2 * short_stroke.mass * 1e3 * np.cos(2 * omega * t) * 0.0
+    force_short_ampl = e2 * short_stroke.mass * actuation_amplitude_short
+    force_short = lambda t: force_short_ampl * np.cos(
+        2 * np.pi * actuation_frequency_short * t
+    )
     forcing_short = [
         Force(force_short, short_stroke, name="forcing_short+"),
         Force(lambda t: -force_short(t), long_stroke, name="forcing_short-"),
@@ -266,17 +404,23 @@ def motion_stage(l_x0, l_y0):
         frame_long_stat,
         frame_short_stat,
     )
-    # system.add(cable)
-    # system.add(constraint_lower)
-    # system.add(*contr_stat_dyn[0])
+    system.add(cable1, constraint1_lower, constraint1_upper)
+    system.add(cable2a, constraint2a_lower, constraint2a_upper)
+    system.add(cable2b, constraint2b_lower, constraint2b_upper)
     system.assemble(options=assemble_options)
 
     # static solver
     solver_stat = Newton(system, 10)
     sol_stat = solver_stat.solve()
 
-    # # visualize static result
-    # animate_beam(sol_stat.t, sol_stat.q, [cable], scale=1.0, scale_di=0.1)
+    # visualize static result
+    animate_beam(
+        sol_stat.t,
+        sol_stat.q,
+        [cable1, cable2a, cable2b],
+        scale=length2a,
+        scale_di=length2a / 10,
+    )
 
     # prepare for dynamic simulation
     system.set_new_initial_state(
@@ -290,8 +434,6 @@ def motion_stage(l_x0, l_y0):
     )
     system.add(long_stroke_constraint_dyn, short_stroke_constraint_dyn)
     system.add(*forcing_long, *forcing_short)
-    # system.remove(*contr_stat_dyn[0])
-    # system.add(*contr_stat_dyn[1])
     system.assemble(options=assemble_options)
 
     # dynamic solver
@@ -311,10 +453,10 @@ def motion_stage(l_x0, l_y0):
     )
 
     fig, ax = plt.subplots(2, 2)
-    ax[0, 0].plot(sol_dyn.t, x_long)
-    ax[1, 0].plot(sol_dyn.t, y_short)
-    ax[0, 1].plot(sol_dyn.t, [force_long(ti)[0] for ti in sol_dyn.t])
-    ax[1, 1].plot(sol_dyn.t, [force_short(ti)[1] for ti in sol_dyn.t])
+    ax[0, 1].plot(sol_dyn.t, x_long)
+    ax[0, 0].plot(sol_dyn.t, [force_long(ti)[0] for ti in sol_dyn.t])
+    ax[1, 1].plot(sol_dyn.t, y_short)
+    ax[1, 0].plot(sol_dyn.t, [force_short(ti)[1] for ti in sol_dyn.t])
     plt.show()
 
     # vtk-export
@@ -325,7 +467,6 @@ def motion_stage(l_x0, l_y0):
     if False:
         ny = 10
         nz = 2
-        r_cable = h / nz / 2
         cross_section_vis = CircularCrossSection(radius=r_cable)
         r_OP_vis = lambda t, q, xi, B_r_CP: cable.r_OP(
             t, q[cable.qDOF[cable.local_qDOF_P(xi)]], xi=xi, B_r_CP=B_r_CP
@@ -376,4 +517,5 @@ def motion_stage(l_x0, l_y0):
 
 if __name__ == "__main__":
     # -35 <= l_x <= 35, -15 <= l_y <= 15
+    # motion_stage(0.0, 0.0)
     motion_stage(-30.0, -15.0)
