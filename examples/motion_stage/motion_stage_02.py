@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 
 from cardillo import System
+from cardillo.actuators.constraint import ActuatedConstraint
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.rods import (
     RectangularCrossSection,
@@ -70,9 +71,9 @@ def motion_stage(l_x0, l_y0):
     # cable dimensions geometry
     r_cable = 0.375 / 2
 
-    # cable materialz
-    E = 1.0 * 1e7
-    G = 0.5 * 1e7
+    # cable material
+    E = 5.0 * 1e7
+    G = 2.5 * 1e7
     density = 1.0
 
     # geometry
@@ -87,8 +88,8 @@ def motion_stage(l_x0, l_y0):
     length2b = 78.1
 
     # actuation
-    actuation_amplitude_long = 1e2
-    actuation_amplitude_short = 0.0
+    actuation_amplitude_long = 5.0
+    actuation_amplitude_short = 2.0
     actuation_frequency_long = 2.0  # [1/s = Hz]
     actuation_frequency_short = 2.0  # [1/s = Hz]
 
@@ -129,6 +130,33 @@ def motion_stage(l_x0, l_y0):
         B_Theta_C=np.diag([1.0, 1.0, 1.0]) * mass_short,
         q0=RigidBody.pose2q(np.array([0.0, 0.0, 39.0]), np.eye(3)),
         name="short_stroke",
+    )
+
+    # constrain rigid bodies
+    table_constraint = RigidConnection(system.origin, table, name="origin-table")
+    long_stroke_constraint = Prismatic(
+        table, long_stroke, axis=0, name="table-long_stroke_dyn"
+    )
+    short_stroke_constraint = Prismatic(
+        long_stroke, short_stroke, axis=1, name="long-stroke-short_stroke_dyn"
+    )
+
+    actuation_long_stat = lambda t: l_x0 * t
+    actuation_long_dyn = lambda t: actuation_amplitude_long * np.sin(
+        2 * np.pi * actuation_frequency_long * t
+    )
+
+    actuation_short_stat = lambda t: l_y0 * t
+    actuation_short_dyn = lambda t: actuation_amplitude_short * np.sin(
+        2 * np.pi * actuation_frequency_short * t
+    )
+    actuation_long_stroke = ActuatedConstraint(
+        long_stroke_constraint,
+        actuation_long_stat,
+    )
+    actuation_short_stroke = ActuatedConstraint(
+        short_stroke_constraint,
+        actuation_short_stat,
     )
 
     # cross section
@@ -274,54 +302,15 @@ def motion_stage(l_x0, l_y0):
                 )
                 system.add(contact_upper)
 
-    # constrain rigid bodies
-    table_constraint = RigidConnection(system.origin, table, name="origin-table")
-    frame_long_stat = Frame(
-        lambda t: np.array([l_x0 * t, 0.0, 0.0]), name="frame_long_stat"
-    )
-    frame_short_stat = Frame(
-        lambda t: np.array([l_x0 * t, l_y0 * t, 0.0]), name="frame_short_stat"
-    )
-    long_stroke_constraint_stat = RigidConnection(
-        long_stroke, frame_long_stat, name="long_stroke_stat"
-    )
-    short_stroke_constraint_stat = RigidConnection(
-        short_stroke, frame_short_stat, name="short_stroke_stat"
-    )
-    long_stroke_constraint_dyn = Prismatic(
-        table, long_stroke, axis=0, name="table-long_stroke_dyn"
-    )
-    short_stroke_constraint_dyn = Prismatic(
-        long_stroke, short_stroke, axis=1, name="long-stroke-short_stroke_dyn"
-    )
-
-    force_long_ampl = (
-        e1 * (long_stroke.mass + short_stroke.mass) * actuation_amplitude_long
-    )
-    force_long = lambda t: force_long_ampl * np.cos(
-        2 * np.pi * actuation_frequency_long * t
-    )
-    forcing_long = [
-        Force(force_long, long_stroke, name="forcing_long+"),
-        Force(lambda t: -force_long(t), table, name="forcing_long-"),
-    ]
-    force_short_ampl = e2 * short_stroke.mass * actuation_amplitude_short
-    force_short = lambda t: force_short_ampl * np.cos(
-        2 * np.pi * actuation_frequency_short * t
-    )
-    forcing_short = [
-        Force(force_short, short_stroke, name="forcing_short+"),
-        Force(lambda t: -force_short(t), long_stroke, name="forcing_short-"),
-    ]
-
     # assemble system
     assemble_options = SolverOptions(compute_consistent_initial_conditions=False)
-    system.add(table, long_stroke, short_stroke, table_constraint)
+    system.add(table, long_stroke, short_stroke)
     system.add(
-        long_stroke_constraint_stat,
-        short_stroke_constraint_stat,
-        frame_long_stat,
-        frame_short_stat,
+        table_constraint,
+        long_stroke_constraint,
+        short_stroke_constraint,
+        actuation_long_stroke,
+        actuation_short_stroke,
     )
     system.assemble(options=assemble_options)
 
@@ -330,27 +319,25 @@ def motion_stage(l_x0, l_y0):
     sol_stat = solver_stat.solve()
 
     # visualize static result
-    animate_beam(
-        sol_stat.t,
-        sol_stat.q,
-        cables,
-        scale=length2a,
-        scale_di=length2a / 10,
-    )
+    if len(cables) > 0:
+        animate_beam(
+            sol_stat.t,
+            sol_stat.q,
+            cables,
+            scale=length2a,
+            scale_di=length2a / 10,
+        )
 
     # prepare for dynamic simulation
     system.set_new_initial_state(
         sol_stat.q[-1], sol_stat.u[-1], t0=0.0, options=assemble_options
     )
-    system.remove(
-        long_stroke_constraint_stat,
-        short_stroke_constraint_stat,
-        frame_long_stat,
-        frame_short_stat,
-    )
-    system.add(long_stroke_constraint_dyn, short_stroke_constraint_dyn)
-    system.add(*forcing_long, *forcing_short)
-    system.assemble(options=assemble_options)
+
+    actuation_long_stroke.update_actuation(actuation_long_dyn)
+    actuation_short_stroke.update_actuation(actuation_short_dyn)
+
+    # assemble here, when components are removed/added
+    # system.assemble(options=assemble_options)
 
     # dynamic solver
     solver_dyn = BackwardEuler(system, t1=t1, dt=dt)
@@ -361,18 +348,31 @@ def motion_stage(l_x0, l_y0):
     # visualize dynamic result
     # animate_beam(sol_dyn.t, sol_dyn.q, [cable], scale=1.0, scale_di=0.1)
 
-    x_long = np.array(
-        [sol_dyn.q[i, long_stroke.qDOF[0]] for i in range(len(sol_dyn.t))]
+    x_long = (
+        np.array([sol_dyn.q[i, long_stroke.qDOF[0]] for i in range(len(sol_dyn.t))])
+        - l_x0
     )
-    y_short = np.array(
-        [sol_dyn.q[i, short_stroke.qDOF[1]] for i in range(len(sol_dyn.t))]
+    y_short = (
+        np.array([sol_dyn.q[i, short_stroke.qDOF[1]] for i in range(len(sol_dyn.t))])
+        - l_y0
     )
 
-    fig, ax = plt.subplots(2, 2)
-    ax[0, 1].plot(sol_dyn.t, x_long)
-    ax[0, 0].plot(sol_dyn.t, [force_long(ti)[0] for ti in sol_dyn.t])
+    fig, ax = plt.subplots(3, 2)
+    ax[0, 0].plot(sol_dyn.t, [actuation_long_stroke.tau(ti) for ti in sol_dyn.t])
+    ax[0, 1].plot(sol_dyn.t, [actuation_short_stroke.tau(ti) for ti in sol_dyn.t])
+    ax[1, 0].plot(sol_dyn.t, x_long)
     ax[1, 1].plot(sol_dyn.t, y_short)
-    ax[1, 0].plot(sol_dyn.t, [force_short(ti)[1] for ti in sol_dyn.t])
+    ax[2, 0].plot(
+        sol_dyn.t, [la_g[actuation_long_stroke.la_gDOF] for la_g in sol_dyn.P_g]
+    )
+    ax[2, 1].plot(
+        sol_dyn.t, [la_g[actuation_short_stroke.la_gDOF] for la_g in sol_dyn.P_g]
+    )
+    ax[0, 0].set_title("Long stroke")
+    ax[0, 1].set_title("Short stroke")
+    ax[0, 0].set_ylabel("Actuation")
+    ax[1, 0].set_ylabel("Position")
+    ax[2, 0].set_ylabel("Force")
     plt.show()
 
     # vtk-export
