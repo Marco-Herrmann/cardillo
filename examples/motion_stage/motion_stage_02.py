@@ -155,207 +155,124 @@ def motion_stage(l_x0, l_y0):
     frame_contact_lower_2b = Frame(r_OP2b_lower, name="frame_contact_lower_2b")
     system.add(frame_contact_lower, frame_contact_upper, frame_contact_lower_2b)
 
-    ########################
-    # Cable 1: Long stroke #
-    ########################
-    # reference configuration
-    Q1 = Cable.straight_configuration(nelement1, length1)
+    properties = [
+        # Cable 1: Long stroke
+        dict(
+            name="cable1",
+            nelement=nelement1,
+            length=length1,
+            r_OP_lower=r_OP1_lower,
+            r_OP_upper=r_OP1_upper,
+            body_lower=table,
+            body_upper=long_stroke,
+            frame_contact_lower=frame_contact_lower,
+            frame_contact_upper=frame_contact_upper,
+        ),
+        # Cable 2a: shirt stroke cable: Table to long stroke
+        dict(
+            name="cable2a",
+            nelement=nelement2a,
+            length=length2a,
+            r_OP_lower=r_OP2a_lower,
+            r_OP_upper=r_OP2a_upper,
+            body_lower=table,
+            body_upper=long_stroke,
+            frame_contact_lower=frame_contact_lower,
+            frame_contact_upper=frame_contact_upper,
+        ),
+        # Cable 2b: shirt stroke cable: long stroke to short stroke
+        dict(
+            name="cable2b",
+            nelement=nelement2b,
+            length=length2b,
+            r_OP_lower=r_OP2b_lower,
+            r_OP_upper=r_OP2b_upper,
+            body_lower=long_stroke,
+            body_upper=short_stroke,
+            frame_contact_lower=frame_contact_lower_2b,
+            frame_contact_upper=None,
+        ),
+    ]
 
-    # initial configuration
-    height1 = (r_OP1_upper - r_OP1_lower)[2]
-    l_u1 = np.pi * height1 / 2
-    # TODO: is there an elegant way to get l_s?
-    l_s1 = (length1 - l_u1) / 2
-    d_x1 = (r_OP1_upper - r_OP1_lower)[0]
-    l_s1 = (length1 - l_u1 + d_x1) / 2
-    print(
-        f"length on ground: {l_s1}, length in semi-circle: {l_u1},total length: {length1}, height: {height1}"
-    )
-    q01 = Cable.pose_configuration(
-        nelement1,
-        lambda xi: r_OP0_fun(xi, length1, l_s1, l_u1, height1),
-        lambda xi: A_IB0_fun(xi, length1, l_s1, l_u1, height1),
-        r_OP0=r_OP1_lower,
-    )
+    ######################
+    # Cables in the loop #
+    ######################
+    cables = []
+    for cable_properties in properties:
+        nelement = cable_properties["nelement"]
+        length = cable_properties["length"]
+        r_OP_lower = cable_properties["r_OP_lower"]
+        r_OP_upper = cable_properties["r_OP_upper"]
 
-    cable1 = Cable(
-        cross_section=cross_section,
-        material_model=material_model,
-        nelement=nelement1,
-        cross_section_inertias=cross_section_inertias,
-        Q=Q1,
-        q0=q01,
-        distributed_load=[b, None],
-        name="cable1",
-    )
+        # reference configuration
+        Q = Cable.straight_configuration(nelement, length)
 
-    # clamp cable
-    constraint1_lower = RigidConnection(
-        cable1,
-        system.origin,
-        xi1=0.0,
-        r_OJ0=r_OP1_lower,
-        name="constraint1_lower",
-    )
-    constraint1_upper = RigidConnection(
-        cable1,
-        long_stroke,
-        xi1=1.0,
-        r_OJ0=r_OP1_upper,
-        name="constraint1_upper",
-    )
-
-    # contacts
-    for node in range(1, cable1.nnodes - 1):
-        contact_lower = Sphere2Plane(
-            frame_contact_lower,
-            cable1,
-            mu=0.0,
-            r=0.0,
-            xi=node / (cable1.nnodes - 1),
-            name=f"contact_cable1_node{node:0>2d}_lower",
+        # initial configuration
+        d_x, d_y, d_z = r_OP_upper - r_OP_lower
+        l_u = np.pi * d_z / 2
+        l_s = (
+            length - l_u + np.sqrt(d_x**2 + d_y**2)
+        ) / 2  # TODO: check +-, maybe use flag
+        print(
+            f"length on ground: {l_s}, length in semi-circle: {l_u}, total length: {length}, height: {d_z}"
         )
-        contact_upper = Sphere2Plane(
-            frame_contact_upper,
-            cable1,
-            mu=0.0,
-            r=0.0,
-            xi=node / (cable1.nnodes - 1),
-            name=f"contact_cable1_node{node:0>2d}_upper",
+        q0 = Cable.pose_configuration(
+            nelement,
+            lambda xi: r_OP0_fun(xi, length, l_s, l_u, d_z),
+            lambda xi: A_IB0_fun(xi, length, l_s, l_u, d_z),
+            r_OP0=r_OP_lower,
+            A_IB0=A_IB_basic(np.atan2(d_y, d_x)).z,
         )
-        system.add(contact_lower, contact_upper)
-
-    ###########################
-    # Cable 2: Long stroke    #
-    # a: table to long stroke #
-    # b: long to short stroke #
-    ###########################
-    # reference configuration
-    Q2a = Cable.straight_configuration(nelement2a, length2a)
-
-    # initial configuration
-    height2a = (r_OP2a_upper - r_OP2a_lower)[2]
-    l_u2a = np.pi * height2a / 2
-    l_s2a = np.abs((r_OP2a_upper - r_OP2a_lower)[0])
-    d_x2a = (r_OP2a_upper - r_OP2a_lower)[0]
-    l_s2a = (length2a - l_u2a - d_x2a) / 2
-    print(
-        f"length on ground: {l_s2a}, length in semi-circle: {l_u2a},total length: {length2a}, height: {height2a}"
-    )
-    q02a = Cable.pose_configuration(
-        nelement2a,
-        lambda xi: r_OP0_fun(xi, length2a, l_s2a, l_u2a, height2a),
-        lambda xi: A_IB0_fun(xi, length2a, l_s2a, l_u2a, height2a),
-        r_OP0=r_OP2a_lower,
-        A_IB0=A_IB_basic(np.pi).z,
-    )
-
-    cable2a = Cable(
-        cross_section=cross_section,
-        material_model=material_model,
-        nelement=nelement2a,
-        cross_section_inertias=cross_section_inertias,
-        Q=Q2a,
-        q0=q02a,
-        distributed_load=[b, None],
-        name="cable2a",
-    )
-
-    # clamp cable
-    constraint2a_lower = RigidConnection(
-        cable2a,
-        system.origin,
-        xi1=0.0,
-        r_OJ0=r_OP2a_lower,
-        name="constraint2a_lower",
-    )
-    constraint2a_upper = RigidConnection(
-        cable2a,
-        long_stroke,
-        xi1=1.0,
-        r_OJ0=r_OP2a_upper,
-        name="constraint2a_upper",
-    )
-
-    # contacts
-    for node in range(1, cable2a.nnodes - 1):
-        contact_lower = Sphere2Plane(
-            frame_contact_lower,
-            cable2a,
-            mu=0.0,
-            r=0.0,
-            xi=node / (cable2a.nnodes - 1),
-            name=f"contact_cable2a_node{node:0>2d}_lower",
+        cable = Cable(
+            cross_section=cross_section,
+            material_model=material_model,
+            nelement=nelement,
+            cross_section_inertias=cross_section_inertias,
+            Q=Q,
+            q0=q0,
+            distributed_load=[b, None],
+            name=cable_properties["name"],
         )
-        contact_upper = Sphere2Plane(
-            frame_contact_upper,
-            cable2a,
-            mu=0.0,
-            r=0.0,
-            xi=node / (cable2a.nnodes - 1),
-            name=f"contact_cable2a_node{node:0>2d}_upper",
+
+        # clamp cable
+        constraint_lower = RigidConnection(
+            cable,
+            cable_properties["body_lower"],
+            xi1=0.0,
+            r_OJ0=r_OP_lower,
+            name=f"constraint_lower_{cable.name}",
         )
-        system.add(contact_lower, contact_upper)
-
-    # reference configuration
-    Q2b = Cable.straight_configuration(nelement2b, length2b)
-
-    # initial configuration
-    height2b = (r_OP2b_upper - r_OP2b_lower)[2]
-    l_u2b = np.pi * height2b / 2
-    l_s2b = (length2b - l_u2b) / 2
-    d_x2b = (r_OP2b_upper - r_OP2b_lower)[1]
-    l_s2b = (length2b - l_u2b + d_x2b) / 2
-    print(
-        f"length on ground: {l_s2b}, length in semi-circle: {l_u2b},total length: {length2b}, height: {height2b}"
-    )
-    q02b = Cable.pose_configuration(
-        nelement2b,
-        lambda xi: r_OP0_fun(xi, length2b, l_s2b, l_u2b, height2b),
-        lambda xi: A_IB0_fun(xi, length2b, l_s2b, l_u2b, height2b),
-        r_OP0=r_OP2b_lower,
-        A_IB0=A_IB_basic(np.pi / 2).z,
-    )
-
-    cable2b = Cable(
-        cross_section=cross_section,
-        material_model=material_model,
-        nelement=nelement2b,
-        cross_section_inertias=cross_section_inertias,
-        Q=Q2b,
-        q0=q02b,
-        distributed_load=[b, None],
-        name="cable2b",
-    )
-
-    # clamp cable
-    constraint2b_lower = RigidConnection(
-        cable2b,
-        long_stroke,
-        xi1=0.0,
-        r_OJ0=r_OP2b_lower,
-        name="constraint2b_lower",
-    )
-    constraint2b_upper = RigidConnection(
-        cable2b,
-        short_stroke,
-        xi1=1.0,
-        r_OJ0=r_OP2b_upper,
-        name="constraint2b_upper",
-    )
-
-    # contacts
-    for node in range(1, cable2b.nnodes - 1):
-        contact_lower = Sphere2Plane(
-            frame_contact_lower_2b,
-            cable2b,
-            mu=0.0,
-            r=0.0,
-            xi=node / (cable2b.nnodes - 1),
-            name=f"contact_cable2b_node{node:0>2d}_lower",
+        constraint_upper = RigidConnection(
+            cable,
+            cable_properties["body_upper"],
+            xi1=1.0,
+            r_OJ0=r_OP_upper,
+            name=f"constraint_upper_{cable.name}",
         )
-        # no upper contact
-        system.add(contact_lower)
+        cables.append(cable)
+        system.add(cable, constraint_lower, constraint_upper)
+
+        # contacts
+        for node in range(1, cable.nnodes - 1):
+            contact_lower = Sphere2Plane(
+                cable_properties["frame_contact_lower"],
+                cable,
+                mu=0.0,
+                r=0.0,
+                xi=node / (cable.nnodes - 1),
+                name=f"contact_lower_{cable.name}_{node:0>2d}",
+            )
+            system.add(contact_lower)
+            if cable_properties["frame_contact_upper"] is not None:
+                contact_upper = Sphere2Plane(
+                    cable_properties["frame_contact_upper"],
+                    cable,
+                    mu=0.0,
+                    r=0.0,
+                    xi=node / (cable.nnodes - 1),
+                    name=f"contact_upper_{cable.name}_{node:0>2d}",
+                )
+                system.add(contact_upper)
 
     # constrain rigid bodies
     table_constraint = RigidConnection(system.origin, table, name="origin-table")
@@ -406,9 +323,6 @@ def motion_stage(l_x0, l_y0):
         frame_long_stat,
         frame_short_stat,
     )
-    system.add(cable1, constraint1_lower, constraint1_upper)
-    system.add(cable2a, constraint2a_lower, constraint2a_upper)
-    system.add(cable2b, constraint2b_lower, constraint2b_upper)
     system.assemble(options=assemble_options)
 
     # static solver
@@ -419,7 +333,7 @@ def motion_stage(l_x0, l_y0):
     animate_beam(
         sol_stat.t,
         sol_stat.q,
-        [cable1, cable2a, cable2b],
+        cables,
         scale=length2a,
         scale_di=length2a / 10,
     )
