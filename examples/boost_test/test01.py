@@ -2,6 +2,7 @@ import numpy as np
 from timeit import timeit
 
 from cardillo.rods import CircularCrossSection, Simo1986, CrossSectionInertias
+from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
 from cardillo import System
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
@@ -43,19 +44,24 @@ def get_permutation(nnodes, nnodes_element, n_per_node):
 
 
 def test_implementation(n_test=1_000):
-    constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([40.0, 50.0, 60.0]))
+    Ei = np.array([1.0, 2.0, 3.0])
+    Fi = np.array([40.0, 50.0, 60.0])
+    constitutive_law = Simo1986(Ei, Fi)
+    constitutive_law_new = Simo1986_new(Ei, Fi)
     cross_section = CircularCrossSection(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
     nelement = 4
-    polynomial_degree = 1
+    polynomial_degree = 2
     constraints = [0, 1, 5]
     constraints = [0, 1]
     constraints = []
 
-    mixed = True
-    # mixed = False
+    nquadrature_dyn = int(np.ceil((polynomial_degree + 1) ** 2 / 2))
+
+    # mixed = True
+    mixed = False
     if not mixed:
         idx_db = np.setdiff1d(np.arange(6), constraints)
     else:
@@ -70,6 +76,7 @@ def test_implementation(n_test=1_000):
         polynomial_degree=polynomial_degree,
         idx_constraints=constraints,
         idx_displacement_based=idx_db,
+        quadrature_dyn=(nquadrature_dyn, "Gauss"),
     )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
@@ -84,7 +91,7 @@ def test_implementation(n_test=1_000):
     q0_new = Rod_new.straight_configuration(nelement, 5)
     rod_new = Rod_new(
         cross_section,
-        constitutive_law,
+        constitutive_law_new,
         nelement,
         Q=q0_new,
         cross_section_inertias=cross_section_inertia,

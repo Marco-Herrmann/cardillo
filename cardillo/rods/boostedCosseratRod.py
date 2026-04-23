@@ -294,16 +294,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     ):
         if cross_section is not None:
             self.cross_section = cross_section
-            # update preprocessed stuff for export
             if self.preprocessed_export:
                 self.preprocess_export()
 
         if material_model is not None:
             self.material_model = material_model
-            # TODO: evaluate C/C_inv at quadrature points
-            # TODO: do we want to compute/update c_la_c here?
-            if self._nla_c > 0:
-                self._c_la_c_coo()
+            self.material_model.prepare_quadrature(self.qp_int_vec)
 
         if cross_section_inertias is not None:
             if cross_section_inertias == False:
@@ -314,8 +310,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
                 self.cross_section_inertias = cross_section_inertias
 
             # TODO: evaluate A_rho0, B_Theta_Crho0 at quadrature points
-            # TODO: do we want to compute/update M here?
-            self._M_coo()
+
 
         assert (
             len(distributed_load) == 2
@@ -425,9 +420,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
 
         # external virtual work contributions
-        _, B_gamma_bar, _ = self._eval_internal_vec(
-            self.N_ext, self.N_xi_ext, self.Q
-        )
+        _, B_gamma_bar, _ = self._eval_internal_vec(self.N_ext, self.N_xi_ext, self.Q)
         J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
         self.weights_ext = J_ext_vec * self.qw_ext_vec
 
@@ -541,16 +534,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             warn(msg)
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon_db = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+        d_epsilon = epsilon_db - self.epsilon0_int
 
         la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
         la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
         la_sigma = self.Nc_int @ la_sigma_nodes
 
-        comp_pot = self.material_model.potential_comp_vec(la_sigma)
-
-        E_pot_i = (
-            np.einsum("ij,ij->i", epsilon_db - self.epsilon0_int, la_sigma) - comp_pot
-        )
+        C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
+        E_pot_i_star = 0.5 * np.einsum("ij,ijk,ik->i", la_sigma, C_qp, la_sigma)
+        E_pot_i = np.sum(d_epsilon * la_sigma, axis=1) - E_pot_i_star
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
 
@@ -565,7 +557,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         epsilon[:, self.idx_db] = epsilon_db[:, self.idx_db]
         epsilon0 = np.zeros_like(epsilon_db)
         epsilon0[:, self.idx_db] = self.epsilon0_int[:, self.idx_db]
-        E_pot_i = self.material_model.potential_vec(epsilon, epsilon0)
+        E_pot_i = self.material_model.potential(
+            self.qp_int_vec, epsilon, epsilon0, quadrature=True
+        )
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
 
@@ -972,9 +966,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
     def _c_la_c_coo(self):
-        C_qp = self.material_model.C_inv[self.idx_c[:, None], self.idx_c]
+        C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
         c_la_c = self.c_la_c_SAB.add_blocks(
-            np.array([[C_qp] * self.nquadrature_int_total])
+            C_qp[None, :, self.idx_c[:, None], self.idx_c]
         )
 
         self.__cla_c = c_la_c
@@ -1079,7 +1073,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
     def f_pot(self, t, q, u):
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
-        sigma_db = self.material_model.sigma(epsilon, self.epsilon0_int)
+        sigma_db = self.material_model.sigma(
+            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+        )
 
         sigma_qp = np.zeros((self.nquadrature_int_total, 6))
         sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
@@ -1091,7 +1087,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             self.N_int, self.N_xi_int, q, deval=True
         )
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
-        sigma_db = self.material_model.sigma(epsilon, self.epsilon0_int)
+        sigma_db = self.material_model.sigma(
+            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+        )
 
         sigma_qp = np.zeros((self.nquadrature_int_total, 6))
         sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
@@ -1105,7 +1103,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         A_IB_transpose_to_J = A_IB.transpose(0, 2, 1) / self.J_int_vec[:, None, None]
         T_to_J = T / self.J_int_vec[:, None, None]
 
-        sigma_epsilon = self.material_model.sigma_epsilon(epsilon, self.epsilon0_int)
+        sigma_epsilon = self.material_model.sigma_epsilon(
+            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+        )
         B_n_gamma, B_n_kappa, B_m_gamma, B_m_kappa = sigma_epsilon
 
         # fmt: off
@@ -1221,7 +1221,9 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
 
             epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
             epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
-            sigma_db = self.material_model.sigma(epsilon, epsilon0)
+            sigma_db = self.material_model.sigma(
+                xis, epsilon, epsilon0, quadrature=False
+            )
             sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
 
         return xis, sigma[:, :3], sigma[:, 3:]
@@ -1247,9 +1249,8 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
             la_sigma = Nc @ la_c_nodes
 
-            C_inv = self.material_model.C_inv[self.idx_c[:, None], self.idx_c]
-            # TODO: position dependent material law
-            epsilon[:, self.idx_c] = la_sigma @ C_inv.T
+            C_inv = self.material_model.C_inv(xis, quadrature=False)
+            epsilon[:, self.idx_c] = np.einsum("ijk,ik->ij", C_inv, la_sigma)
 
         # strains from constraints are always 0
         epsilon[:, self.idx_g] = 0.0
