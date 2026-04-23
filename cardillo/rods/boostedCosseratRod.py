@@ -63,15 +63,6 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # call base class for all export properties
         super().__init__(cross_section)
 
-        # rod properties
-        self.material_model = material_model
-        if cross_section_inertias == None:
-            self.cross_section_inertias = CrossSectionInertias()
-            include_f_gyr = False
-        else:
-            self.cross_section_inertias = cross_section_inertias
-            include_f_gyr = True
-
         self.idx_g = idx_constraints
         self.idx_db = idx_displacement_based
         self.idx_c = np.setdiff1d(
@@ -89,6 +80,12 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             polynomial_degere=polynomial_degree,
             derivative_order=1,
         )
+        mesh_cg = Mesh1D_equidistant(
+            basis="Lagrange_Disc",
+            nelement=nelement,
+            polynomial_degere=polynomial_degree - 1,
+            derivative_order=0,
+        )
 
         # element intervals
         self.element_interval = mesh_kin.element_interval
@@ -98,17 +95,17 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         # total number of nodes and per element
         self.nnodes = mesh_kin.nnodes
         self.nnodes_element = mesh_kin.nnodes_element
-
-        # total number of generalized position and velocity coordinates
-        self.nq = self.nnodes * self.nq_node
-        self.nu = self.nnodes * 6
+        self.nnodes_sigma = mesh_cg.nnodes
 
         self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 1)
         self.N_element = lambda xi, el: mesh_kin.shape_function_array_element(xi, el, 0)
+        self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
+        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
 
         #####################
         # quadrature points #
         #####################
+        # internal virtual work contributions
         quadrature_int_kin = mesh_kin.quadrature(*quadrature_int, 1)
         self.nquadrature_int_total = quadrature_int_kin["nquadrature_total"]
         self.qp_int_vec = quadrature_int_kin["qp"]
@@ -116,170 +113,36 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         self.qels_int_vec = quadrature_int_kin["els"]
         self.N_int, self.N_xi_int = quadrature_int_kin["N"]
 
-        quadrature_dyn_kin = mesh_kin.quadrature(*quadrature_dyn, 1)
-        self.nquadrature_dyn_total = quadrature_dyn_kin["nquadrature_total"]
-        self.qp_dyn_vec = quadrature_dyn_kin["qp"]
-        self.qw_dyn_vec = quadrature_dyn_kin["qw"]
-        self.qels_dyn_vec = quadrature_dyn_kin["els"]
-        self.N_dyn, self.N_xi_dyn = quadrature_dyn_kin["N"]
+        quadrature_int_cg = mesh_cg.quadrature(*quadrature_int, 0)
+        self.Nc_int = quadrature_int_cg["N"][0]
 
-        # line distributed forces
-        if (distributed_load[0] == None) and (distributed_load[1] == None):
-            include_f_ext = False
-        else:
-            include_f_ext = True
+        # inertial virtual work contributions
+        quadrature_dyn = mesh_kin.quadrature(*quadrature_dyn, 1)
+        self.nquadrature_dyn_total = quadrature_dyn["nquadrature_total"]
+        self.qp_dyn_vec = quadrature_dyn["qp"]
+        self.qw_dyn_vec = quadrature_dyn["qw"]
+        self.qels_dyn_vec = quadrature_dyn["els"]
+        self.N_dyn, self.N_xi_dyn = quadrature_dyn["N"]
 
-            # quadrature
-            quadrature_ext = mesh_kin.quadrature(*quadrature_ext, 1)
-            self.nquadrature_ext_total = quadrature_ext["nquadrature_total"]
-            self.qp_ext_vec = quadrature_ext["qp"]
-            self.qw_ext_vec = quadrature_ext["qw"]
-            self.qels_ext_vec = quadrature_ext["els"]
-            self.N_ext, self.N_xi_ext = quadrature_ext["N"]
+        # external virtual work contributions
+        quadrature_ext = mesh_kin.quadrature(*quadrature_ext, 1)
+        self.nquadrature_ext_total = quadrature_ext["nquadrature_total"]
+        self.qp_ext_vec = quadrature_ext["qp"]
+        self.qw_ext_vec = quadrature_ext["qw"]
+        self.qels_ext_vec = quadrature_ext["els"]
+        self.N_ext, self.N_xi_ext = quadrature_ext["N"]
 
-            zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
-            self.distributed_load = distributed_load
-            if self.distributed_load[0] is None:
-                self.distributed_load[0] = lambda t, xis: zeros_ext
-            if self.distributed_load[1] is None:
-                self.distributed_load[1] = lambda t, xis: zeros_ext
+        # make properties for nq, nu, nla_c, nla_g
+        # and functions for g, c, and all related ones
+        self._create_system_interfaces()
 
         # referential generalized position coordinates, initial generalized
         # position and velocity coordinates
         self.q0 = Q.copy() if q0 is None else q0
         self.u0 = np.zeros(self.nu, dtype=float) if u0 is None else u0
 
-        # unit quaternion constraints
-        dim_g_S = self.nq_node - 6
-        self.nla_S = self.nnodes * dim_g_S
-        self.la_S0 = np.zeros(self.nla_S, dtype=float)
-        if self.nq_node == 12:
-            warn("g_S rows and columns are completely wrong!")
-        self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
-        self._g_S_q_col = (
-            (3 + 7 * np.arange(self.nnodes))[:, None] + np.arange(4)
-        ).ravel()
-
-        # step callbacks
-        if self.nq_node == 7:
-            self.step_callback = self._step_callback
-
-        ###############################
-        # compliance and constrtaints #
-        ###############################
-        mesh_cg = Mesh1D_equidistant(
-            basis="Lagrange_Disc",
-            nelement=nelement,
-            polynomial_degere=polynomial_degree - 1,
-            derivative_order=0,
-        )
-
-        # total number of nodes
-        self.nnodes_sigma = mesh_cg.nnodes
-
-        self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
-        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
-
-        quadrature_int_cg = mesh_cg.quadrature(*quadrature_int, 0)
-        self.Nc_int = quadrature_int_cg["N"][0]
-
-        # total number of compliance coordinates
-        self.nla_sigma = self.nnodes_sigma * 6
-        if (nla_c := self.nnodes_sigma * len(self.idx_c)) > 0:
-            self.nla_c = self._nla_c = nla_c
-
-            ##############
-            # compliance #
-            # c = c_la_c @ la_c - l_c
-            ##############
-            # la_c = -c_la_c @ c(q, u, 0)
-            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q)[0]
-            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q)[0]
-            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q)[0]
-            self.c_la_c = lambda: self.__cla_c
-            self.W_c = lambda t, q: self.W_sigma(q)[0]
-            self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
-            self.E_pot_comp = self._E_pot_comp
-        else:
-            self._nla_c = 0
-
-        if (nla_g := self.nnodes_sigma * len(self.idx_g)) > 0:
-            self.nla_g = self._nla_g = nla_g
-
-            #############
-            # constraints
-            #  g = - l_g
-            #############
-            self.nu_zeros = np.zeros(self.nu)
-            self.g = lambda t, q: -self.l_sigma(q)[1]
-            self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
-            self.W_g = lambda t, q: self.W_sigma(q)[1]
-            self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
-
-            # TODO: without approx_fprime and without q_dot as this is inconsistent!
-            # we have to take the time derivative in the continous equations and then insert the interpolations!
-            self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
-            self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
-            self.g_dot_q = lambda t, q, u: approx_fprime(
-                q, lambda q_: self.g_dot(t, q_, u)
-            )
-            self.g_ddot = lambda t, q, u, u_dot: self.g_dot_u(
-                t, q
-            ) @ u_dot + self.g_dot_q(t, q, u) @ self.q_dot(t, q, u)
-
-        else:
-            self._nla_g = 0
-
-        if len(self.idx_db) > 0:
-            self._nDB = len(self.idx_db)
-            include_f_pot = True
-        else:
-            self._nDB = 0
-            include_f_pot = False
-
-        # compose h vector and potential energy
-        # first collect contributions
-        E_pot_functions = []
-        h_functions = []
-        h_q_functions = []
-        h_u_functions = []
-        # gyroscopic forces
-        if include_f_gyr:
-            h_functions.append(self.f_gyr)
-            h_u_functions.append(self.f_gyr_u)
-
-        # displacement based potential forces
-        if include_f_pot:
-            E_pot_functions.append(self.E_pot_int)
-            h_functions.append(self.f_pot)
-            h_q_functions.append(self.f_pot_q)
-
-        # line distributed forces
-        if include_f_ext:
-            E_pot_functions.append(self.E_pot_ext)
-            h_functions.append(self.f_ext)
-
-        # second add them up
-        if len(E_pot_functions) > 0:
-            self.E_pot = lambda t, q: np.sum(
-                [Ei(t, q) for Ei in E_pot_functions], axis=0
-            )
-        if len(h_functions) > 0:
-            self.h = lambda t, q, u: np.sum([hi(t, q, u) for hi in h_functions], axis=0)
-        if len(h_q_functions) > 0:
-            self.h_q = lambda t, q, u: np.sum(
-                [hi_q(t, q, u) for hi_q in h_q_functions], axis=0
-            )
-        if len(h_u_functions) > 0:
-            self.h_u = lambda t, q, u: np.sum(
-                [hi_u(t, q, u) for hi_u in h_u_functions], axis=0
-            )
-
         # reference strains for weight of blocks
-        self.set_reference_strains(Q)
-
-        # TODO: do inner dict with enum as key or use a class instead of dict
-        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
+        self._set_reference_strains(Q)
 
         ################
         # assemble matrices for block structure
@@ -334,6 +197,195 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             (self.nu, self.nq), (6, self.nq_node), h_pot_q_pairs
         )
 
+        # set all parameters of the rod
+        self.set_parameter(
+            cross_section=cross_section,
+            material_model=material_model,
+            cross_section_inertias=cross_section_inertias,
+            distributed_load=distributed_load,
+        )
+
+        # at the very end!
+        # TODO: do inner dict with enum as key or use a class instead of dict
+        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
+
+        # Quaternion: unit quaternion constraints
+        # Directors: unit-length and orthogonality constriant
+        dim_g_S = self.nq_node - 6
+        self.nla_S = self.nnodes * dim_g_S
+        self.la_S0 = np.zeros(self.nla_S, dtype=float)
+        if self.nq_node == 12:
+            warn("g_S rows and columns are completely wrong!")
+        self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
+        self._g_S_q_col = (
+            (3 + 7 * np.arange(self.nnodes))[:, None] + np.arange(4)
+        ).ravel()
+
+        # step callbacks
+        if self.nq_node == 7:
+            self.step_callback = self._step_callback
+
+    def _create_system_interfaces(self):
+        # total number of generalized position and velocity coordinates
+        self.nq = self.nnodes * self.nq_node
+        self.nu = self.nnodes * 6
+
+        # total number of compliance coordinates
+        self.nla_sigma = self.nnodes_sigma * 6
+        if (nla_c := self.nnodes_sigma * len(self.idx_c)) > 0:
+            self.nla_c = self._nla_c = nla_c
+
+            ##############
+            # compliance #
+            # c = c_la_c @ la_c - l_c
+            ##############
+            # la_c = -c_la_c_inv @ c(q, u, 0) = c_la_c_inv @ l_c(q)
+            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q)[0]
+            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q)[0]
+            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q)[0]
+            self.c_la_c = lambda: self.__cla_c
+            self.W_c = lambda t, q: self.W_sigma(q)[0]
+            self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
+            self.E_pot_comp = self._E_pot_comp
+        else:
+            self._nla_c = 0
+
+        if (nla_g := self.nnodes_sigma * len(self.idx_g)) > 0:
+            self.nla_g = self._nla_g = nla_g
+
+            #############
+            # constraints
+            #  g = - l_g
+            #############
+            self.nu_zeros = np.zeros(self.nu)
+            self.g = lambda t, q: -self.l_sigma(q)[1]
+            self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
+            self.W_g = lambda t, q: self.W_sigma(q)[1]
+            self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
+
+            # TODO: without approx_fprime and without q_dot as this is inconsistent!
+            # we have to take the time derivative in the continous equations and then insert the interpolations!
+            self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
+            self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
+            self.g_dot_q = lambda t, q, u: approx_fprime(
+                q, lambda q_: self.g_dot(t, q_, u)
+            )
+            self.g_ddot = lambda t, q, u, u_dot: self.g_dot_u(
+                t, q
+            ) @ u_dot + self.g_dot_q(t, q, u) @ self.q_dot(t, q, u)
+
+        else:
+            self._nla_g = 0
+
+        if len(self.idx_db) > 0:
+            self._nDB = len(self.idx_db)
+            self.include_f_pot = True
+        else:
+            self._nDB = 0
+            self.include_f_pot = False
+
+    def set_parameter(
+        self,
+        *,
+        cross_section=None,
+        material_model=None,
+        cross_section_inertias=None,
+        distributed_load=[None, None],
+    ):
+        if cross_section is not None:
+            self.cross_section = cross_section
+            # update preprocessed stuff for export
+            if self.preprocessed_export:
+                self.preprocess_export()
+
+        if material_model is not None:
+            self.material_model = material_model
+            # TODO: evaluate C/C_inv at quadrature points
+            # TODO: do we want to compute/update c_la_c here?
+            if self._nla_c > 0:
+                self._c_la_c_coo()
+
+        if cross_section_inertias is not None:
+            if cross_section_inertias == False:
+                self.include_f_gyr = False
+                self.cross_section_inertias = CrossSectionInertias()
+            else:
+                self.include_f_gyr = True
+                self.cross_section_inertias = cross_section_inertias
+
+            # TODO: evaluate A_rho0, B_Theta_Crho0 at quadrature points
+            # TODO: do we want to compute/update M here?
+            self._M_coo()
+
+        assert (
+            len(distributed_load) == 2
+        ), "Line distributed forces must be a list of length 2 (force and moment)."
+        if (distributed_load[0] == None) and (distributed_load[1] == None):
+            self.include_f_ext = False
+        else:
+            self.include_f_ext = True
+
+            zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
+            self.distributed_load = distributed_load
+            if self.distributed_load[0] is None:
+                self.distributed_load[0] = lambda t, xis: zeros_ext
+            if self.distributed_load[1] is None:
+                self.distributed_load[1] = lambda t, xis: zeros_ext
+
+        # compose E_pot, h, h_q and h_u again
+        self.compose_E_h()
+
+    def compose_E_h(self):
+        # compose h vector and potential energy
+        # 1) collect contributions
+        E_pot_functions = []
+        h_functions = []
+        h_q_functions = []
+        h_u_functions = []
+
+        # gyroscopic forces
+        if self.include_f_gyr:
+            h_functions.append(self.f_gyr)
+            h_u_functions.append(self.f_gyr_u)
+
+        # displacement based potential forces
+        if self.include_f_pot:
+            E_pot_functions.append(self.E_pot_int)
+            h_functions.append(self.f_pot)
+            h_q_functions.append(self.f_pot_q)
+
+        # line distributed forces
+        if self.include_f_ext:
+            E_pot_functions.append(self.E_pot_ext)
+            h_functions.append(self.f_ext)
+
+        # 2) add them up
+        if len(E_pot_functions) > 0:
+            self.E_pot = lambda t, q: np.sum(
+                [Ei(t, q) for Ei in E_pot_functions], axis=0
+            )
+        elif hasattr(self, "E_pot"):
+            delattr(self, "E_pot")
+
+        if len(h_functions) > 0:
+            self.h = lambda t, q, u: np.sum([hi(t, q, u) for hi in h_functions], axis=0)
+        elif hasattr(self, "h"):
+            delattr(self, "h")
+
+        if len(h_q_functions) > 0:
+            self.h_q = lambda t, q, u: np.sum(
+                [hi_q(t, q, u) for hi_q in h_q_functions], axis=0
+            )
+        elif hasattr(self, "h_q"):
+            delattr(self, "h_q")
+
+        if len(h_u_functions) > 0:
+            self.h_u = lambda t, q, u: np.sum(
+                [hi_u(t, q, u) for hi_u in h_u_functions], axis=0
+            )
+        elif hasattr(self, "h_u"):
+            delattr(self, "h_u")
+
     def _eval_internal_vec(self, N, N_xi, q, deval=False):
         qbar_nodes = q.reshape(self.nnodes, -1)
         P_IB = N @ qbar_nodes[:, 3:]
@@ -354,9 +406,10 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
         return (A_IB, B_gamma_bar, B_kappa_bar), (T, B_gamma_bar_P, B_kappa_bar_P)
 
-    def set_reference_strains(self, Q):
+    def _set_reference_strains(self, Q):
         self.Q = Q.copy()
 
+        # internal virtual work contributions
         _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(
             self.N_int, self.N_xi_int, self.Q
         )
@@ -367,15 +420,16 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             np.hstack([B_gamma0_bar, B_kappa0_bar]) / self.J_int_vec[:, None]
         )
 
+        # inertial virtual work contributions
         _, B_gamma_bar, _ = self._eval_internal_vec(self.N_dyn, self.N_xi_dyn, self.Q)
         self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
 
-        if hasattr(self, "N_ext"):
-            _, B_gamma_bar, _ = self._eval_internal_vec(
-                self.N_ext, self.N_xi_ext, self.Q
-            )
-            J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
-            self.weights_ext = J_ext_vec * self.qw_ext_vec
+        # external virtual work contributions
+        _, B_gamma_bar, _ = self._eval_internal_vec(
+            self.N_ext, self.N_xi_ext, self.Q
+        )
+        J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
+        self.weights_ext = J_ext_vec * self.qw_ext_vec
 
     ############################
     # export of centerline nodes
@@ -1317,7 +1371,7 @@ def make_BoostedCosseratRod(
             q0=None,
             u0=None,
             distributed_load=[None, None],
-            cross_section_inertias=CrossSectionInertias(),
+            cross_section_inertias=False,
             name="Cosserat_rod",
         ):
             """Petrov-Galerkin Cosserat rod formulations with
