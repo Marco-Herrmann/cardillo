@@ -571,34 +571,37 @@ def Exp_SO3_quat(P: np.ndarray, normalize: bool = True) -> np.ndarray:
     return result[0] if was_1d else result
 
 
-def Exp_SO3_quat_P(P, normalize=True):
-    P = np.asarray(P)
-    was_1d = P.ndim == 1
-    P = np.atleast_2d(P)
-    assert P.shape[1] == 4
-
-    # TODO: vectorize and optimize
-    result = np.array([Exp_SO3_quat_P_(Pi, normalize=normalize) for Pi in P])
-    return result[0] if was_1d else result
-
-
-def Exp_SO3_quat_P_(P, normalize=True):
+def Exp_SO3_quat_P(P_IB, normalize=True):
     """Derivative of Exp_SO3_quat with respect to P."""
-    p0, p = P[0], P[1:]
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    n = P_IB.shape[0]
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
     p_tilde = ax2skew(p)
     p_tilde_p = ax2skew_a()
-    matrix_P = np.zeros((3, 3, 4), dtype=np.result_type(P, 1.0))
-    matrix_P[:, :, 0] = 2.0 * p_tilde
-    matrix_P[:, :, 1:] = 2.0 * (
-        p0 * p_tilde_p + (p_tilde_p @ p_tilde).T + p_tilde @ p_tilde_p.T
+    matrix_P = np.zeros((n, 3, 3, 4), dtype=np.result_type(P_IB, 1.0))
+    # deriv. w.r.t. p0
+    matrix_P[:, :, :, 0] = 2.0 * p_tilde
+    # deriv. w.r.t. p
+    term1 = p0[:, None, None, None] * p_tilde_p[None, :, :, :]
+    term2 = np.transpose(p_tilde_p @ p_tilde[:, None, :, :], (0, 2, 3, 1))
+    term3 = np.transpose(
+        p_tilde[:, None, :, :] @ p_tilde_p[None, :, :, :], (0, 2, 3, 1)
     )
+    matrix_P[:, :, :, 1:] = 2.0 * (term1 + term2 + term3)
+
     if normalize:
-        P2_inv = 1 / (P @ P)
-        matrix_P *= P2_inv
+        P2_inv = 1 / np.sum(P_IB * P_IB, axis=1)
+        matrix_P *= P2_inv[:, None, None, None]
         # inner derivative due to normalization
-        matrix = 2.0 * (p0 * p_tilde + ax2skew_squared(p))
-        matrix_P += np.multiply.outer(matrix, -2.0 * P2_inv**2 * P)
-    return matrix_P
+        matrix = 2.0 * (p0[:, None, None] * p_tilde + ax2skew_squared(p))
+        matrix_P += np.multiply.outer(
+            matrix, -2.0 * (P2_inv**2)[:, None] * P_IB
+        ).reshape(n, 3, 3, 4)
+    return matrix_P[0] if was_1d else matrix_P
 
 
 Log_SO3_quat = Spurrier
@@ -637,8 +640,6 @@ def T_SO3_inv_quat(P_IB, normalize=True):
     result[:, 1:] = p0[:, None, None] * eye3 + ax2skew(p)
     result *= 0.5
 
-    # result_ = np.array([T_SO3_inv_quat_(Pi) for Pi in P_IB])
-    # print(np.linalg.norm(result_ - result))
     return result[0] if was_1d else result
 
 
@@ -684,28 +685,7 @@ def T_SO3_quat_P(P_IB, normalize=True):
             * (-2.0 * P2_inv**2)[:, None, None, None]
             * P_IB[:, None, None, :]
         )
-
-    # TODO: clean up
-    # result_ = np.array([T_SO3_quat_P_(P_IBi, normalize=normalize) for P_IBi in P_IB])
-    # print(np.linalg.norm(result_ - result))
     return result[0] if was_1d else result
-
-
-# TODO: clean up
-def T_SO3_quat_P_(P, normalize=True):
-    p0, p = P[0], P[1:]
-    T_P = np.zeros((3, 4, 4), dtype=np.result_type(P, 1.0))
-    T_P[:, 0, 1:] = -2.0 * eye3
-    T_P[:, 1:, 0] = 2.0 * eye3
-    T_P[:, 1:, 1:] = -2.0 * ax2skew_a()
-
-    if normalize:
-        P2_inv = 1 / (P @ P)
-        T_P *= P2_inv
-        # inner derivative due to normalization
-        matrix = 2.0 * np.hstack((-p[:, None], p0 * eye3 - ax2skew(p)))
-        T_P += np.multiply.outer(matrix, -2.0 * P2_inv**2 * P)
-    return T_P
 
 
 def T_SO3_quat_Q_P(P, Q, normalize=True):
@@ -726,12 +706,14 @@ def T_SO3_quat_Q_P(P, Q, normalize=True):
     return TQ_P
 
 
+# fmt: off
+T_inv_P = np.zeros((4, 3, 4), dtype=float)
+T_inv_P[0, :, 1:] = -0.5 * eye3
+T_inv_P[1:, :, 0] = 0.5 * eye3
+T_inv_P[1:, :, 1:] = 0.5 * ax2skew_a()
 def T_SO3_inv_quat_P(P, normalize=True):
-    T_inv_P = np.zeros((4, 3, 4), dtype=float)
-    T_inv_P[0, :, 1:] = -0.5 * eye3
-    T_inv_P[1:, :, 0] = 0.5 * eye3
-    T_inv_P[1:, :, 1:] = 0.5 * ax2skew_a()
     return T_inv_P
+# fmt: on
 
 
 def Exp_SO3_R9(R9):
@@ -744,17 +726,18 @@ def Exp_SO3_R9(R9):
     return A_IB[0] if was_1d else A_IB
 
 
+# fmt: off
+A_IB_R9 = np.zeros((3, 3, 9), dtype=float)
+A_IB_R9[:, 0, :3] = eye3
+A_IB_R9[:, 1, 3:6] = eye3
+A_IB_R9[:, 2, 6:] = eye3
 def Exp_SO3_R9_R9(R9):
     R9 = np.asarray(R9)
     was_1d = R9.ndim == 1
     R9 = np.atleast_2d(R9)
     assert R9.shape[1] == 9
-
-    A_IB_R9 = np.zeros((3, 3, 9), dtype=np.result_type(R9, 1.0))
-    A_IB_R9[:, 0, :3] = eye3
-    A_IB_R9[:, 1, 3:6] = eye3
-    A_IB_R9[:, 2, 6:] = eye3
-    return A_IB_R9 if was_1d else np.array([A_IB_R9] * R9.shape[0])
+    return A_IB_R9 if was_1d else np.broadcast_to(A_IB_R9, (R9.shape[0], 3, 3, 9))
+# fmt: on
 
 
 def Log_SO3_R9(A_IB):
@@ -780,20 +763,21 @@ def T_SO3_R9(R9):
     return T_IB[0] if was_1d else T_IB
 
 
+# fmt: off
+T_IB_R9 = np.zeros((3, 9, 9), dtype=float)
+T_IB_R9[0, 3:6, 6:] = 0.5 * eye3
+T_IB_R9[0, 6:, 3:6] = -0.5 * eye3
+T_IB_R9[1, :3, 6:] = -0.5 * eye3
+T_IB_R9[1, 6:, :3] = 0.5 * eye3
+T_IB_R9[2, :3, 3:6] = 0.5 * eye3
+T_IB_R9[2, 3:6, :3] = -0.5 * eye3
 def T_SO3_R9_R9(R9):
     R9 = np.asarray(R9)
     was_1d = R9.ndim == 1
     R9 = np.atleast_2d(R9)
     assert R9.shape[1] == 9
-
-    T_IB_R9 = np.zeros((3, 9, 9), dtype=np.result_type(R9, 1.0))
-    T_IB_R9[0, 3:6, 6:] = 0.5 * eye3
-    T_IB_R9[0, 6:, 3:6] = -0.5 * eye3
-    T_IB_R9[1, :3, 6:] = -0.5 * eye3
-    T_IB_R9[1, 6:, :3] = 0.5 * eye3
-    T_IB_R9[2, :3, 3:6] = 0.5 * eye3
-    T_IB_R9[2, 3:6, :3] = -0.5 * eye3
-    return T_IB_R9 if was_1d else np.array([T_IB_R9] * R9.shape[0])
+    return T_IB_R9 if was_1d else np.broadcast_to(T_IB_R9, (R9.shape[0], 3, 9, 9))
+# fmt: on
 
 
 def T_SO3_inv_R9(R9):
@@ -818,17 +802,17 @@ def T_SO3_inv_R9(R9):
     return T_IB_inv[0] if was_1d else T_IB_inv
 
 
+# fmt: off
+T_IB_inv_R9 = np.zeros((9, 3, 9), dtype=float)
+T_IB_inv_R9[:3, 1, 6:] = -eye3
+T_IB_inv_R9[:3, 2, 3:6] = eye3
+T_IB_inv_R9[3:6, 0, 6:] = eye3
+T_IB_inv_R9[3:6, 2, :3] = -eye3
+T_IB_inv_R9[6:, 0, 3:6] = -eye3
+T_IB_inv_R9[6:, 1, :3] = eye3
 def T_SO3_inv_R9_R9(R9):
-    T_IB_inv_R9 = np.zeros((9, 3, 9), dtype=np.result_type(R9, 1.0))
-    T_IB_inv_R9[:3, 1, 6:] = -eye3
-    T_IB_inv_R9[:3, 2, 3:6] = eye3
-    T_IB_inv_R9[3:6, 0, 6:] = eye3
-    T_IB_inv_R9[3:6, 2, :3] = -eye3
-    T_IB_inv_R9[6:, 0, 3:6] = -eye3
-    T_IB_inv_R9[6:, 1, :3] = eye3
     return T_IB_inv_R9
-    # TODO: shall we do this?`
-    return T_IB_inv_R9  # if was_1d else np.array([T_IB_inv_R9] * R9.shape[0])
+# fmt: on
 
 
 def quatprod(P_IB, Q_IB):

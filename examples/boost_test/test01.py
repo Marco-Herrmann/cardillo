@@ -339,7 +339,10 @@ def test_implementation(n_test=1_000):
 
 
 def compare_performance(n_test=1_000):
-    constitutive_law = Simo1986(np.array([1.0, 2.0, 3.0]), np.array([4.0, 5.0, 6.0]))
+    Ei = np.array([1.0, 2.0, 3.0])
+    Fi = np.array([40.0, 50.0, 60.0])
+    constitutive_law = Simo1986(Ei, Fi)
+    constitutive_law_new = Simo1986_new(Ei, Fi)
     cross_section = CircularCrossSection(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
@@ -376,7 +379,7 @@ def compare_performance(n_test=1_000):
     q0_new = Rod_new.straight_configuration(nelement, 5)
     rod_new = Rod_new(
         cross_section,
-        constitutive_law,
+        constitutive_law_new,
         nelement,
         Q=q0_new,
         cross_section_inertias=cross_section_inertia_new,
