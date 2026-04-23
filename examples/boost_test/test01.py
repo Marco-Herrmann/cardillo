@@ -1,7 +1,12 @@
 import numpy as np
 from timeit import timeit
 
-from cardillo.rods import CircularCrossSection, Simo1986, CrossSectionInertias
+from cardillo.rods import (
+    CircularCrossSection,
+    Simo1986,
+    CrossSectionInertias,
+    CrossSectionInertias_new,
+)
 from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
 from cardillo import System
 from cardillo.rods.cosseratRod import make_CosseratRod
@@ -52,6 +57,9 @@ def test_implementation(n_test=1_000):
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
+    cross_section_inertia_new = CrossSectionInertias_new(
+        A_rho0=A_rho0, B_I_rho0=B_I_rho0
+    )
     nelement = 4
     polynomial_degree = 2
     constraints = [0, 1, 5]
@@ -94,7 +102,7 @@ def test_implementation(n_test=1_000):
         constitutive_law_new,
         nelement,
         Q=q0_new,
-        cross_section_inertias=cross_section_inertia,
+        cross_section_inertias=cross_section_inertia_new,
     )
 
     # get permutations
@@ -336,6 +344,9 @@ def compare_performance(n_test=1_000):
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
+    cross_section_inertia_new = CrossSectionInertias_new(
+        A_rho0=A_rho0, B_I_rho0=B_I_rho0
+    )
     nelement = 500
     polynomial_degree = 2
 
@@ -368,7 +379,7 @@ def compare_performance(n_test=1_000):
         constitutive_law,
         nelement,
         Q=q0_new,
-        cross_section_inertias=cross_section_inertia,
+        cross_section_inertias=cross_section_inertia_new,
     )
 
     system_old = System()

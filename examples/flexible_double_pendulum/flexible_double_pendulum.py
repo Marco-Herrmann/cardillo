@@ -12,6 +12,7 @@ from cardillo.rods import (
     CircularCrossSection,
     RectangularCrossSection,
     CrossSectionInertias,
+    CrossSectionInertias_new,
     animate_beam,
 )
 from cardillo.rods._material_models_new import Simo1986
@@ -32,7 +33,11 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
     rho = 7000.0
     cross_section = RectangularCrossSection(width_y, width_z)
-    cross_section_inertias = CrossSectionInertias(rho, cross_section)
+    A = cross_section.area
+    B_I = cross_section.second_moment
+    cross_section_inertias = CrossSectionInertias_new(
+        A_rho0=A * rho, B_I_rho0=B_I * rho
+    )
 
     # material properties
     E = 210_000_000

@@ -487,6 +487,53 @@ class CrossSectionInertias:
             self.A_rho0 = density * cross_section.area
             self.B_I_rho0 = density * cross_section.second_moment
 
-        self.generalized_inertia = np.zeros((6, 6), dtype=float)
-        self.generalized_inertia[:3, :3] = np.eye(3, dtype=float) * self.A_rho0
-        self.generalized_inertia[3:, 3:] = self.B_I_rho0
+
+class CrossSectionInertias_new:
+    def __init__(
+        self, density=None, cross_section=None, A_rho0=1.0, B_I_rho0=np.eye(3)
+    ):
+        """Inertial properties of cross-sections. Centerline must coincide with line of centroids.
+
+        Parameters:
+        -----
+        density : float
+            Mass per unit reference volume of the rod.
+        cross_section : CrossSection
+            Cross-section object, which provides cross-section area and second moment of area.
+        A_rho0 : float
+            Cross-section mass density, i.e., mass per unit reference length of rod.
+        B_I_rho0 : np.array(3, 3)
+            Cross-section inertia tensor represented in the cross-section-fixed B-Basis.
+
+        """
+        if density is None or cross_section is None:
+            self._A_rho0 = (
+                A_rho0 if callable(A_rho0) else lambda xi: np.tile(A_rho0, len(xi))
+            )
+            self._B_I_rho0 = (
+                B_I_rho0
+                if callable(B_I_rho0)
+                else lambda xi: np.tile(B_I_rho0, (len(xi), 1, 1))
+            )
+        else:
+            raise NotImplementedError(
+                "implement cross_section.area(xi) and cross_section.second_moment(xi) at first"
+            )
+            self._A_rho0 = density * cross_section.area
+            self._B_I_rho0 = density * cross_section.second_moment
+
+    def prepare_quadrature(self, xi):
+        self._A_rho0_qp = self._A_rho0(xi)
+        self._B_I_rho0_qp = self._B_I_rho0(xi)
+
+    def A_rho0(self, xi, quadrature=False):
+        if quadrature:
+            return self._A_rho0_qp
+        else:
+            return self._A_rho0(xi)
+
+    def B_I_rho0(self, xi, quadrature=False):
+        if quadrature:
+            return self._B_I_rho0_qp
+        else:
+            return self._B_I_rho0(xi)
