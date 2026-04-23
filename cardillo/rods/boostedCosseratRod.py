@@ -442,15 +442,15 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         return qnodes_dot.reshape(-1)
 
     def q_dot_q(self, t, q, u):
-        qnodes = q.reshape(self.nnodes, self.nq_node)
+        # qnodes = q.reshape(self.nnodes, self.nq_node)
         unodes = u.reshape(self.nnodes, 6)
 
         blocks = np.empty((self.nnodes, self.nq_node, self.nq_node))
         blocks[:, :3] = 0.0
         blocks[:, 3:, :3] = 0.0
         blocks[:, 3:, 3:] = np.einsum(
-            "ijkl,ik->ijl",
-            self._T_IB_inv_P(qnodes[:, 3:])[None, :, :, :],
+            "jkl,ik->ijl",
+            self._T_IB_inv_P,
             unodes[:, 3:],
         )
 
@@ -638,7 +638,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         el = self.element_number(xi)
         start = (self.nnodes_element - 1) * el
         end = (self.nnodes_element - 1) * (el + 1) + 1
-        return np.arange(7 * start, 7 * end)
+        return np.arange(self.nq_node * start, self.nq_node * end)
 
     def elDOF_P_u(self, xi):
         el = self.element_number(xi)
@@ -1365,7 +1365,7 @@ def make_BoostedCosseratRod(
             self._T_IB = _T_IB
             self._T_IB_P = _T_IB_P
             self._T_IB_inv = _T_IB_inv
-            self._T_IB_inv_P = _T_IB_inv_P
+            self._T_IB_inv_P = _T_IB_inv_P(None)  # evaluate as it is constant
             self.nq_node = nq_node
 
             super().__init__(
