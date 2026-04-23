@@ -65,7 +65,7 @@ class Simo1986(RodMaterialModel_compliance):
     def prepare_quadrature(self, xi):
         self.Ei_qp = self._Ei(xi)
         self.Fi_qp = self._Fi(xi)
-        self.EiFi_qp = np.hstack((self.Ei_qp, self.Fi_qp))
+        self.EiFi_qp = np.hstack([self.Ei_qp, self.Fi_qp])
         self.C_Ga = np.apply_along_axis(np.diag, 1, self.Ei_qp)
         self.C_Ka = np.apply_along_axis(np.diag, 1, self.Fi_qp)
         self.zeros_qp = np.zeros((len(xi), 3, 3))
@@ -76,7 +76,7 @@ class Simo1986(RodMaterialModel_compliance):
         if quadrature:
             EiFi = self.EiFi_qp
         else:
-            EiFi = np.hstack(self._Ei(xi), self.Fi(xi))
+            EiFi = np.hstack([self._Ei(xi), self._Fi(xi)])
         sig = EiFi * d_epsilon
         return 0.5 * np.sum(sig * d_epsilon, axis=1)
 
@@ -85,7 +85,7 @@ class Simo1986(RodMaterialModel_compliance):
         if quadrature:
             EiFi = self.EiFi_qp
         else:
-            EiFi = np.hstack(self._Ei(xi), self.Fi(xi))
+            EiFi = np.hstack([self._Ei(xi), self._Fi(xi)])
         return EiFi * d_epsilon
 
     def sigma_epsilon(self, xi, epsilon, epsilon0, quadrature=False):
@@ -106,7 +106,7 @@ class Simo1986(RodMaterialModel_compliance):
         if quadrature:
             C_inv = self.C_inv_qp
         else:
-            EiFi = np.hstack(self._Ei(xi), self._Fi(xi))
+            EiFi = np.hstack([self._Ei(xi), self._Fi(xi)])
             C_inv = np.apply_along_axis(np.diag, 1, 1 / EiFi)
         return C_inv
 

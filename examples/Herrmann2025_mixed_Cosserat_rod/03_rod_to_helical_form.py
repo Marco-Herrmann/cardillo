@@ -1,3 +1,4 @@
+from cProfile import Profile
 from copy import deepcopy
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,6 +34,7 @@ def rod_to_helical_form(
     VTK_export: bool = False,
     save_tip_displacement: bool = False,
     save_stresses: bool = False,
+    new_eval: bool = True,
 ):
     plot_name = name.replace("_", " ")
     save_name = f'{name.replace(" ", "_")}_nel{nelements}'
@@ -72,7 +74,6 @@ def rod_to_helical_form(
     joint1 = RigidConnection(system.origin, rod, xi2=0)
 
     # moment at right end
-    Fi = material_model.Fi
     F_max = 50
     F = lambda t: e3 * F_max * t
     force = Force(F, rod, 1)
@@ -94,7 +95,14 @@ def rod_to_helical_form(
         n_load_steps=n_load_steps,
         options=SolverOptions(newton_max_iter=30, newton_atol=atol),  # rtol=0
     )
+    prof = Profile()
+    prof.enable()
     sol = solver.solve()
+    prof.disable()
+
+    path = Path(__file__)
+    # to view: run "view snakeviz.exe .\rod.prof" in shell
+    prof.dump_stats(Path(path.parent, f"prof.prof"))
 
     # read solution
     q = sol.q
@@ -171,14 +179,34 @@ def rod_to_helical_form(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
-    for el in range(rod.nelement):
-        xi_el = np.linspace(*rod.element_interval(el), nxi_el)
-        for i in range(nxi_el):
-            idx = el * nxi_el + i
-            stresses[0, idx] = xi_el[i]
-            B_n, B_m = rod.eval_stresses(t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el)
-            stresses[1:, idx] = *B_n, *B_m
+    if new_eval:
+        # TODO: can we not slice like sol[-1]?
+        xis, B_n, B_m = rod.eval_stresses(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        )
+        xis, B_n, B_m = rod.eval_strains(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        )
+
+        xis, B_n, B_m = rod.eval_stresses(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_ges=nxi_ges_min
+        )
+        xis, B_n, B_m = rod.eval_strains(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_ges=nxi_ges_min
+        )
+
+        stresses = np.array([xis, *B_n.T, *B_m.T])
+    else:
+        stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
+        for el in range(rod.nelement):
+            xi_el = np.linspace(*rod.element_interval(el), nxi_el)
+            for i in range(nxi_el):
+                idx = el * nxi_el + i
+                stresses[0, idx] = xi_el[i]
+                B_n, B_m = rod.eval_stresses(
+                    t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el
+                )
+                stresses[1:, idx] = *B_n, *B_m
 
     fig2, ax2 = plt.subplots(2, 1)
     fig2.suptitle(f"Stresses {plot_name}")
@@ -208,17 +236,37 @@ def rod_to_helical_form(
 
 
 if __name__ == "__main__":
+    if False:
+        from cardillo.rods.KirchhoffLoveRod import KirchhoffLoveRod
+
+        rod_to_helical_form(
+            KirchhoffLoveRod,
+            Simo1986,
+            nelements=30,
+            n_load_steps=90,
+            show_plots=True,
+            name="Rod to helical form",
+            new_eval=True,
+        )
     Rod = make_CosseratRod(
         interpolation="Quaternion",
         mixed=True,
         polynomial_degree=2,
         reduced_integration=True,
     )
+    from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
+    from cardillo.rods._material_models_new import Simo1986
+
+    Rod = make_BoostedCosseratRod(
+        polynomial_degree=2,  # idx_displacement_based=[0, 1, 2, 3, 4, 5]
+    )
     rod_to_helical_form(
         Rod,
         Simo1986,
         nelements=30,
         n_load_steps=90,
+        # n_load_steps=2048,
         show_plots=True,
         name="Rod to helical form",
+        new_eval=True,
     )

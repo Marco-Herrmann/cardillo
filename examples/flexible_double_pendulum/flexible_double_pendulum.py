@@ -12,13 +12,10 @@ from cardillo.rods import (
     CircularCrossSection,
     RectangularCrossSection,
     CrossSectionInertias,
-    Simo1986,
     animate_beam,
 )
-from cardillo.rods.force_line_distributed import Force_line_distributed
-from cardillo.rods.cosseratRod import (
-    make_CosseratRod,
-)
+from cardillo.rods._material_models_new import Simo1986
+
 from cardillo.solver import Newton, SolverOptions, ScipyDAE, DualStormerVerlet
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 
