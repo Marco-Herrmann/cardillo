@@ -28,7 +28,7 @@ for i, sol in enumerate(sols):
     rods = [c for c in contributions if "Rod" in c.name]
 
     # get position of the end
-    qDOF_end = rods[1].qDOF[rods[1].elDOF_P(1.0)]
+    qDOF_end = rods[1].qDOF[rods[1].local_qDOF_P(1.0)]
     # qDOF_end = rods[1].qDOF[rods[1].elDOF[-1]]
     r_OE = np.array(
         [rods[1].r_OP(ti, qi[qDOF_end], 1.0) for (ti, qi) in zip(sol.t, sol.q)]

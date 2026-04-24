@@ -148,7 +148,7 @@ def bent_45(
     # tip displacement over load steps
     fig, ax = plt.subplots(1, 1)
     if len(t) == n_load_steps + 1:
-        qDOF_tip = rod.elDOF_P(1)
+        qDOF_tip = rod.local_qDOF_P(1)
         r_OP0_tip = rod.r_OP(0, q0[qDOF_tip], 1)
         delta_tip_header = "load, delta_x, delta_y, delta_z"
         delta_tip = np.zeros((4, n_load_steps + 1), dtype=float)
