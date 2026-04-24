@@ -34,7 +34,7 @@ from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 
 from ._base_export import RodExportBase
-from ._cross_section import CrossSectionInertias
+from ._cross_section import CrossSectionInertias_new
 from .discretization.mesh1D import Mesh1D_equidistant
 
 zeros3 = np.zeros(3, dtype=float)
@@ -304,7 +304,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
         if cross_section_inertias is not None:
             if cross_section_inertias == False:
                 self.include_f_gyr = False
-                self.cross_section_inertias = CrossSectionInertias()
+                self.cross_section_inertias = CrossSectionInertias_new()
             else:
                 self.include_f_gyr = True
                 self.cross_section_inertias = cross_section_inertias
@@ -326,7 +326,7 @@ class CosseratRod_PetrovGalerkin(RodExportBase):
             if self.distributed_load[1] is None:
                 self.distributed_load[1] = lambda t, xis: zeros_ext
 
-        # compose E_pot, h, h_q and h_u again
+        # compose E_pot, h, h_q and h_u
         self.compose_E_h()
 
     def compose_E_h(self):
