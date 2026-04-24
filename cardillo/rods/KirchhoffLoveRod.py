@@ -247,6 +247,9 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
         return r_OC.T, A_IB[:, :, 0].T, A_IB[:, :, 1].T, A_IB[:, :, 2].T
 
+    ############################################
+    # interpolations and virtual work mappings #
+    ############################################
     def compute_rt_P(self, q):
         # TODO: make this also work with qe
         # positions and tangents
@@ -434,6 +437,24 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
         return D
 
+    def process_h_node(self, q, h_rt, h_theta):
+        # forces on (delta j_pm, delta phi_y, delta phi_z)
+        D = self._projection_D(q)
+        h_rt[self.nnodes :] = np.einsum(
+            "ikj,ik->ij", D, h_rt[self.nnodes :]
+        )  # D-transpose
+
+        h_j_pm = h_rt[self.nnodes :, 0]
+        h_psi = np.zeros((self.nnodes, 3))
+        h_psi[:, 0] = h_theta[::2]
+        h_psi[:-1, 1:] = h_rt[self.nnodes : 2 * self.nnodes - 1, 1:]
+        h_psi[1:, 1:] += h_rt[2 * self.nnodes - 1 :, 1:]
+
+        h_alpha = h_theta[1::2]
+        return -np.concatenate(
+            [h_rt[: self.nnodes].reshape(-1), h_psi.reshape(-1), h_j_pm, h_alpha]
+        )
+
     ############################
     # total energies and momenta
     ############################
@@ -571,12 +592,16 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     # by distributed load   #
     #########################
     def E_pot_ext(self, t, q):
-        warn("Not implemented yet")
-        return 0.0
+        r_OC, _ = self._eval_int_vec(self.shape_functions_int, q, choice="eval")
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
 
     def f_ext(self, t, q, u):
-        warn("Not implemented yet")
-        return np.zeros(self.nu)
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        h_rt = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
+        return self.process_h_node(
+            q, h_rt, np.zeros(2 * self.nelement + 1, dtype=float)
+        )
 
     #########################
     # internal virtual work #
@@ -621,25 +646,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             F3 * self.qw_int_vec
         )
 
-        #######
-        # TODO: handle from here on in a sperate function
-        #######
-        # forces on (delta j_pm, delta phi_y, delta phi_z)
-        D = self._projection_D(q)
-        h_rt[self.nnodes :] = np.einsum(
-            "ikj,ik->ij", D, h_rt[self.nnodes :]
-        )  # D-transpose
-
-        h_j_pm = h_rt[self.nnodes :, 0]
-        h_psi = np.zeros((self.nnodes, 3))
-        h_psi[:, 0] = h_theta[::2]
-        h_psi[:-1, 1:] = h_rt[self.nnodes : 2 * self.nnodes - 1, 1:]
-        h_psi[1:, 1:] += h_rt[2 * self.nnodes - 1 :, 1:]
-
-        h_alpha = h_theta[1::2]
-        return -np.concatenate(
-            [h_rt[: self.nnodes].reshape(-1), h_psi.reshape(-1), h_j_pm, h_alpha]
-        )
+        return self.process_h_node(q, h_rt, h_theta)
 
     def Wla_sigma_q(self, q, la_c=None, la_g=None): ...
 
