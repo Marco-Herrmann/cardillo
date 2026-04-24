@@ -28,6 +28,7 @@ from cardillo.math.SmallestRotation import SmallestRotation
 from cardillo.utility.coo_matrix import CooMatrix
 
 from ._base_export import RodExportBase
+from ._base_interface import RodInterface
 from ._cross_section import CrossSectionInertias_new
 from .discretization.lagrange import LagrangeKnotVector
 from .discretization.mesh1D import Mesh1D_equidistant
@@ -46,54 +47,17 @@ eye3 = np.eye(3, dtype=float)
 ####
 
 
-class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
-    def __init__(
-        self,
-        cross_section,
-        material_model,
-        cross_section_inertias,
-        idx_displacement_based,
-        idx_constraints,
-        distributed_load,
-        nelement,
-        quadrature_int,
-        quadrature_dyn,
-        quadrature_ext,
-        rotation_interpolation,
-        full_inertia,
-        Q,
-        q0,
-        u0,
-        name,
-    ):
-        # TODO: can we also move this to the update parameters?
-        # call base class for all export properties
-        super().__init__(cross_section)
-
-        self.orientation_type = rotation_interpolation
-
-        # TODO: 4 or 6 strains?
-        self.idx_g = idx_constraints
-        self.idx_db = idx_displacement_based
-        self.idx_c = np.setdiff1d(
-            np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
-        )
-
-        self.name = "Kirchhoff_rod" if name is None else name
-
-        # discretization
-        self.nelement = nelement
-        self.nnodes = nelement + 1
-
+class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
+    def _create_meshs(self):
         mesh_rP = Mesh1D_equidistant(
             basis="Hermite_C0",
-            nelement=nelement,
+            nelement=self.nelement,
             polynomial_degere=3,
             derivative_order=2,
         )
         mesh_alpha = Mesh1D_equidistant(
             basis="Lagrange",
-            nelement=nelement,
+            nelement=self.nelement,
             polynomial_degere=2,
             derivative_order=1,
         )
@@ -107,6 +71,9 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         self.element_number = mesh_rP.element_number
         self.node_number = mesh_rP.node_number
 
+        # total number of nodes
+        self.nnodes = self.nelement + 1
+
         self.h3 = lambda xis, els: mesh_rP.shape_functions(xis, els, 2)
         self.h3_element = lambda xi, el: mesh_rP.shape_function_array_element(xi, el, 0)
 
@@ -119,14 +86,14 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         # quadrature points #
         #####################
         # internal virtual work contribution
-        quadrature_int_N = mesh_rP.quadrature(3, "Gauss", 2)
+        quadrature_int_N = mesh_rP.quadrature(*self.quadrature_int, 2)
         self.nquadrature_int_total = quadrature_int_N["nquadrature_total"]
         self.qp_int_vec = quadrature_int_N["qp"]
         self.qw_int_vec = quadrature_int_N["qw"]
         self.qels_int_vec = quadrature_int_N["els"]
         self.h3_int, self.h3_xi_int, self.h3_xixi_int = quadrature_int_N["N"]
 
-        quadrature_int_N = mesh_alpha.quadrature(3, "Gauss", 1)
+        quadrature_int_N = mesh_alpha.quadrature(*self.quadrature_int, 1)
         self.N_int, self.N_xi_int = quadrature_int_N["N"]
 
         self.shape_functions_int = (
@@ -137,21 +104,28 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
             self.N_xi_int,
         )
 
-        # make properties for nq, nu, nla_c, nla_g
-        # and functions for g, c, and all related ones
-        self._create_system_interfaces()
+        # inertial virtual work contributions
+        quadrature_dyn_N = mesh_rP.quadrature(*self.quadrature_dyn, 2)
+        self.nquadrature_dyn_total = quadrature_dyn_N["nquadrature_total"]
+        self.qp_dyn_vec = quadrature_dyn_N["qp"]
+        self.qw_dyn_vec = quadrature_dyn_N["qw"]
+        self.qels_dyn_vec = quadrature_dyn_N["els"]
+        self.h3_dyn, self.h3_xi_dyn, self.h3_xixi_dyn = quadrature_dyn_N["N"]
 
-        # referential generalized position coordinates, initial generalized
-        # position and velocity coordinates
-        self.q0 = Q.copy() if q0 is None else q0
-        self.u0 = np.zeros(self.nu, dtype=float) if u0 is None else u0
+        quadrature_dyn_N = mesh_alpha.quadrature(*self.quadrature_dyn, 1)
+        self.N_dyn, self.N_xi_dyn = quadrature_dyn_N["N"]
 
-        # reference strains for weight of blocks
-        self.set_reference_strains(Q)
+        self.shape_functions_dyn = (
+            self.h3_dyn,
+            self.h3_xi_dyn,
+            self.h3_xixi_dyn,
+            self.N_dyn,
+            self.N_xi_dyn,
+        )
 
-        ################
-        # assemble matrices for block structure
-        ################
+        # TODO: external
+
+    def _post_init_(self):
         # M
         M_pairs = ...
 
@@ -167,17 +141,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
 
         # Wla_sigma_q
         h_pot_q_pairs = ...
-
-        # set all parameters of the rod
-        self.set_parameter(
-            cross_section=cross_section,
-            material_model=material_model,
-            cross_section_inertias=cross_section_inertias,
-            distributed_load=distributed_load,
-        )
-
-        # TODO: do inner dict with enum as key or use a class instead of dict
-        self.interaction_points: dict[float, dict[str, np.ndarray]] = {}
 
     def _create_system_interfaces(self):
         # DOF handling
@@ -216,105 +179,25 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         cross_section_inertias=None,
         distributed_load=None,
     ):
-        if cross_section is not None:
-            self.cross_section = cross_section
-            if self.preprocessed_export:
-                self.preprocess_export()
-
-        if material_model is not None:
-            self.material_model = material_model
-            self.material_model.prepare_quadrature(self.qp_int_vec)
-
-        if cross_section_inertias is not None:
-            if cross_section_inertias == False:
-                self.include_f_gyr = False
-                self.cross_section_inertias = CrossSectionInertias_new()
-            else:
-                raise NotImplementedError
-                # TODO: think of only using A_rho0 and B_I_rho0[0, 0]
-                self.include_f_gyr = True
-                self.cross_section_inertias = cross_section_inertias
-
-            warn("Wrong quadrature for cross section inertias")
-            self.cross_section_inertias.prepare_quadrature(self.qp_int_vec)
-            # self.cross_section_inertias.prepare_quadrature(self.qp_dyn_vec)
-        self.include_f_gyr = False
-
         if distributed_load is not None:
             assert (
                 len(distributed_load) == 2
             ), "Line distributed forces must be a list of length 2 (force and moment)."
-            if distributed_load[0] == None:
-                self.include_f_ext = False
-            else:
-                self.distributed_load = distributed_load
-                self.include_f_ext = True
+            assert distributed_load[1] is None, "No line distributed moment allowed."
 
-            assert (
-                distributed_load[1] == None
-            ), "Line distributed moments are not allowed."
-
-        # compose E_pot, h, h_q and h_u
-        self.compose_E_h()
-
-    def compose_E_h(self):
-        # TODO: unify with other rod(s)?
-        # compose h vector and potential energy
-        # 1) collect contributions
-        E_pot_functions = []
-        h_functions = []
-        h_q_functions = []
-        h_u_functions = []
-
-        # gyroscopic forces
-        if self.include_f_gyr:
-            h_functions.append(self.f_gyr)
-            h_u_functions.append(self.f_gyr_u)
-
-        # displacement based potential forces
-        if self.include_f_pot:
-            E_pot_functions.append(self.E_pot_int)
-            h_functions.append(self.f_pot)
-            h_q_functions.append(self.f_pot_q)
-
-        # line distributed forces
-        if self.include_f_ext:
-            E_pot_functions.append(self.E_pot_ext)
-            h_functions.append(self.f_ext)
-
-        # 2) add them up
-        if len(E_pot_functions) > 0:
-            self.E_pot = lambda t, q: np.sum(
-                [Ei(t, q) for Ei in E_pot_functions], axis=0
-            )
-        elif hasattr(self, "E_pot"):
-            delattr(self, "E_pot")
-
-        if len(h_functions) > 0:
-            self.h = lambda t, q, u: np.sum([hi(t, q, u) for hi in h_functions], axis=0)
-        elif hasattr(self, "h"):
-            delattr(self, "h")
-
-        if len(h_q_functions) > 0:
-            self.h_q = lambda t, q, u: np.sum(
-                [hi_q(t, q, u) for hi_q in h_q_functions], axis=0
-            )
-        elif hasattr(self, "h_q"):
-            delattr(self, "h_q")
-
-        if len(h_u_functions) > 0:
-            self.h_u = lambda t, q, u: np.sum(
-                [hi_u(t, q, u) for hi_u in h_u_functions], axis=0
-            )
-        elif hasattr(self, "h_u"):
-            delattr(self, "h_u")
+        super().set_parameter(
+            cross_section=cross_section,
+            material_model=material_model,
+            cross_section_inertias=cross_section_inertias,
+            distributed_load=distributed_load,
+        )
 
     @staticmethod
     def straight_configuration(
         nelement,
         L,
-        r_OP0=np.zeros(3, dtype=float),
-        A_IB0=np.eye(3, dtype=float),
+        r_OP0=zeros3,
+        A_IB0=eye3,
     ):
         """Compute generalized position coordinates for straight configuration."""
         nnodes = nelement + 1
@@ -331,6 +214,14 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         eps = np.zeros(nelement - 1)
         alpha = np.zeros(nelement)
         return np.concat([r.reshape(-1), p.reshape(-1), eps, alpha])
+
+    @staticmethod
+    def pose_configuration(nelement, r_OP, A_IB, xi1=1, r_OP0=zeros3, A_IB0=eye3): ...
+
+    @staticmethod
+    def straight_initial_configuration(
+        nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
+    ): ...
 
     ############################
     # export of centerline nodes
@@ -400,6 +291,60 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
 
         # orientation A
         if self.orientation_type == "A":
+            raise NotImplementedError
+            rP = N @ qnodes
+            r_CP = self._A_IB(rP[3:]) @ B_r_CP
+            return rP[:3] + r_CP
+
+            point_dict = self.get_interaction_point(xi)
+            N = point_dict["N"]
+
+            # TODO: difference in first and last element!
+            qnodes = qi[self.DOF_nodes].reshape(2, -1)
+
+            r_OC0 = qnodes[0, :3]
+            r_OC1 = qnodes[1, :3]
+
+            P_IB0 = qnodes[0, 3:7]
+            P_IB1 = qnodes[1, 3:7]
+
+            q_eps0 = qnodes[0, -1]
+            q_eps1 = qnodes[1, -1]
+
+            A_IB0 = Exp_SO3_quat(P_IB0)
+            A_IB1 = Exp_SO3_quat(P_IB1)
+
+            t0 = A_IB0[:, 2] * (1 + q_eps0)
+            t1 = A_IB1[:, 2] * (1 - q_eps1)
+
+            r_OC = h00 * r_OC0 + h01 * t0 + h10 * r_OC1 + h11 * t1
+
+            if B_r_CP @ B_r_CP == 0.0:
+                return r_OC
+
+            # TODO: check if normalization is necessary
+            P_IM = P_IB0 / np.linalg.norm(P_IB0) + P_IB1 / np.linalg.norm(P_IB1)
+            A_IM = Exp_SO3_quat(P_IM)
+
+            r_OC = h00 * r_OC0 + h01 * t0 + h10 * r_OC1 + h11 * t1
+            r_OC_xi = h00_xi * r_OC0 + h01_xi * t0 + h10_xi * r_OC1 + h11_xi * t1
+
+            A_MJ = SR(A_IM.T @ r_OC_xi, 0)
+
+            alpha = N0 * SR_error(...) + N1 * qi[self.DOF_alpha] + N2 * SR_error(...)
+            A_JB = A_IB_basic(alpha).x
+
+            A_IB = A_IM @ A_MJ @ A_JB
+            r_CP = A_IB @ B_r_CP
+            # TODO: can we get A_IB instead by
+            # P_IJm = P_IM oxo (np.sin(alpha/2), np.cos(alpha/2), 0, 0) or similar, maybe change DOF
+            # then P_IJ = N0 * P_IB0 + N1 * P_IJm + N2 * P_IB1
+            # then A_IJ = Exp_SO3(P_IJ)
+            # and A_JB = SR(A_IJ.T @ r_OC_xi, 0)
+
+            # TODO: compare complexity: where does curvature come from and how do pd's w.r.t. q look like?
+
+            return r_OC + r_CP
             ...
         # TODO: implement this
 
@@ -438,18 +383,18 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         )
 
         if choice == "strains":
-            # TODO: remove r_OC
-            return r_OC, A_IB, j, B_kappa_bar
+            return j, B_kappa_bar
 
         if choice == "int":
-            return r_OC, A_IB, j, B_kappa_bar, ex_B_xi, ex_B_to_j, ex_B_to_j_xi
+            return A_IB, j, B_kappa_bar, ex_B_xi, ex_B_to_j, ex_B_to_j_xi
 
         print("Not implemented yet")
 
-    def set_reference_strains(self, Q):
+    def _set_reference_strains(self, Q):
         self.Q = Q.copy()
 
-        _, _, J, B_kappa0_bar = self._eval_int_vec(
+        # internal virtual work contributions
+        J, B_kappa0_bar = self._eval_int_vec(
             self.shape_functions_int, self.Q, choice="strains"
         )
         self.J_int_vec = J
@@ -459,8 +404,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         self.B_Kappa0_int = self.B_kappa0_bar_int / J[:, None]
         self.epsilon0_int = np.hstack([self.B_Gamma0_int, self.B_Kappa0_int])
         self._epsilon_int = np.zeros((self.nquadrature_int_total, 6))
-
-        # TODO: dyn and ext?
 
     def _projection_D(self, q):
         # 3.60 but in different order
@@ -532,11 +475,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
     ####################################################
     # interactions with other bodies and the environment
     ####################################################
-    def elDOF_P(self, xi):
-        # TODO: do this function seriously. Can we even get rid of it?
-        # TODO: move to rod parent
-        return self.get_interaction_point(xi).get("qDOF")
-
     def get_interaction_point(self, xi):
         # TODO: call this from constraints, see Tianxiang Marker, so that it is not called from postprocessing r_OP, etc. calls
         # TODO: check that it is always done using this function, never access interaction points directly!
@@ -565,14 +503,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
             )
         return self.interaction_points[xi]
 
-    def local_qDOF_P(self, xi):
-        # TODO: move to rod parent
-        return self.get_interaction_point(xi).get("qDOF")
-
-    def local_uDOF_P(self, xi):
-        # TODO: move to rod parent
-        return self.get_interaction_point(xi).get("uDOF")
-
     ##########################
     # r_OP / A_IB contribution
     ##########################
@@ -584,60 +514,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
 
         P_IB = qi[3:]
         return r_OC + Exp_SO3_quat(P_IB) @ B_r_CP
-        if False:
-            rP = N @ qnodes
-            r_CP = self._A_IB(rP[3:]) @ B_r_CP
-            return rP[:3] + r_CP
-
-            point_dict = self.get_interaction_point(xi)
-            N = point_dict["N"]
-
-            # TODO: difference in first and last element!
-            qnodes = qi[self.DOF_nodes].reshape(2, -1)
-
-            r_OC0 = qnodes[0, :3]
-            r_OC1 = qnodes[1, :3]
-
-            P_IB0 = qnodes[0, 3:7]
-            P_IB1 = qnodes[1, 3:7]
-
-            q_eps0 = qnodes[0, -1]
-            q_eps1 = qnodes[1, -1]
-
-            A_IB0 = Exp_SO3_quat(P_IB0)
-            A_IB1 = Exp_SO3_quat(P_IB1)
-
-            t0 = A_IB0[:, 2] * (1 + q_eps0)
-            t1 = A_IB1[:, 2] * (1 - q_eps1)
-
-            r_OC = h00 * r_OC0 + h01 * t0 + h10 * r_OC1 + h11 * t1
-
-            if B_r_CP @ B_r_CP == 0.0:
-                return r_OC
-
-            # TODO: check if normalization is necessary
-            P_IM = P_IB0 / np.linalg.norm(P_IB0) + P_IB1 / np.linalg.norm(P_IB1)
-            A_IM = Exp_SO3_quat(P_IM)
-
-            r_OC = h00 * r_OC0 + h01 * t0 + h10 * r_OC1 + h11 * t1
-            r_OC_xi = h00_xi * r_OC0 + h01_xi * t0 + h10_xi * r_OC1 + h11_xi * t1
-
-            A_MJ = SR(A_IM.T @ r_OC_xi, 0)
-
-            alpha = N0 * SR_error(...) + N1 * qi[self.DOF_alpha] + N2 * SR_error(...)
-            A_JB = A_IB_basic(alpha).x
-
-            A_IB = A_IM @ A_MJ @ A_JB
-            r_CP = A_IB @ B_r_CP
-            # TODO: can we get A_IB instead by
-            # P_IJm = P_IM oxo (np.sin(alpha/2), np.cos(alpha/2), 0, 0) or similar, maybe change DOF
-            # then P_IJ = N0 * P_IB0 + N1 * P_IJm + N2 * P_IB1
-            # then A_IJ = Exp_SO3(P_IJ)
-            # and A_JB = SR(A_IJ.T @ r_OC_xi, 0)
-
-            # TODO: compare complexity: where does curvature come from and how do pd's w.r.t. q look like?
-
-            return r_OC + r_CP
 
     def r_OP_q(self, t, qi, xi, B_r_CP=zeros3):
         # return approx_fprime(qi, lambda qi_: self.r_OP(t, qi_, xi, B_r_CP))
@@ -713,7 +589,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
     def h_pot(self, _eval, sigma_qp): ...
 
     def f_pot(self, t, q, u):
-        _, A_IB, j, B_kappa_bar, ex_B_xi, ex_B_to_j, ex_B_to_j_xi = self._eval_int_vec(
+        A_IB, j, B_kappa_bar, ex_B_xi, ex_B_to_j, ex_B_to_j_xi = self._eval_int_vec(
             self.shape_functions_int, q, choice="int"
         )
 
@@ -809,11 +685,11 @@ class KirchhoffLoveRod_PetrovGalerkin(RodExportBase):
         if self._nDB > 0:
             shape_functions = [*self.h3(xis, els), *self.N(xis, els)]
             # reference strains
-            _, _, J, B_kappa0_bar = self._eval_int_vec(
+            J, B_kappa0_bar = self._eval_int_vec(
                 shape_functions, self.Q, choice="strains"
             )
             # current strains
-            _, _, j, B_kappa_bar = self._eval_int_vec(
+            j, B_kappa_bar = self._eval_int_vec(
                 shape_functions, q[self.qDOF], choice="strains"
             )
 
@@ -853,7 +729,8 @@ def make_KirchhoffLoveRod(
 
     # displacement based
     assert idx_displacement_based is None
-    idx_displacement_based = np.array([], dtype=int)
+    # idx_displacement_based = np.array([], dtype=int)
+    idx_displacement_based = np.arange(6, dtype=int)
 
     # quadrature
     if quadrature_int == None:
@@ -865,19 +742,17 @@ def make_KirchhoffLoveRod(
             "quadrature_int must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
         )
 
-    # # assert quadrature_dyn is None
-    # if quadrature_dyn == None:
-    #     # TODO: take trapezoidal rule as default?
-    #     quadrature_dyn = (polynomial_degree + 1, "Trapezoidal")
-    #     n_full = int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
-    #     quadrature_dyn = (n_full, "Gauss")
-    #     print(f"quadrature_dyn: {quadrature_dyn}")
-    # elif isinstance(quadrature_dyn, int):
-    #     quadrature_dyn = (quadrature_dyn, "Gauss")
-    # elif not isinstance(quadrature_dyn, tuple):
-    #     raise ValueError(
-    #         "quadrature_dyn must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
-    #     )
+    if quadrature_dyn == None:
+        # TODO: also look on what to do with full inertia
+        n_full = 5
+        quadrature_dyn = (n_full, "Gauss")
+        print(f"quadrature_dyn: {quadrature_dyn}")
+    elif isinstance(quadrature_dyn, int):
+        quadrature_dyn = (quadrature_dyn, "Gauss")
+    elif not isinstance(quadrature_dyn, tuple):
+        raise ValueError(
+            "quadrature_dyn must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
+        )
 
     # if quadrature_ext == None:
     #     # TODO: take trapezoidal rule as default?
@@ -898,36 +773,18 @@ def make_KirchhoffLoveRod(
     assert rotation_interpolation in ["A", "B"]
 
     class KirchhoffLoveRod(KirchhoffLoveRod_PetrovGalerkin):
-        def __init__(
-            self,
-            cross_section,
-            material_model,
-            nelement,
-            *,
-            Q,
-            q0=None,
-            u0=None,
-            distributed_load=[None, None],
-            cross_section_inertias=False,
-            name="KirchhoffLove_rod",
-        ):
-            super().__init__(
-                cross_section,
-                material_model,
-                cross_section_inertias,
-                idx_constraints,
-                idx_displacement_based,
-                distributed_load,
-                nelement,
-                quadrature_int,
-                quadrature_dyn,
-                quadrature_ext,
-                rotation_interpolation,
-                full_inertia,
-                Q,
-                q0,
-                u0,
-                name,
+        def _pre_init_(self):
+            self.orientation_type = rotation_interpolation
+
+            # TODO: 4 or 6 strains?
+            self.idx_g = idx_constraints
+            self.idx_db = idx_displacement_based
+            self.idx_c = np.setdiff1d(
+                np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
             )
+
+            self.quadrature_int = quadrature_int
+            self.quadrature_dyn = quadrature_dyn
+            self.quadrature_ext = quadrature_ext
 
     return KirchhoffLoveRod

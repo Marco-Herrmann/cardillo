@@ -108,7 +108,7 @@ class RodInterface(RodExportBase):
         cross_section=None,
         material_model=None,
         cross_section_inertias=None,
-        distributed_load=[None, None],
+        distributed_load=None,
     ):
         if cross_section is not None:
             self.cross_section = cross_section
@@ -129,22 +129,21 @@ class RodInterface(RodExportBase):
 
             self.cross_section_inertias.prepare_quadrature(self.qp_dyn_vec)
 
-        # TODO: this erases the load if notheing is provided!
-        # make default to None, and updated with [None, None]
-        assert (
-            len(distributed_load) == 2
-        ), "Line distributed forces must be a list of length 2 (force and moment)."
-        if (distributed_load[0] == None) and (distributed_load[1] == None):
-            self.include_f_ext = False
-        else:
-            self.include_f_ext = True
+        if distributed_load is not None:
+            assert (
+                len(distributed_load) == 2
+            ), "Line distributed forces must be a list of length 2 (force and moment)."
+            if (distributed_load[0] == None) and (distributed_load[1] == None):
+                self.include_f_ext = False
+            else:
+                self.include_f_ext = True
 
-            zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
-            self.distributed_load = distributed_load
-            if self.distributed_load[0] is None:
-                self.distributed_load[0] = lambda t, xis: zeros_ext
-            if self.distributed_load[1] is None:
-                self.distributed_load[1] = lambda t, xis: zeros_ext
+                zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
+                self.distributed_load = distributed_load
+                if self.distributed_load[0] is None:
+                    self.distributed_load[0] = lambda t, xis: zeros_ext
+                if self.distributed_load[1] is None:
+                    self.distributed_load[1] = lambda t, xis: zeros_ext
 
         # compose E_pot, h, h_q and h_u
         self.compose_E_h()
