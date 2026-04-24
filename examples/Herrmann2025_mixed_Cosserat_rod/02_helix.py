@@ -223,9 +223,9 @@ if __name__ == "__main__":
             # idx_displacement_based=[0, 1, 2, 3, 4, 5],
         )
     elif formulation == "Kirchhoff":
-        from cardillo.rods.KirchhoffLoveRod import KirchhoffLoveRod
+        from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
 
-        Rod = KirchhoffLoveRod
+        Rod = make_KirchhoffLoveRod()
 
     helix(
         Rod,
