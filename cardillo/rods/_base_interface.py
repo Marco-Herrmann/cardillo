@@ -101,6 +101,52 @@ class RodInterface(RodExportBase):
     @abstractmethod
     def _post_init_(self): ...
 
+    def _handle_internal(self, nla_c, nla_g):
+        # compliance
+        if nla_c > 0:
+            self.nla_c = self._nla_c = nla_c
+
+            ##############
+            # compliance #
+            # c = c_la_c @ la_c - l_c
+            ##############
+            # la_c = -c_la_c_inv @ c(q, u, 0) = c_la_c_inv @ l_c(q)
+            self.la_c = lambda t, q, u: self._cla_c_inv @ self.l_sigma(q)[0]
+            self.c = lambda t, q, u, la_c: self._cla_c @ la_c - self.l_sigma(q)[0]
+            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q)[0]
+            self.c_la_c = lambda: self._cla_c
+            self.W_c = lambda t, q: self.W_sigma(q)[0]
+            self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
+            self.E_pot_comp = self._E_pot_comp
+        else:
+            self._nla_c = 0
+
+        # constraint
+        # director beam passes 0 here
+        if nla_g > 0:
+            self.nla_g = self._nla_g = nla_g
+
+            #############
+            # constraints
+            #  g = - l_g
+            #############
+            self.g = lambda t, q: -self.l_sigma(q)[1]
+            self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
+            self.W_g = lambda t, q: self.W_sigma(q)[1]
+            self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
+
+            self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
+            self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
+            self.g_dot_q = lambda t, q, u: self.l_sigma_dot_q(q, u)[1]
+            self.g_ddot = lambda t, q, u, u_dot: self.l_sigma_ddot(q, u, u_dot)[1]
+
+        else:
+            self._nla_g = 0
+
+        # displacement-based
+        self._nDB = len(self.idx_db)
+        self.include_f_pot = self._nDB > 0
+
     # methods to change
     def set_parameter(
         self,

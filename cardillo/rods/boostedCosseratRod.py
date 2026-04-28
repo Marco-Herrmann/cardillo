@@ -62,13 +62,11 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
         # total number of nodes and per element
         self.nnodes = mesh_kin.nnodes
-        self.nnodes_element = mesh_kin.nnodes_element
         self.nnodes_sigma = mesh_cg.nnodes
 
         self.N = lambda xis, els: mesh_kin.shape_functions(xis, els, 1)
         self.N_element = lambda xi, el: mesh_kin.shape_function_array_element(xi, el, 0)
         self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
-        self.Nc_element = lambda xi, el: mesh_cg.shape_function_array_element(xi, el, 0)
 
         #####################
         # quadrature points #
@@ -181,62 +179,14 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
         # total number of compliance coordinates
         self.nla_sigma = self.nnodes_sigma * 6
-        if (nla_c := self.nnodes_sigma * len(self.idx_c)) > 0:
-            self.nla_c = self._nla_c = nla_c
+        nla_c = self.nnodes_sigma * len(self.idx_c)
+        nla_g = self.nnodes_sigma * len(self.idx_g)
+        self._handle_internal(nla_c, nla_g)
 
-            ##############
-            # compliance #
-            # c = c_la_c @ la_c - l_c
-            ##############
-            # la_c = -c_la_c_inv @ c(q, u, 0) = c_la_c_inv @ l_c(q)
-            self.la_c = lambda t, q, u: self.__cla_c_inv @ self.l_sigma(q)[0]
-            self.c = lambda t, q, u, la_c: self.__cla_c @ la_c - self.l_sigma(q)[0]
-            self.c_q = lambda t, q, u, la_c: -self.l_sigma_q(q)[0]
-            self.c_la_c = lambda: self.__cla_c
-            self.W_c = lambda t, q: self.W_sigma(q)[0]
-            self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
-            self.E_pot_comp = self._E_pot_comp
-        else:
-            self._nla_c = 0
-
-        if (nla_g := self.nnodes_sigma * len(self.idx_g)) > 0:
-            self.nla_g = self._nla_g = nla_g
-
-            #############
-            # constraints
-            #  g = - l_g
-            #############
-            self.nu_zeros = np.zeros(self.nu)
-            self.g = lambda t, q: -self.l_sigma(q)[1]
-            self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
-            self.W_g = lambda t, q: self.W_sigma(q)[1]
-            self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
-
-            # TODO: without approx_fprime and without q_dot as this is inconsistent!
-            # we have to take the time derivative in the continous equations and then insert the interpolations!
-            self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
-            self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
-            self.g_dot_q = lambda t, q, u: approx_fprime(
-                q, lambda q_: self.g_dot(t, q_, u)
-            )
-            self.g_ddot = lambda t, q, u, u_dot: self.g_dot_u(
-                t, q
-            ) @ u_dot + self.g_dot_q(t, q, u) @ self.q_dot(t, q, u)
-
-        else:
-            self._nla_g = 0
-
-        if len(self.idx_db) > 0:
-            self._nDB = len(self.idx_db)
-            self.include_f_pot = True
-        else:
-            self._nDB = 0
-            self.include_f_pot = False
-
+        # g_S constraints
         self.nla_S = self.nnodes * self.dim_g_S
         self.la_S0 = np.zeros(self.nla_S, dtype=float)
         if self.nq_node == 12:
-            # TODO
             warn("g_S rows and columns are completely wrong!")
         self._g_S_q_row = np.repeat(np.arange(self.nnodes), 4)
         self._g_S_q_col = (
@@ -524,7 +474,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
                 N = np.array([1.0])
             else:
                 el = self.element_number(xi)
-                nnodes = self.nnodes_element
+                nnodes = self.polynomial_degree + 1
 
                 N = self.N_element(xi, el)
                 Nq = np.zeros((self.nq_node, self.nq_node * nnodes))
@@ -538,8 +488,8 @@ class CosseratRod_PetrovGalerkin(RodInterface):
                 Nu[rows, cols] = N
 
                 # elDOF
-                start = (self.nnodes_element - 1) * el
-                end = (self.nnodes_element - 1) * (el + 1) + 1
+                start = self.polynomial_degree * el
+                end = self.polynomial_degree * (el + 1) + 1
                 qDOF = np.arange(self.nq_node * start, self.nq_node * end)
                 uDOF = np.arange(6 * start, 6 * end)
 
@@ -779,14 +729,30 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
         return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
+    def l_sigma_dot_q(self, q, u):
+        # TODO: do this without approx_fprime
+        l_c_dot_q = approx_fprime(q, lambda q_: self.W_sigma(q_)[0].T @ u)
+        l_g_dot_q = approx_fprime(q, lambda q_: self.W_sigma(q_)[1].T @ u)
+        return l_c_dot_q, l_g_dot_q
+
+    def l_sigma_ddot(self, q, u, u_dot):
+        # TODO: do this consistent, i.e., w/o q_dot
+        W_c, W_g = self.W_sigma(q)
+        l_c_dot_q, l_g_dot_q = self.l_sigma_dot_q(q, u)
+        q_dot = self.q_dot(0.0, q, u)
+
+        l_c_ddot = W_c.T @ u_dot + l_c_dot_q @ q_dot
+        l_g_ddot = W_g.T @ u_dot + l_g_dot_q @ q_dot
+        return l_c_ddot, l_g_ddot
+
     def _c_la_c_coo(self):
         C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
         c_la_c = self.c_la_c_SAB.add_blocks(
             C_qp[None, :, self.idx_c[:, None], self.idx_c]
         )
 
-        self.__cla_c = c_la_c
-        self.__cla_c_inv = spsolve(c_la_c.tocsc(), eye_array(self.nla_c, format="csc"))
+        self._cla_c = c_la_c
+        self._cla_c_inv = spsolve(c_la_c.tocsc(), eye_array(self.nla_c, format="csc"))
         return c_la_c
 
     def W_sigma(self, q):
@@ -1061,6 +1027,7 @@ def make_BoostedCosseratRod(
     quadrature_ext=None,
     parametrization=None,
 ) -> RodInterface:
+    """idx_constraints and idx_displacement_based in [0, 1, 2, 3, 4, 5]"""
     # polynomila degree
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 

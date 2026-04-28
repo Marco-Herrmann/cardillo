@@ -3,7 +3,6 @@ from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
 import sparse
 from scipy.sparse import (
-    block_diag,
     bsr_array,
     csr_array,
     eye_array,
@@ -26,6 +25,7 @@ from cardillo.math.rotations import (
 )
 from cardillo.math.SmallestRotation import SmallestRotation
 from cardillo.utility.coo_matrix import CooMatrix
+from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 from ._base_export import RodExportBase
 from ._base_interface import RodInterface
@@ -61,10 +61,18 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             polynomial_degere=2,
             derivative_order=1,
         )
-        # TODO: quadratic for n and linear for m I guess
-        # mesh_cg = Mesh1D_equidistant(
-        # basis=
-        # )
+        mesh_n = Mesh1D_equidistant(
+            basis="Lagrange_Disc",
+            nelement=self.nelement,
+            polynomial_degere=2,
+            derivative_order=0,
+        )
+        mesh_m = Mesh1D_equidistant(
+            basis="Lagrange_Disc",
+            nelement=self.nelement,
+            polynomial_degere=1,
+            derivative_order=0,
+        )
 
         # element intervals
         self.element_interval = mesh_rP.element_interval
@@ -73,6 +81,8 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
         # total number of nodes
         self.nnodes = self.nelement + 1
+        self.nnodes_n = mesh_n.nnodes
+        self.nnodes_m = mesh_m.nnodes
 
         self.h3 = lambda xis, els: mesh_rP.shape_functions(xis, els, 2)
         self.h3_element = lambda xi, el: mesh_rP.shape_function_array_element(xi, el, 0)
@@ -82,19 +92,27 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             xi, el, 0
         )
 
+        self.Nn = lambda xis, els: mesh_n.shape_functions(xis, els, 0)[0]
+        self.Nm = lambda xis, els: mesh_m.shape_functions(xis, els, 0)[0]
+
         #####################
         # quadrature points #
         #####################
         # internal virtual work contribution
-        quadrature_int_N = mesh_rP.quadrature(*self.quadrature_int, 2)
-        self.nquadrature_int_total = quadrature_int_N["nquadrature_total"]
-        self.qp_int_vec = quadrature_int_N["qp"]
-        self.qw_int_vec = quadrature_int_N["qw"]
-        self.qels_int_vec = quadrature_int_N["els"]
-        self.h3_int, self.h3_xi_int, self.h3_xixi_int = quadrature_int_N["N"]
+        quadrature_int_h = mesh_rP.quadrature(*self.quadrature_int, 2)
+        self.nquadrature_int_total = quadrature_int_h["nquadrature_total"]
+        self.qp_int_vec = quadrature_int_h["qp"]
+        self.qw_int_vec = quadrature_int_h["qw"]
+        self.qels_int_vec = quadrature_int_h["els"]
+        self.h3_int, self.h3_xi_int, self.h3_xixi_int = quadrature_int_h["N"]
 
         quadrature_int_N = mesh_alpha.quadrature(*self.quadrature_int, 1)
         self.N_int, self.N_xi_int = quadrature_int_N["N"]
+
+        quadrature_int_n = mesh_n.quadrature(*self.quadrature_int, 0)
+        self.Nn_int = quadrature_int_n["N"][0]
+        quadrature_int_m = mesh_m.quadrature(*self.quadrature_int, 0)
+        self.Nm_int = quadrature_int_m["N"][0]
 
         self.shape_functions_int = (
             self.h3_int,
@@ -105,12 +123,12 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         )
 
         # inertial virtual work contributions
-        quadrature_dyn_N = mesh_rP.quadrature(*self.quadrature_dyn, 2)
-        self.nquadrature_dyn_total = quadrature_dyn_N["nquadrature_total"]
-        self.qp_dyn_vec = quadrature_dyn_N["qp"]
-        self.qw_dyn_vec = quadrature_dyn_N["qw"]
-        self.qels_dyn_vec = quadrature_dyn_N["els"]
-        self.h3_dyn, self.h3_xi_dyn, self.h3_xixi_dyn = quadrature_dyn_N["N"]
+        quadrature_dyn_h = mesh_rP.quadrature(*self.quadrature_dyn, 2)
+        self.nquadrature_dyn_total = quadrature_dyn_h["nquadrature_total"]
+        self.qp_dyn_vec = quadrature_dyn_h["qp"]
+        self.qw_dyn_vec = quadrature_dyn_h["qw"]
+        self.qels_dyn_vec = quadrature_dyn_h["els"]
+        self.h3_dyn, self.h3_xi_dyn, self.h3_xixi_dyn = quadrature_dyn_h["N"]
 
         quadrature_dyn_N = mesh_alpha.quadrature(*self.quadrature_dyn, 1)
         self.N_dyn, self.N_xi_dyn = quadrature_dyn_N["N"]
@@ -123,27 +141,88 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             self.N_xi_dyn,
         )
 
-        # TODO: external
+        # external virtual work contributions
+        quadrature_ext_h = mesh_rP.quadrature(*self.quadrature_ext, 2)
+        self.nquadrature_ext_total = quadrature_ext_h["nquadrature_total"]
+        self.qp_ext_vec = quadrature_ext_h["qp"]
+        self.qw_ext_vec = quadrature_ext_h["qw"]
+        self.qels_ext_vec = quadrature_ext_h["els"]
+        self.h3_ext, self.h3_xi_ext, self.h3_xixi_ext = quadrature_ext_h["N"]
+
+        quadrature_ext_N = mesh_alpha.quadrature(*self.quadrature_ext, 1)
+        self.N_ext, self.N_xi_ext = quadrature_ext_N["N"]
+
+        self.shape_functions_ext = (
+            self.h3_ext,
+            self.h3_xi_ext,
+            self.h3_xixi_ext,
+            self.N_ext,
+            self.N_xi_ext,
+        )
 
     def _post_init_(self):
         # M
         M_pairs = ...
 
-        # if self._nla_c > 0:
-        #     # c_la_c
-        #     c_la_c_pairs = ...
+        if self._nla_c > 0:
+            # c_la_c
+            if self.n_c:
+                c_la_c_n_pairs = [
+                    (self.Nn_int, self.Nn_int, self.qw_int_vec * self.J_int_vec)
+                ]
+                self.c_la_c_n_SAB = SparseArrayBlocks(
+                    (self._nla_cn, self._nla_cn),
+                    (1, 1),
+                    c_la_c_n_pairs,
+                )
+            if len(self.idx_m_c) > 0:
+                c_la_c_m_pairs = [
+                    (self.Nm_int, self.Nm_int, self.qw_int_vec * self.J_int_vec)
+                ]
+                self.c_la_c_m_SAB = SparseArrayBlocks(
+                    (self._nla_cm, self._nla_cm),
+                    (len(self.idx_m_c), len(self.idx_m_c)),
+                    c_la_c_m_pairs,
+                )
 
         # c_sigma
         c_sigma_q_pairs = ...
 
         # W_sigma
-        W_sigma_pairs = ...
+        W_sigma_rt_n_pairs = [
+            (self.h3_xi_int, self.Nn_int, self.qw_int_vec),
+        ]
+        self.W_sigma_rt_n_SAB = SparseArrayBlocks(
+            (self.nu_rt, self.nnodes_n),
+            (3, 1),
+            W_sigma_rt_n_pairs,
+        )
+        W_sigma_rt_m_pairs = [
+            (self.h3_xi_int, self.Nm_int, self.qw_int_vec),
+            (self.h3_xixi_int, self.Nm_int, self.qw_int_vec),
+        ]
+        self.W_sigma_rt_m_SAB = SparseArrayBlocks(
+            (self.nu_rt, 3 * self.nnodes_m),
+            (3, 3),
+            W_sigma_rt_m_pairs,
+            [(..., self.idx_m_c), (..., self.idx_m_g)],
+        )
+        W_sigma_theta_m_pairs = [
+            (self.N_int, self.Nm_int, self.qw_int_vec),
+            (self.N_xi_int, self.Nm_int, self.qw_int_vec),
+        ]
+        self.W_sigma_theta_m_SAB = SparseArrayBlocks(
+            (self.nu_theta, 3 * self.nnodes_m),
+            (1, 3),
+            W_sigma_theta_m_pairs,
+            [(..., self.idx_m_c), (..., self.idx_m_g)],
+        )
 
         # Wla_sigma_q
         h_pot_q_pairs = ...
 
     def _create_system_interfaces(self):
-        # DOF handling
+        # qDOF
         self.nq_r = 3 * self.nnodes
         self.nq_P = 4 * self.nnodes
         self.nq_eps = self.nnodes - 2
@@ -155,6 +234,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         self.qDOF_alpha = slice(nq[2], nq[3])
         self.nq = nq[-1]
 
+        # uDOF
         self.nu_r = 3 * self.nnodes
         self.nu_phi = 3 * self.nnodes
         self.nu_eps = 2 * self.nnodes - 2
@@ -166,10 +246,21 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         self.uDOF_alpha = slice(nu[2], nu[3])
         self.nu = nu[-1]
 
-        # number of DB
-        self._nDB = 6
+        self.nu_rt = 3 * self.nnodes + 6 * self.nelement
+        self.nu_theta = self.nnodes + self.nelement
+        print(f"nu_rt: {self.nu_rt}")
+        print(f"nu_theta: {self.nu_theta}")
 
-        self.include_f_pot = True
+        # total number of compliance coordinates
+        self.nla_sigma = self.nnodes_n + self.nnodes_m * 3
+        self._nla_cn = self.nnodes_n * self.n_c
+        self._nla_gn = self.nnodes_n * self.n_g
+        self._nla_cm = self.nnodes_m * len(self.idx_m_c)
+        self._nla_gm = self.nnodes_m * len(self.idx_m_g)
+        nla_c = self._nla_cn + self._nla_cm
+        nla_g = self._nla_gn + self._nla_gm
+
+        self._handle_internal(nla_c, nla_g)
 
     def set_parameter(
         self,
@@ -246,6 +337,14 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         r_OC, A_IB = self._eval_int_vec(shape_functions, q_body, choice="eval")
 
         return r_OC.T, A_IB[:, :, 0].T, A_IB[:, :, 1].T, A_IB[:, :, 2].T
+
+    ##################
+    # abstract methods
+    ##################
+    def assembler_callback(self):
+        # self._M_coo()
+        if self._nla_c > 0:
+            self._c_la_c_coo()
 
     ############################################
     # interpolations and virtual work mappings #
@@ -408,6 +507,14 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         self.epsilon0_int = np.hstack([self.B_Gamma0_int, self.B_Kappa0_int])
         self._epsilon_int = np.zeros((self.nquadrature_int_total, 6))
 
+        # inertial virtual work contributions
+        J, _ = self._eval_int_vec(self.shape_functions_dyn, self.Q, choice="strains")
+        self.J_dyn_vec = J
+
+        # external virtual work contributions
+        J, _ = self._eval_int_vec(self.shape_functions_ext, self.Q, choice="strains")
+        self.J_ext_vec = J
+
     def _projection_D(self, q):
         # 3.60 but in different order
         D = np.zeros((2 * self.nnodes - 2, 3, 3))
@@ -437,6 +544,90 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
         return D
 
+    def _projection_D_matrix(self, q):
+        # TODO: cache and optimize
+        Di = self._projection_D(q)
+
+        # P_IB = q[self.qDOF_P].reshape(self.nnodes, 4)
+        # eps = np.array([0, *q[self.qDOF_eps], 0])
+
+        # P2 = np.sum(P_IB**2, axis=1)
+        # A_IB = Exp_SO3_quat(P_IB)
+
+        # scl_plus = (1 + eps) * P2
+        # scl_minus = (1 - eps) * P2
+
+        block_cols = np.arange(self.nelement)
+        indptr = np.arange(self.nelement + 1)
+        shape = (3 * self.nelement, self.nelement)
+        block_size = (3, 1)
+
+        D_phi_y_plus = bsr_array(
+            (Di[: self.nelement, :, 1, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_phi_y_minus = bsr_array(
+            (Di[self.nelement :, :, 1, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_phi_z_plus = bsr_array(
+            (Di[: self.nelement, :, 2, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_phi_z_minus = bsr_array(
+            (Di[self.nelement :, :, 2, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_eps_plus = bsr_array(
+            (Di[: self.nelement, :, 0, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_eps_minus = bsr_array(
+            (Di[self.nelement :, :, 0, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+
+        t_plus_row = slice(self.nu_r, self.nu_r + 3 * self.nelement)
+        t_minus_row = slice(
+            self.nu_r + 3 * self.nelement, self.nu_r + 6 * self.nelement
+        )
+
+        phi_y_plus_col = slice(self.uDOF_phi.start + 1, self.uDOF_phi.stop - 3, 3)
+        phi_z_plus_col = slice(self.uDOF_phi.start + 2, self.uDOF_phi.stop - 3, 3)
+        phi_y_minus_col = slice(self.uDOF_phi.start + 1 + 3, self.uDOF_phi.stop, 3)
+        phi_z_minus_col = slice(self.uDOF_phi.start + 2 + 3, self.uDOF_phi.stop, 3)
+
+        # TODO: how to order epsilons? (plus, minus) or (0, 1-, 1+, 2-, 2+, ...(N-1)-, (N-1)+, N)?
+        # eps_plus_col = slice(self.uDOF_eps.start, self.uDOF_eps.stop, 2)
+        # eps_minus_col = slice(self.uDOF_eps.start+1, self.uDOF_eps.stop, 2)
+        eps_plus_col = slice(self.uDOF_eps.start, self.uDOF_eps.stop - self.nelement)
+        eps_minus_col = slice(self.uDOF_eps.start + self.nelement, self.uDOF_eps.stop)
+
+        D1 = CooMatrix((self.nu_rt, self.nu))
+        D1["I", : self.nu_r, self.uDOF_r] = eye_array(self.nu_r)
+        D1["phi_y+", t_plus_row, phi_y_plus_col] = D_phi_y_plus
+        D1["phi_y-", t_minus_row, phi_y_minus_col] = D_phi_y_minus
+        D1["phi_z+", t_plus_row, phi_z_plus_col] = D_phi_z_plus
+        D1["phi_z-", t_minus_row, phi_z_minus_col] = D_phi_z_minus
+        D1["eps+", t_plus_row, eps_plus_col] = D_eps_plus
+        D1["eps-", t_minus_row, eps_minus_col] = D_eps_minus
+
+        # TODO: precompute
+        phi_x_col = slice(self.uDOF_phi.start, self.uDOF_phi.stop, 3)
+        phi_x_row = slice(0, self.nu_theta, 2)
+        alpha_row = slice(1, self.nu_theta - 1, 2)
+        D2 = CooMatrix((self.nu_theta, self.nu))
+        D2["phi_x", phi_x_row, phi_x_col] = eye_array(self.nnodes)
+        D2["alpha", alpha_row, self.uDOF_alpha] = eye_array(self.nelement)
+
+        return D1, D2
+
     def process_h_node(self, q, h_rt, h_theta):
         # forces on (delta j_pm, delta phi_y, delta phi_z)
         D = self._projection_D(q)
@@ -451,7 +642,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         h_psi[1:, 1:] += h_rt[2 * self.nnodes - 1 :, 1:]
 
         h_alpha = h_theta[1::2]
-        return -np.concatenate(
+        return np.concatenate(
             [h_rt[: self.nnodes].reshape(-1), h_psi.reshape(-1), h_j_pm, h_alpha]
         )
 
@@ -592,7 +783,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     # by distributed load   #
     #########################
     def E_pot_ext(self, t, q):
-        r_OC, _ = self._eval_int_vec(self.shape_functions_int, q, choice="eval")
+        r_OC, _ = self._eval_int_vec(self.shape_functions_ext, q, choice="eval")
         b_qp = self.distributed_load[0](t, self.qp_ext_vec)
         return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
 
@@ -606,10 +797,92 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     #########################
     # internal virtual work #
     #########################
-    def l_sigma(self, q): ...
-    def l_sigma_q(self, q): ...
-    def _c_la_c_coo(self): ...
-    def W_sigma(self, q): ...
+    def l_sigma(self, q):
+        j, B_kappa_bar = self._eval_int_vec(
+            self.shape_functions_int, q[self.qDOF], choice="strains"
+        )
+
+        ln = self.Nn.T @ ((j - self.J_int_vec) * self.qw_int_vec[:, None])
+        lm = self.Nm.T @ (
+            (B_kappa_bar - self.B_kappa0_bar_int) * self.qw_int_vec[:, None]
+        )
+
+        lm_c = lm[:, self.idx_m_c].reshape(-1)
+        lm_g = lm[:, self.idx_m_g].reshape(-1)
+        l_c = np.concatenate([ln.reshape(-1), lm_c]) if self.n_c else lm_c
+        l_g = np.concatenate([ln.reshape(-1), lm_g]) if self.n_g else lm_g
+        return l_c, l_g
+
+    def l_sigma_q(self, q):
+        l_c_q = approx_fprime(q, lambda q_: self.l_sigma(q_)[0])
+        l_g_q = approx_fprime(q, lambda q_: self.l_sigma(q_)[1])
+        return l_c_q, l_g_q
+
+    def _c_la_c_coo(self):
+        C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
+
+        if self.n_c and len(self.idx_m_c) > 0:
+            C_coupled = np.zeros_like(C_qp)
+            C_coupled[:, 0, 3:] = C_qp[:, 0, 3:]
+            C_coupled[:, 3:, 0] = C_qp[:, 3:, 0]
+
+            error = np.linalg.norm(C_coupled)
+            if error != 0.0:
+                warn("There are couple terms in C, which are neglected!")
+
+        c_la_c = CooMatrix((self.nla_c, self.nla_c))
+        if self.n_c:
+            C_n = C_qp[:, 0, 0]
+            c_la_c[: self._nla_cn, : self._nla_cn] = self.c_la_c_n_SAB.add_blocks(
+                C_n[None, :, None, None]
+            )
+
+        if len(self.idx_m_c) > 0:
+            C_m = C_qp[:, 3:, 3:]
+            c_la_c[self._nla_cn :, self._nla_cn :] = self.c_la_c_m_SAB.add_blocks(
+                C_m[None, :, self.idx_m_c[:, None], self.idx_m_c]
+            )
+
+        self._cla_c = c_la_c.tocsc()
+        self._cla_c_inv = spsolve(self._cla_c, eye_array(self.nla_c, format="csc"))
+
+        return c_la_c
+
+    def W_sigma(self, q):
+        # compute W_sigma
+        A_IB, j, B_kappa_bar, ex_B_xi, ex_B_to_j, ex_B_to_j_xi = self._eval_int_vec(
+            self.shape_functions_int, q, choice="int"
+        )
+
+        # on rt -> r, j, phi
+        W_rt_n_qp = A_IB[:, :, 0]
+        W_rt_m_qp = np.empty((2, self.nquadrature_int_total, 3, 3))
+        W_rt_m_qp[0] = -np.cross(
+            ex_B_to_j_xi[:, None, :], A_IB
+        )  # TODO: avoid "-"-sign?
+        W_rt_m_qp[1] = -np.cross(ex_B_to_j[:, None, :], A_IB)  # TODO: avoid "-"-sign?
+
+        # TODO: I think it is better to keep c and g together and split up later the Coo
+        W_sigma_rt_n = self.W_sigma_rt_n_SAB.add_blocks(W_rt_n_qp[None, :, :, None])
+        W_sigma_rt_m = self.W_sigma_rt_m_SAB.add_blocks(W_rt_m_qp)
+
+        W_theta_m_qp = np.zeros((2, self.nquadrature_int_total, 3))
+        W_theta_m_qp[0] = np.einsum("ij,ijk->ik", ex_B_xi, A_IB)
+        W_theta_m_qp[1, 0] = 1.0
+        W_sigma_theta_m = self.W_sigma_theta_m_SAB.add_blocks(
+            W_theta_m_qp[:, :, None, :]
+        )
+
+        # TODO: prebuild this matrix
+        W_sigma = CooMatrix((self.nla_sigma, self.nla_sigma))
+        D1, D2 = self._projection_D_matrix(q)
+        W_sigma["rt_n", : -self.nu_alpha, : self.nnodes_n] = D1.T @ W_sigma_rt_n
+        W_sigma["rt_m", : -self.nu_alpha, self.nnodes_n :] = D1.T @ W_sigma_rt_m
+
+        W_sigma["theta_m", :, self.nnodes_n] = D2.T @ W_sigma_theta_m
+
+        return W_sigma
+
     def Wla_sigma(self, q, la_c=None, la_g=None): ...
     def h_pot(self, _eval, sigma_qp): ...
 
@@ -646,7 +919,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             F3 * self.qw_int_vec
         )
 
-        return self.process_h_node(q, h_rt, h_theta)
+        return self.process_h_node(q, -h_rt, -h_theta)
 
     def Wla_sigma_q(self, q, la_c=None, la_g=None): ...
 
@@ -729,15 +1002,32 @@ def make_KirchhoffLoveRod(
     full_inertia=False,
     rotation_interpolation=None,
 ):
-    # TODO: think of counting 0-5 or only 0-3
+    """idx_constraints and idx_displacement_based in [0, 1, 2, 3]"""
     # constraints
-    assert idx_constraints is None
-    idx_constraints = np.array([], dtype=int)
+    if idx_constraints is not None:
+        idx_constraints = np.asarray(idx_constraints, dtype=int)
+        if not ((idx_constraints >= 0).all() & (idx_constraints <= 3).all()):
+            raise ValueError("constraint values must between 0 and 3")
+    else:
+        idx_constraints = np.array([], dtype=int)
+    idx_constraints = np.sort(idx_constraints)
 
     # displacement based
-    assert idx_displacement_based is None
-    # idx_displacement_based = np.array([], dtype=int)
-    idx_displacement_based = np.arange(6, dtype=int)
+    if idx_displacement_based is not None:
+        idx_displacement_based = np.asarray(idx_displacement_based, dtype=int)
+        if not (
+            (idx_displacement_based >= 0).all() & (idx_displacement_based <= 3).all()
+        ):
+            raise ValueError("displacement_based values must between 0 and 3")
+    else:
+        idx_displacement_based = np.array([], dtype=int)
+    idx_displacement_based = np.sort(idx_displacement_based)
+
+    # check that no index is in both lists
+    inter_g_DB = np.intersect1d(idx_constraints, idx_displacement_based)
+    assert (
+        inter_g_DB.size == 0
+    ), f"the index {inter_g_DB} is both constrained and displacement based"
 
     # quadrature
     if quadrature_int == None:
@@ -761,6 +1051,7 @@ def make_KirchhoffLoveRod(
             "quadrature_dyn must be either an 'None', an integer for Gauss quadrature or a tuple: (nquadrature, method)"
         )
 
+    quadrature_ext = quadrature_dyn
     # if quadrature_ext == None:
     #     # TODO: take trapezoidal rule as default?
     #     quadrature_ext = (polynomial_degree + 1, "Trapezoidal")
@@ -783,12 +1074,16 @@ def make_KirchhoffLoveRod(
         def _pre_init_(self):
             self.orientation_type = rotation_interpolation
 
-            # TODO: 4 or 6 strains?
             self.idx_g = idx_constraints
             self.idx_db = idx_displacement_based
             self.idx_c = np.setdiff1d(
-                np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
+                np.arange(4), np.union1d(idx_constraints, idx_displacement_based)
             )
+
+            self.n_c = 0 in self.idx_c
+            self.n_g = 0 in self.idx_g
+            self.idx_m_c = np.array([i for i in [0, 1, 2] if i + 1 in self.idx_c])
+            self.idx_m_g = np.array([i for i in [0, 1, 2] if i + 1 in self.idx_g])
 
             self.quadrature_int = quadrature_int
             self.quadrature_dyn = quadrature_dyn
