@@ -1,7 +1,13 @@
 from abc import ABC, abstractmethod
+import json
 import numpy as np
+import os
 
-from ._cross_section import CrossSectionInertias_new
+from ._cross_section import (
+    CrossSectionInertias_new,
+    RectangularCrossSection,
+    CircularCrossSection,
+)
 from ._base_export import RodExportBase
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
@@ -297,3 +303,51 @@ class RodInterface(RodExportBase):
     def straight_initial_configuration(
         nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
     ): ...
+
+    ##################
+    # blender export #
+    ##################
+    def export_blender(self, path, solution):
+        # cross-section
+        if isinstance(self.cross_section, RectangularCrossSection):
+            cross_section = {
+                "type": "rectangle",
+                "width": self.cross_section.width,
+                "height": self.cross_section.height,
+            }
+        elif isinstance(self.cross_section, CircularCrossSection):
+            cross_section = {
+                "type": "circle",
+                "radius": self.cross_section.radius,
+            }
+
+        # create meta
+        meta = {
+            "name": self.name,
+            # "n": n,
+            "time": solution.t.tolist(),
+            "frames": [],
+            "type": "rod",
+            "cross_section": cross_section,
+            "info": {
+                "format": "pos(3)+quat(4)",
+                "version": 2,
+            },
+        }
+
+        # export time stamps
+        nt = len(solution.t)
+        for i in range(nt):
+            fname = f"{self.name}_{i:04d}.npy"
+
+            pathi = os.path.join(path, fname)
+            rP = self.get_export_nodes(solution.q[i, self.qDOF])
+
+            np.save(pathi, rP)
+            meta["frames"].append(fname)
+
+        with open(os.path.join(path, f"{self.name}.json"), "w") as f:
+            json.dump(meta, f, indent=4)
+
+    @abstractmethod
+    def get_export_nodes(self, q): ...

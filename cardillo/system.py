@@ -1,4 +1,6 @@
 import numpy as np
+import os
+from pathlib import Path
 import warnings
 from copy import deepcopy
 from scipy.sparse import diags
@@ -175,6 +177,13 @@ class System:
             if hasattr(contr, "export"):
                 e.export_contr(contr, file_name=contr.name)
         return e
+
+    def export_blender(self, path, folder_name, solution):
+        path = Path(path, folder_name)
+        os.makedirs(path, exist_ok=True)
+        for contr in self.contributions:
+            if hasattr(contr, "export_blender"):
+                contr.export_blender(path, solution)
 
     def get_contribution_list(self, contr):
         return getattr(self, f"_{self.__class__.__name__}__{contr}_contr")

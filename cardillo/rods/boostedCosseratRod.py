@@ -1,7 +1,6 @@
 import numpy as np
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
-import sparse
 from scipy.sparse import (
     block_diag,
     bsr_array,
@@ -39,6 +38,7 @@ from .discretization.mesh1D import Mesh1D_equidistant
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
+
 
 class CosseratRod_PetrovGalerkin(RodInterface):
     def _create_meshs(self):
@@ -1202,6 +1202,9 @@ def make_BoostedCosseratRod(
                 # Note: qnodes shares still memory with q here
                 return qnodes.reshape(-1), u
 
+            def get_export_nodes(self, q):
+                return q.reshape(self.nnodes, -1)
+
         elif parametrization == "R12":
 
             def g_S(self, t, q):
@@ -1211,6 +1214,8 @@ def make_BoostedCosseratRod(
             def g_S_q(self, t, q):
                 # TODO
                 return np.zeros((self.nla_S, self.nq))
+
+            def get_export_nodes(self, q): ...
 
             # TODO: step_callback?
 
