@@ -248,8 +248,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
         self.nu_rt = 3 * self.nnodes + 6 * self.nelement
         self.nu_theta = self.nnodes + self.nelement
-        print(f"nu_rt: {self.nu_rt}")
-        print(f"nu_theta: {self.nu_theta}")
 
         # total number of compliance coordinates
         self.nla_sigma = self.nnodes_n + self.nnodes_m * 3
@@ -342,6 +340,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     # abstract methods
     ##################
     def assembler_callback(self):
+        self._D_theta_coo()
         # self._M_coo()
         if self._nla_c > 0:
             self._c_la_c_coo()
@@ -609,42 +608,28 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         eps_plus_col = slice(self.uDOF_eps.start, self.uDOF_eps.stop - self.nelement)
         eps_minus_col = slice(self.uDOF_eps.start + self.nelement, self.uDOF_eps.stop)
 
-        D1 = CooMatrix((self.nu_rt, self.nu))
-        D1["I", : self.nu_r, self.uDOF_r] = eye_array(self.nu_r)
-        D1["phi_y+", t_plus_row, phi_y_plus_col] = D_phi_y_plus
-        D1["phi_y-", t_minus_row, phi_y_minus_col] = D_phi_y_minus
-        D1["phi_z+", t_plus_row, phi_z_plus_col] = D_phi_z_plus
-        D1["phi_z-", t_minus_row, phi_z_minus_col] = D_phi_z_minus
-        D1["eps+", t_plus_row, eps_plus_col] = D_eps_plus
-        D1["eps-", t_minus_row, eps_minus_col] = D_eps_minus
+        # TODO: predefine
+        D_rt = CooMatrix((self.nu_rt, self.nu))
+        D_rt["I", : self.nu_r, self.uDOF_r] = eye_array(self.nu_r)
+        D_rt["phi_y+", t_plus_row, phi_y_plus_col] = D_phi_y_plus
+        D_rt["phi_y-", t_minus_row, phi_y_minus_col] = D_phi_y_minus
+        D_rt["phi_z+", t_plus_row, phi_z_plus_col] = D_phi_z_plus
+        D_rt["phi_z-", t_minus_row, phi_z_minus_col] = D_phi_z_minus
+        D_rt["eps+", t_plus_row, eps_plus_col] = D_eps_plus
+        D_rt["eps-", t_minus_row, eps_minus_col] = D_eps_minus
 
-        # TODO: precompute
+        return D_rt
+
+    def _D_theta_coo(self):
         phi_x_col = slice(self.uDOF_phi.start, self.uDOF_phi.stop, 3)
         phi_x_row = slice(0, self.nu_theta, 2)
         alpha_row = slice(1, self.nu_theta - 1, 2)
-        D2 = CooMatrix((self.nu_theta, self.nu))
-        D2["phi_x", phi_x_row, phi_x_col] = eye_array(self.nnodes)
-        D2["alpha", alpha_row, self.uDOF_alpha] = eye_array(self.nelement)
+        D_theta = CooMatrix((self.nu_theta, self.nu))
+        D_theta["phi_x", phi_x_row, phi_x_col] = eye_array(self.nnodes)
+        D_theta["alpha", alpha_row, self.uDOF_alpha] = eye_array(self.nelement)
 
-        return D1, D2
-
-    def process_h_node(self, q, h_rt, h_theta):
-        # forces on (delta j_pm, delta phi_y, delta phi_z)
-        D = self._projection_D(q)
-        h_rt[self.nnodes :] = np.einsum(
-            "ikj,ik->ij", D, h_rt[self.nnodes :]
-        )  # D-transpose
-
-        h_j_pm = h_rt[self.nnodes :, 0]
-        h_psi = np.zeros((self.nnodes, 3))
-        h_psi[:, 0] = h_theta[::2]
-        h_psi[:-1, 1:] = h_rt[self.nnodes : 2 * self.nnodes - 1, 1:]
-        h_psi[1:, 1:] += h_rt[2 * self.nnodes - 1 :, 1:]
-
-        h_alpha = h_theta[1::2]
-        return np.concatenate(
-            [h_rt[: self.nnodes].reshape(-1), h_psi.reshape(-1), h_j_pm, h_alpha]
-        )
+        self._D_theta = D_theta
+        self.D_theta = D_theta.tocsc()
 
     ############################
     # total energies and momenta
@@ -790,9 +775,9 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     def f_ext(self, t, q, u):
         b_qp = self.distributed_load[0](t, self.qp_ext_vec)
         h_rt = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
-        return self.process_h_node(
-            q, h_rt, np.zeros(2 * self.nelement + 1, dtype=float)
-        )
+        warn("Kirchhoff-Love rod f_ext, not tested yet!")
+        D_rt = self._projection_D_matrix(q)
+        return D_rt @ h_rt.reshape(-1)
 
     #########################
     # internal virtual work #
@@ -802,15 +787,15 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             self.shape_functions_int, q[self.qDOF], choice="strains"
         )
 
-        ln = self.Nn.T @ ((j - self.J_int_vec) * self.qw_int_vec[:, None])
-        lm = self.Nm.T @ (
+        ln = self.Nn_int.T @ ((j - self.J_int_vec) * self.qw_int_vec)
+        lm = self.Nm_int.T @ (
             (B_kappa_bar - self.B_kappa0_bar_int) * self.qw_int_vec[:, None]
         )
 
         lm_c = lm[:, self.idx_m_c].reshape(-1)
         lm_g = lm[:, self.idx_m_g].reshape(-1)
-        l_c = np.concatenate([ln.reshape(-1), lm_c]) if self.n_c else lm_c
-        l_g = np.concatenate([ln.reshape(-1), lm_g]) if self.n_g else lm_g
+        l_c = np.concatenate([ln, lm_c]) if self.n_c else lm_c
+        l_g = np.concatenate([ln, lm_g]) if self.n_g else lm_g
         return l_c, l_g
 
     def l_sigma_q(self, q):
@@ -828,7 +813,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
 
             error = np.linalg.norm(C_coupled)
             if error != 0.0:
-                warn("There are couple terms in C, which are neglected!")
+                warn("There are coupling terms in C, which are neglected!")
 
         c_la_c = CooMatrix((self.nla_c, self.nla_c))
         if self.n_c:
@@ -855,35 +840,48 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         )
 
         # on rt -> r, j, phi
-        W_rt_n_qp = A_IB[:, :, 0]
         W_rt_m_qp = np.empty((2, self.nquadrature_int_total, 3, 3))
-        W_rt_m_qp[0] = -np.cross(
-            ex_B_to_j_xi[:, None, :], A_IB
-        )  # TODO: avoid "-"-sign?
-        W_rt_m_qp[1] = -np.cross(ex_B_to_j[:, None, :], A_IB)  # TODO: avoid "-"-sign?
+        W_rt_m_qp[0] = np.cross(ex_B_to_j_xi[:, :, None], A_IB, axis=1)
+        W_rt_m_qp[1] = np.cross(ex_B_to_j[:, :, None], A_IB, axis=1)
 
         # TODO: I think it is better to keep c and g together and split up later the Coo
-        W_sigma_rt_n = self.W_sigma_rt_n_SAB.add_blocks(W_rt_n_qp[None, :, :, None])
+        W_sigma_rt_n = self.W_sigma_rt_n_SAB.add_blocks(-A_IB[None, :, :, 0, None])
         W_sigma_rt_m = self.W_sigma_rt_m_SAB.add_blocks(W_rt_m_qp)
 
         W_theta_m_qp = np.zeros((2, self.nquadrature_int_total, 3))
-        W_theta_m_qp[0] = np.einsum("ij,ijk->ik", ex_B_xi, A_IB)
-        W_theta_m_qp[1, 0] = 1.0
+        W_theta_m_qp[0] = -np.einsum("ij,ijk->ik", ex_B_xi, A_IB)
+        W_theta_m_qp[1, :, 0] = -1.0
         W_sigma_theta_m = self.W_sigma_theta_m_SAB.add_blocks(
             W_theta_m_qp[:, :, None, :]
         )
 
-        # TODO: prebuild this matrix
-        W_sigma = CooMatrix((self.nla_sigma, self.nla_sigma))
-        D1, D2 = self._projection_D_matrix(q)
-        W_sigma["rt_n", : -self.nu_alpha, : self.nnodes_n] = D1.T @ W_sigma_rt_n
-        W_sigma["rt_m", : -self.nu_alpha, self.nnodes_n :] = D1.T @ W_sigma_rt_m
+        # TODO: prebuild these matrices
+        W_c = CooMatrix((self.nu, self._nla_c))
+        W_g = CooMatrix((self.nu, self._nla_g))
+        D_rt = self._projection_D_matrix(q).tocsc()
+        if self.n_c:
+            W_c["rt_n", :, : self._nla_cn] = D_rt.T @ W_sigma_rt_n
+        elif self.n_g:
+            W_g["rt_n", :, : self._nla_gn] = D_rt.T @ W_sigma_rt_n
 
-        W_sigma["theta_m", :, self.nnodes_n] = D2.T @ W_sigma_theta_m
+        if self._nla_cm > 0:
+            W_c["rt_m", :, self._nla_cn :] = D_rt.T @ W_sigma_rt_m[0]
+            W_c["theta_m", :, self._nla_cn :] = self.D_theta.T @ W_sigma_theta_m[0]
+        if self._nla_gm > 0:
+            W_g["rt_m", :, self._nla_gn :] = D_rt.T @ W_sigma_rt_m[1]
+            W_g["theta_m", :, self._nla_gn :] = self.D_theta.T @ W_sigma_theta_m[1]
 
-        return W_sigma
+        # TODO: fix this together with CooMatrix!
+        return W_c.toarray(), W_g.toarray()
 
-    def Wla_sigma(self, q, la_c=None, la_g=None): ...
+    def Wla_sigma(self, q, la_c=None, la_g=None):
+        W_c, W_g = self.W_sigma(q)
+        if la_c is None:
+            la_c = np.zeros(self._nla_c)
+        if la_g is None:
+            la_g = np.zeros(self._nla_g)
+        return W_c @ la_c + W_g @ la_g
+
     def h_pot(self, _eval, sigma_qp): ...
 
     def f_pot(self, t, q, u):
@@ -919,9 +917,11 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             F3 * self.qw_int_vec
         )
 
-        return self.process_h_node(q, -h_rt, -h_theta)
+        D1 = self._projection_D_matrix(q)
+        return -(D1.T.tocsc() @ h_rt.reshape(-1) + self.D_theta.T @ h_theta)
 
-    def Wla_sigma_q(self, q, la_c=None, la_g=None): ...
+    def Wla_sigma_q(self, q, la_c=None, la_g=None):
+        return approx_fprime(q, lambda q_: self.Wla_sigma(q_, la_c, la_g))
 
     def f_pot_q(self, t, q, u):
         return approx_fprime(q, lambda q_: self.f_pot(t, q_, u))
@@ -929,34 +929,63 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     ########################
     # evaluation functions #
     ########################
-    def _eval_logic(self, n_per_element, n_ges):
-        assert (n_per_element is not None) != (
-            n_ges is not None
-        ), "Either n_per_element or n_ges must be specified (not both)"
+    def eval_stresses(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
 
-        if n_ges is not None:
-            xis = np.linspace(0, 1, n_ges)
-            els = self.element_number(xis)
+        sigma = np.zeros((len(xis), 6))
+        if self._nDB > 0:
+            shape_functions = [*self.h3(xis, els), *self.N(xis, els)]
+            # reference strains
+            J, B_kappa0_bar = self._eval_int_vec(
+                shape_functions, self.Q, choice="strains"
+            )
+            # current strains
+            j, B_kappa_bar = self._eval_int_vec(
+                shape_functions, q[self.qDOF], choice="strains"
+            )
 
-        else:
-            xis = []
-            els = []
-            for el in range(self.nelement):
-                element_interval = self.element_interval[el]
-                xis.append(
-                    np.linspace(element_interval[0], element_interval[1], n_per_element)
-                )
-                els.append(np.tile(el, n_per_element))
-            xis = np.concatenate(xis)
-            els = np.concatenate(els)
+            epsilon0 = np.zeros((len(xis), 6))
+            epsilon0[:, 0] = 1.0
+            epsilon0[:, 3:] = B_kappa0_bar / J[:, None]
 
-        return xis, els
+            epsilon = np.zeros((len(xis), 6))
+            epsilon[:, 0] = j / J
+            epsilon[:, 3:] = B_kappa_bar / J[:, None]
 
-    def eval_stresses(self, *args, **kwargs):
-        warn("Eval stresses returns strains!")
-        xis, Ga, Ka = self.eval_strains(*args, **kwargs)
-        Ga[:, 1:] = np.nan
-        return xis, Ga, Ka
+            sigma = self.material_model.sigma(xis, epsilon, epsilon0, quadrature=False)
+
+        # strains from compliance
+        if self._nla_c > 0:
+            la_c_rod = la_c[self.la_cDOF]
+            if self.n_c:
+                Nn = self.Nn(xis, els)
+                la_cn_nodes = la_c_rod[: self._nla_cn]
+                n = Nn @ la_cn_nodes
+                sigma[:, 0] = n
+
+            if len(self.idx_m_c) > 0:
+                Nm = self.Nm(xis, els)
+                la_cm_nodes = la_c_rod[self._nla_cn :].reshape(self.nnodes_m, -1)
+                B_m_c = Nm @ la_cm_nodes
+                sigma[:, 3 + self.idx_m_c] = B_m_c
+
+        # strains from constraints
+        if self._nla_g > 0:
+            la_g_rod = la_g[self.la_gDOF]
+            if self.n_g:
+                Nn = self.Nn(xis, els)
+                la_gn_nodes = la_g_rod[: self._nla_gn]
+                n = Nn @ la_gn_nodes
+                sigma[:, 0] = n
+
+            if len(self.idx_m_g) > 0:
+                Nm = self.Nm(xis, els)
+                la_gm_nodes = la_g_rod[self._nla_gn :].reshape(self.nnodes_m, -1)
+                B_m_g = Nm @ la_gm_nodes
+                sigma[:, 3 + self.idx_m_g] = B_m_g
+
+        sigma[:, 1:3] = np.nan
+        return xis, sigma[:, :3], sigma[:, 3:]
 
     def eval_strains(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
         xis, els = self._eval_logic(n_per_element, n_ges)
@@ -976,18 +1005,28 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             epsilon[:, 0] = (j - J) / J
             epsilon[:, 3:] = (B_kappa_bar - B_kappa0_bar) / J[:, None]
 
-        # # strains from compliance
-        # if self._nla_c > 0:
-        #     Nc = self.Nc(xis, els)
-        #     la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
-        #     la_sigma = Nc @ la_c_nodes
+        # strains from compliance
+        if self._nla_c > 0:
+            la_c_rod = la_c[self.la_cDOF]
+            C_inv = self.material_model.C_inv(xis, quadrature=False)
+            if self.n_c:
+                Nn = self.Nn(xis, els)
+                la_cn_nodes = la_c_rod[: self._nla_cn]
+                n = Nn @ la_cn_nodes
+                epsilon[:, 0] = C_inv[:, 0, 0] * n
 
-        #     C_inv = self.material_model.C_inv[self.idx_c[:, None], self.idx_c]
-        #     # TODO: position dependent material law
-        #     epsilon[:, self.idx_c] = la_sigma @ C_inv.T
+            if len(self.idx_m_c) > 0:
+                C_m = C_inv[:, 3 + self.idx_m_c[:, None], 3 + self.idx_m_c]
+                Nm = self.Nm(xis, els)
+                la_cm_nodes = la_c_rod[self._nla_cn :].reshape(self.nnodes_m, -1)
+                B_m_c = Nm @ la_cm_nodes
+                epsilon[:, 3 + self.idx_m_c] = np.einsum("ijk,ik->ij", C_m, B_m_c)
 
-        # # strains from constraints are always 0
-        # epsilon[:, self.idx_g] = 0.0
+        # strains from constraints are always 0
+        if self.n_g:
+            epsilon[:, 0] = 0.0
+        if len(self.idx_m_g) > 0:
+            epsilon[:, 3 + self.idx_m_g] = 0.0
 
         return xis, epsilon[:, :3], epsilon[:, 3:]
 
@@ -1082,8 +1121,12 @@ def make_KirchhoffLoveRod(
 
             self.n_c = 0 in self.idx_c
             self.n_g = 0 in self.idx_g
-            self.idx_m_c = np.array([i for i in [0, 1, 2] if i + 1 in self.idx_c])
-            self.idx_m_g = np.array([i for i in [0, 1, 2] if i + 1 in self.idx_g])
+            self.idx_m_c = np.array(
+                [i for i in [0, 1, 2] if i + 1 in self.idx_c], dtype=int
+            )
+            self.idx_m_g = np.array(
+                [i for i in [0, 1, 2] if i + 1 in self.idx_g], dtype=int
+            )
 
             self.quadrature_int = quadrature_int
             self.quadrature_dyn = quadrature_dyn
