@@ -514,9 +514,8 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         J, _ = self._eval_int_vec(self.shape_functions_ext, self.Q, choice="strains")
         self.J_ext_vec = J
 
-    def _projection_D(self, q):
-        # 3.60 but in different order
-        D = np.zeros((2 * self.nnodes - 2, 3, 3))
+    def _projection_D_matrix(self, q):
+        # TODO: cache and optimize
 
         P_IB = q[self.qDOF_P].reshape(self.nnodes, 4)
         eps = np.array([0, *q[self.qDOF_eps], 0])
@@ -527,34 +526,10 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         scl_plus = (1 + eps) * P2
         scl_minus = (1 - eps) * P2
 
-        mtx_plus = np.zeros((self.nnodes - 1, 3, 3))
-        mtx_plus[:, 0, 0] = 1.0
-        mtx_plus[:, 1, 2] = scl_plus[:-1]
-        mtx_plus[:, 2, 1] = -scl_plus[:-1]
-
-        mtx_minus = np.zeros((self.nnodes - 1, 3, 3))
-        mtx_minus[:, 0, 0] = 1.0
-        mtx_minus[:, 1, 2] = scl_minus[1:]
-        mtx_minus[:, 2, 1] = -scl_minus[1:]
-
-        # fist for t+, then for t-
-        D[: self.nnodes - 1] = np.einsum("ijk,ikl->ijl", A_IB[:-1], mtx_plus)
-        D[self.nnodes - 1 :] = np.einsum("ijk,ikl->ijl", A_IB[1:], mtx_minus)
-
-        return D
-
-    def _projection_D_matrix(self, q):
-        # TODO: cache and optimize
-        Di = self._projection_D(q)
-
-        # P_IB = q[self.qDOF_P].reshape(self.nnodes, 4)
-        # eps = np.array([0, *q[self.qDOF_eps], 0])
-
-        # P2 = np.sum(P_IB**2, axis=1)
-        # A_IB = Exp_SO3_quat(P_IB)
-
-        # scl_plus = (1 + eps) * P2
-        # scl_minus = (1 - eps) * P2
+        phi_y_plus = -A_IB[:-1, :, 2] * scl_plus[:-1, None]
+        phi_y_minus = -A_IB[1:, :, 2] * scl_minus[1:, None]
+        phi_z_plus = A_IB[:-1, :, 1] * scl_plus[:-1, None]
+        phi_z_minus = A_IB[1:, :, 1] * scl_minus[1:, None]
 
         block_cols = np.arange(self.nelement)
         indptr = np.arange(self.nelement + 1)
@@ -562,32 +537,32 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         block_size = (3, 1)
 
         D_phi_y_plus = bsr_array(
-            (Di[: self.nelement, :, 1, None], block_cols, indptr),
+            (phi_y_plus[:, :, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
         D_phi_y_minus = bsr_array(
-            (Di[self.nelement :, :, 1, None], block_cols, indptr),
+            (phi_y_minus[:, :, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
         D_phi_z_plus = bsr_array(
-            (Di[: self.nelement, :, 2, None], block_cols, indptr),
+            (phi_z_plus[:, :, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
         D_phi_z_minus = bsr_array(
-            (Di[self.nelement :, :, 2, None], block_cols, indptr),
+            (phi_z_minus[:, :, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
         D_eps_plus = bsr_array(
-            (Di[: self.nelement, :, 0, None], block_cols, indptr),
+            (A_IB[:-1, :, 0, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
         D_eps_minus = bsr_array(
-            (Di[self.nelement :, :, 0, None], block_cols, indptr),
+            (A_IB[1:, :, 0, None], block_cols, indptr),
             shape=shape,
             blocksize=block_size,
         )
