@@ -358,7 +358,8 @@ class CircularCrossSection(ExportableCrossSection):
                 y = self.radius * np.cos(a)
                 z = self.radius * np.sin(a)
 
-                verts.append([0.0, y, z])
+                # cardillo to glTF: y <- z and z <- -y
+                verts.append([0.0, z, -y])
                 joints.append([j, 0, 0, 0])
                 weights.append([1.0, 0.0, 0.0, 0.0])
 
@@ -520,7 +521,8 @@ class RectangularCrossSection(ExportableCrossSection):
                 y *= 1 if i % 4 in (1, 2) else -1
                 z *= -1 if i % 4 < 2 else 1
 
-                verts.append([0.0, y, z])
+                # cardillo to glTF: y <- z and z <- -y
+                verts.append([0.0, z, -y])
                 joints.append([j, 0, 0, 0])
                 weights.append([1.0, 0.0, 0.0, 0.0])
 

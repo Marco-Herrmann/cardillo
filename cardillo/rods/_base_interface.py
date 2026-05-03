@@ -322,15 +322,13 @@ class RodInterface(RodExportBase):
             data.shape[2] == 7
         ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
 
-        # verts, indices, joints, weights = create_cylinder(RESOLUTION, num_bones, RADIUS)
-        # TODO: export_dict -> resolution?
         verts, indices, joints, weights = self.cross_section.create_mesh(num_bones)
 
         # inverse binding matrices (TODO: what is that)
         eye4 = np.eye(4, dtype=np.float32)
         ibm = np.array([eye4 for _ in range(num_bones)])
 
-        from cardillo.visualization.glTF_export import BufferBuilder
+        from cardillo.visualization.glTF_export import BufferBuilder, cardillo_to_gltf
         from pygltflib import (
             Mesh,
             Primitive,
@@ -352,8 +350,10 @@ class RodInterface(RodExportBase):
         joint_acc = buf.add(joints, 5123, "VEC4")
         weight_acc = buf.add(weights, 5126, "VEC4")
         ibm_acc = buf.add(ibm.reshape(-1, 16), 5126, "MAT4")
+        t_acc = buf.add(times.astype(np.float32), 5126, "SCALAR")
 
         mesh = Mesh(
+            name=f"{self.name}_mesh",
             primitives=[
                 Primitive(
                     attributes={
@@ -363,32 +363,23 @@ class RodInterface(RodExportBase):
                     },
                     indices=idx_acc,
                 )
-            ]
+            ],
         )
 
         nodes = [Node(name=f"bone_{i}") for i in range(num_bones)]
-        mesh_node = Node(mesh=0, skin=0)
+        mesh_node = Node(name=f"{self.name}_obj", mesh=0, skin=0)
         nodes.append(mesh_node)
 
-        skin = Skin(joints=list(range(num_bones)), inverseBindMatrices=ibm_acc)
-
-        m, n, _ = data.shape
-
-        # time accessor (einmal für alle bones)
-        t_acc = buf.add(times.astype(np.float32), 5126, "SCALAR")
+        skin = Skin(
+            name=f"{self.name}_skin",
+            joints=list(range(num_bones)),
+            inverseBindMatrices=ibm_acc,
+        )
 
         samplers = []
         channels = []
-
-        for i in range(n):
-
-            trans = data[:, i, 0:3].astype(np.float32)
-            rot = data[:, i, 3:7].astype(np.float32)
-            rot = np.stack([rot[:, 1], rot[:, 2], rot[:, 3], rot[:, 0]], axis=-1)
-
-            # normalize quaternions
-            rot = rot / np.linalg.norm(rot, axis=1, keepdims=True)
-
+        for i in range(num_bones):
+            trans, rot = cardillo_to_gltf(data[:, i])
             trans_acc = buf.add(trans, 5126, "VEC3")
             rot_acc = buf.add(rot, 5126, "VEC4")
 
@@ -396,7 +387,6 @@ class RodInterface(RodExportBase):
             samplers.append(
                 AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR")
             )
-
             channels.append(
                 AnimationChannel(
                     sampler=len(samplers) - 1,
@@ -408,7 +398,6 @@ class RodInterface(RodExportBase):
             samplers.append(
                 AnimationSampler(input=t_acc, output=rot_acc, interpolation="LINEAR")
             )
-
             channels.append(
                 AnimationChannel(
                     sampler=len(samplers) - 1,

@@ -32,3 +32,29 @@ class BufferBuilder:
         )
 
         return accessor_id
+
+
+def cardillo_to_gltf(data):
+    trans = data[:, 0:3].astype(np.float32)
+    rot = data[:, 3:7].astype(np.float32)
+
+    # normalize quaternions
+    rot = rot / np.linalg.norm(rot, axis=1, keepdims=True)
+
+    # cardillo:
+    #   x: right,
+    #   y: forward,
+    #   z: up,
+    #   P = (p0, p),
+    # glTF:
+    #   x: right,
+    #   y: up,
+    #   z: backward,
+    #   P = (p, p0),
+
+    # trans: y <- z and z <- -y
+    trans = np.stack([trans[:, 0], trans[:, 2], -trans[:, 1]], axis=1)
+
+    # rot: y <- z and z <- -y
+    rot = np.stack([rot[:, 1], rot[:, 3], -rot[:, 2], rot[:, 0]], axis=-1)
+    return trans, rot
