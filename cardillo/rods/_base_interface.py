@@ -308,46 +308,130 @@ class RodInterface(RodExportBase):
     # blender export #
     ##################
     def export_blender(self, path, solution):
-        # cross-section
-        if isinstance(self.cross_section, RectangularCrossSection):
-            cross_section = {
-                "type": "rectangle",
-                "width": self.cross_section.width,
-                "height": self.cross_section.height,
-            }
-        elif isinstance(self.cross_section, CircularCrossSection):
-            cross_section = {
-                "type": "circle",
-                "radius": self.cross_section.radius,
-            }
+        # TODO: allow for higher resolution than self.nnodes
+        num_bones = self.nnodes
+        data = np.empty((len(solution.t), num_bones, 7), dtype=float)
+        for i in range(len(solution.t)):
+            data[i] = self.get_export_nodes(solution.q[i, self.qDOF])
 
-        # create meta
-        meta = {
-            "name": self.name,
-            # "n": n,
-            "time": solution.t.tolist(),
-            "frames": [],
-            "type": "rod",
-            "cross_section": cross_section,
-            "info": {
-                "format": "pos(3)+quat(4)",
-                "version": 2,
-            },
-        }
+        # TODO: get rid of os
+        filename = os.path.join(path, f"{self.name}.glb")
+        times = solution.t
 
-        # export time stamps
-        nt = len(solution.t)
-        for i in range(nt):
-            fname = f"{self.name}_{i:04d}.npy"
+        assert (
+            data.shape[2] == 7
+        ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
 
-            pathi = os.path.join(path, fname)
-            rP = self.get_export_nodes(solution.q[i, self.qDOF])
+        # verts, indices, joints, weights = create_cylinder(RESOLUTION, num_bones, RADIUS)
+        # TODO: export_dict -> resolution?
+        verts, indices, joints, weights = self.cross_section.create_mesh(num_bones)
 
-            np.save(pathi, rP)
-            meta["frames"].append(fname)
+        # inverse binding matrices (TODO: what is that)
+        eye4 = np.eye(4, dtype=np.float32)
+        ibm = np.array([eye4 for _ in range(num_bones)])
 
-        with open(os.path.join(path, f"{self.name}.json"), "w") as f:
-            json.dump(meta, f, indent=4)
+        from cardillo.visualization.glTF_export import BufferBuilder
+        from pygltflib import (
+            Mesh,
+            Primitive,
+            Node,
+            Skin,
+            GLTF2,
+            Buffer,
+            Scene,
+            AnimationSampler,
+            AnimationChannel,
+            AnimationChannelTarget,
+            Animation,
+        )
+
+        buf = BufferBuilder()
+
+        pos_acc = buf.add(verts, 5126, "VEC3")
+        idx_acc = buf.add(indices, 5125, "SCALAR")
+        joint_acc = buf.add(joints, 5123, "VEC4")
+        weight_acc = buf.add(weights, 5126, "VEC4")
+        ibm_acc = buf.add(ibm.reshape(-1, 16), 5126, "MAT4")
+
+        mesh = Mesh(
+            primitives=[
+                Primitive(
+                    attributes={
+                        "POSITION": pos_acc,
+                        "JOINTS_0": joint_acc,
+                        "WEIGHTS_0": weight_acc,
+                    },
+                    indices=idx_acc,
+                )
+            ]
+        )
+
+        nodes = [Node(name=f"bone_{i}") for i in range(num_bones)]
+        mesh_node = Node(mesh=0, skin=0)
+        nodes.append(mesh_node)
+
+        skin = Skin(joints=list(range(num_bones)), inverseBindMatrices=ibm_acc)
+
+        m, n, _ = data.shape
+
+        # time accessor (einmal für alle bones)
+        t_acc = buf.add(times.astype(np.float32), 5126, "SCALAR")
+
+        samplers = []
+        channels = []
+
+        for i in range(n):
+
+            trans = data[:, i, 0:3].astype(np.float32)
+            rot = data[:, i, 3:7].astype(np.float32)
+            rot = np.stack([rot[:, 1], rot[:, 2], rot[:, 3], rot[:, 0]], axis=-1)
+
+            # normalize quaternions
+            rot = rot / np.linalg.norm(rot, axis=1, keepdims=True)
+
+            trans_acc = buf.add(trans, 5126, "VEC3")
+            rot_acc = buf.add(rot, 5126, "VEC4")
+
+            # Translation sampler
+            samplers.append(
+                AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR")
+            )
+
+            channels.append(
+                AnimationChannel(
+                    sampler=len(samplers) - 1,
+                    target=AnimationChannelTarget(node=i, path="translation"),
+                )
+            )
+
+            # Rotation sampler
+            samplers.append(
+                AnimationSampler(input=t_acc, output=rot_acc, interpolation="LINEAR")
+            )
+
+            channels.append(
+                AnimationChannel(
+                    sampler=len(samplers) - 1,
+                    target=AnimationChannelTarget(node=i, path="rotation"),
+                )
+            )
+
+        anim = Animation(samplers=samplers, channels=channels)
+
+        gltf = GLTF2(
+            buffers=[Buffer(byteLength=len(buf.data))],
+            bufferViews=buf.views,
+            accessors=buf.accessors,
+            meshes=[mesh],
+            nodes=nodes,
+            skins=[skin],
+            animations=[anim],
+            scenes=[Scene(nodes=[len(nodes) - 1])],
+            scene=0,
+        )
+
+        gltf.set_binary_blob(buf.data)
+        gltf.save_binary(filename)
 
     @abstractmethod
     def get_export_nodes(self, q): ...

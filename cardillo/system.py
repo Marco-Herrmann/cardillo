@@ -1,9 +1,10 @@
+from copy import deepcopy
+import glob
 import numpy as np
 import os
 from pathlib import Path
+import subprocess
 import warnings
-from copy import deepcopy
-from scipy.sparse import diags
 
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.discrete.frame import Frame
@@ -178,12 +179,28 @@ class System:
                 e.export_contr(contr, file_name=contr.name)
         return e
 
-    def export_blender(self, path, folder_name, solution):
+    def export_blender(
+        self, path, folder_name, solution, create_blend=False, blenderPath="blender"
+    ):
+        # TODO: can we get rid of os?
         path = Path(path, folder_name)
         os.makedirs(path, exist_ok=True)
         for contr in self.contributions:
             if hasattr(contr, "export_blender"):
                 contr.export_blender(path, solution)
+
+        if not create_blend:
+            return
+
+        # TODO: self.name in __init__?
+        self.name = self.name if hasattr(self, "name") else "System"
+        output_file = f"{path}/{self.name}.blend"
+
+        gltf_files = glob.glob(os.path.join(path, "*.glb"))
+        build_blend = Path(Path(__file__).parent, "visualization", "build_blend.py")
+        subprocess.run(
+            [blenderPath, "-b", "-P", build_blend, "--", output_file, *gltf_files]
+        )
 
     def get_contribution_list(self, contr):
         return getattr(self, f"_{self.__class__.__name__}__{contr}_contr")

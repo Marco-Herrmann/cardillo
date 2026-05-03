@@ -61,6 +61,9 @@ class ExportableCrossSection(CrossSection):
     @abstractmethod
     def vtk_connectivity(self, p_zeta): ...
 
+    @abstractmethod
+    def create_mesh(self, num_segments): ...
+
 
 class UserDefinedCrossSection(CrossSection):
     def __init__(self, area, first_moment, second_moment):
@@ -93,7 +96,7 @@ class UserDefinedCrossSection(CrossSection):
 
 
 class CircularCrossSection(ExportableCrossSection):
-    def __init__(self, radius, *, export_as_wedge=True):
+    def __init__(self, radius, *, export_as_wedge=True, export_resolution=16):
         """Circular cross-section.
 
         Parameters
@@ -110,6 +113,8 @@ class CircularCrossSection(ExportableCrossSection):
 
         self.circle_as_wedge = export_as_wedge
         self.compute_my_alphas()
+
+        self.export_resolution = export_resolution
 
     @property
     def area(self):
@@ -340,6 +345,47 @@ class CircularCrossSection(ExportableCrossSection):
 
             return compute_points
 
+    def create_mesh(self, nxi):
+        ncirc = self.export_resolution
+
+        verts = []
+        indices = []
+        joints = []
+        weights = []
+        for j in range(nxi):
+            for i in range(ncirc):
+                a = 2 * np.pi * i / ncirc
+                y = self.radius * np.cos(a)
+                z = self.radius * np.sin(a)
+
+                verts.append([0.0, y, z])
+                joints.append([j, 0, 0, 0])
+                weights.append([1.0, 0.0, 0.0, 0.0])
+
+        # indices (grid)
+        for j in range(nxi - 1):
+            for i in range(ncirc):
+                i0 = j * ncirc + i
+                i1 = j * ncirc + (i + 1) % ncirc
+                i2 = (j + 1) * ncirc + i
+                i3 = (j + 1) * ncirc + (i + 1) % ncirc
+
+                indices.extend([i0, i1, i2])
+                indices.extend([i1, i3, i2])
+
+        # close surfaces
+        last = (nxi - 1) * ncirc
+        for i in range(ncirc - 2):
+            indices.extend([0, i + 2, i + 1])
+            indices.extend([last, last + i + 2, last + i + 1])
+
+        return (
+            np.array(verts, np.float32),
+            np.array(indices, np.uint32),
+            np.array(joints, np.uint16),
+            np.array(weights, np.float32),
+        )
+
 
 class RectangularCrossSection(ExportableCrossSection):
     def __init__(self, width, height):
@@ -460,6 +506,48 @@ class RectangularCrossSection(ExportableCrossSection):
             return np.vstack([P0, P1, P2, P3])
 
         return compute_points
+
+    def create_mesh(self, nxi):
+        verts = []
+        indices = []
+        joints = []
+        weights = []
+        for j in range(nxi):
+            for i in range(4):
+                y = self.width / 2
+                z = self.height / 2
+
+                y *= 1 if i % 4 in (1, 2) else -1
+                z *= -1 if i % 4 < 2 else 1
+
+                verts.append([0.0, y, z])
+                joints.append([j, 0, 0, 0])
+                weights.append([1.0, 0.0, 0.0, 0.0])
+
+        # indices (grid)
+        for j in range(nxi - 1):
+            for i in range(4):
+                i0 = j * 4 + i
+                i1 = j * 4 + (i + 1) % 4
+                i2 = (j + 1) * 4 + i
+                i3 = (j + 1) * 4 + (i + 1) % 4
+
+                indices.extend([i0, i1, i2])
+                indices.extend([i1, i3, i2])
+
+        # close surfaces
+        last = (nxi - 1) * 4
+        for i in range(2):
+            indices.extend([0, i + 2, i + 1])
+            # TODO: why is this swapepd?
+            indices.extend([last, last + i + 1, last + i + 2])
+
+        return (
+            np.array(verts, np.float32),
+            np.array(indices, np.uint32),
+            np.array(joints, np.uint16),
+            np.array(weights, np.float32),
+        )
 
 
 class CrossSectionInertias:
