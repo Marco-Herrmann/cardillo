@@ -328,7 +328,11 @@ class RodInterface(RodExportBase):
         eye4 = np.eye(4, dtype=np.float32)
         ibm = np.array([eye4 for _ in range(num_bones)])
 
-        from cardillo.visualization.glTF_export import BufferBuilder, cardillo_to_gltf
+        from cardillo.visualization.glTF_export import (
+            BufferBuilder,
+            cardillo_to_gltf_trans,
+            cardillo_to_gltf_rot,
+        )
         from pygltflib import (
             Mesh,
             Primitive,
@@ -379,7 +383,8 @@ class RodInterface(RodExportBase):
         samplers = []
         channels = []
         for i in range(num_bones):
-            trans, rot = cardillo_to_gltf(data[:, i])
+            trans = cardillo_to_gltf_trans(data[:, i, 0:3])
+            rot = cardillo_to_gltf_rot(data[:, i, 3:7])
             trans_acc = buf.add(trans, 5126, "VEC3")
             rot_acc = buf.add(rot, 5126, "VEC4")
 

@@ -1,5 +1,6 @@
 import numpy as np
 from vtk import VTK_VERTEX
+from cardillo.discrete.discrete_export_base import make_glTF
 from cardillo.math import skew2ax, Log_SO3_quat
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
@@ -160,3 +161,14 @@ class Frame:
             ez=[ez],
         )
         return points, cells, point_data, cell_data
+
+    def _export_nodes(self, solution):
+        r_OP = np.array([self.r_OP(ti) for ti in solution.t])
+        v_P = np.array([self.v_P(ti) for ti in solution.t])
+        P_IB = np.array([Log_SO3_quat(self.A_IB(ti)) for ti in solution.t])
+        B_Omega = np.array([self.B_Omega(ti) for ti in solution.t])
+        return r_OP, v_P, P_IB, B_Omega
+
+    def export_blender(self, path, solution):
+        r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
+        make_glTF(path, self.name, solution.t, r_OP, v_P, P_IB, B_Omega)

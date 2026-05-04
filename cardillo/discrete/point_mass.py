@@ -1,5 +1,6 @@
 import numpy as np
 from vtk import VTK_VERTEX
+from cardillo.discrete.discrete_export_base import make_glTF
 
 
 class PointMass:
@@ -109,3 +110,14 @@ class PointMass:
         cells = [(VTK_VERTEX, [0])]
         cell_data = dict(v=[vel])
         return points, cells, None, cell_data
+
+    def _export_nodes(self, solution):
+        r_OP = np.zeros((len(solution.t), 3))
+        r_OP[:, : self.nq] = solution.q[:, self.qDOF]
+        v_P = np.zeros((len(solution.t), 3))
+        v_P[:, : self.nu] = solution.u[:, self.uDOF]
+        return r_OP, v_P, None, None
+
+    def export_blender(self, path, solution):
+        r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
+        make_glTF(path, self.name, solution.t, r_OP, v_P, P_IB, B_Omega)

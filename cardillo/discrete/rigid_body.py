@@ -3,6 +3,7 @@ from cachetools.keys import hashkey
 import numpy as np
 from vtk import VTK_VERTEX
 
+from cardillo.discrete.discrete_export_base import make_glTF
 from cardillo.math import (
     cross3,
     ax2skew,
@@ -297,3 +298,14 @@ class RigidBody:
         ex, ey, ez = A_IB.T
         cell_data = dict(v=[v_P], Omega=[A_IB @ B_Omega], ex=[ex], ey=[ey], ez=[ez])
         return points, cells, point_data, cell_data
+
+    def _export_nodes(self, solution):
+        r_OP = solution.q[:, self.qDOF[:3]]
+        v_P = solution.u[:, self.uDOF[:3]]
+        P_IB = solution.q[:, self.qDOF[3:]]
+        B_Omega = solution.u[:, self.uDOF[3:]]
+        return r_OP, v_P, P_IB, B_Omega
+
+    def export_blender(self, path, solution):
+        r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
+        make_glTF(path, self.name, solution.t, r_OP, v_P, P_IB, B_Omega)

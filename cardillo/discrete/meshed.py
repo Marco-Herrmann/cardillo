@@ -128,6 +128,21 @@ def Meshed(Base):
 
             return points, cells, None, None
 
+        def export_blender(self, path, solution):
+            from cardillo.discrete.discrete_export_base import make_glTF
+
+            r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
+            make_glTF(
+                path,
+                self.name,
+                solution.t,
+                r_OP,
+                v_P,
+                P_IB,
+                B_Omega,
+                self.B_visual_mesh,
+            )
+
     return _Meshed
 
 
