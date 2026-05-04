@@ -15,7 +15,12 @@ for f in gltf_files:
 
 for obj in bpy.context.scene.objects:
     if obj.type == "EMPTY":
-        obj.empty_display_type = "ARROWS"
+        if obj.name.endswith("_obj"):
+            obj.empty_display_type = "ARROWS"
+        elif obj.name.endswith("_v"):
+            obj.empty_display_type = "SINGLE_ARROW"
+        elif obj.name.endswith("_Omega"):
+            obj.empty_display_type = "SINGLE_ARROW"
         obj.empty_display_size = 1
 
 bpy.ops.wm.save_as_mainfile(filepath=output_path)
