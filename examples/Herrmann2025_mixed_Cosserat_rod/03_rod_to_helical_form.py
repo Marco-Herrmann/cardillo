@@ -10,6 +10,7 @@ from cardillo.constraints import RigidConnection
 from cardillo.forces import Force, Moment
 from cardillo.math import e3
 from cardillo.rods import CircularCrossSection, Simo1986, animate_beam
+from cardillo.rods._cross_section_new import CircularCrossSection as CircularCrossSection_new
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
 
@@ -34,7 +35,7 @@ def rod_to_helical_form(
     VTK_export: bool = False,
     save_tip_displacement: bool = False,
     save_stresses: bool = False,
-    new_eval: bool = True,
+    new_interface: bool = True,
 ):
     plot_name = name.replace("_", " ")
     save_name = f'{name.replace(" ", "_")}_nel{nelements}'
@@ -49,8 +50,12 @@ def rod_to_helical_form(
     width = 0.005
 
     # cross section is just used for the visualization
-    cross_section = CircularCrossSection(width)
-    cross_section_fat = CircularCrossSection(length / 100)
+    if new_interface:
+        cross_section = CircularCrossSection_new(width)
+        cross_section_fat = CircularCrossSection_new(length / 100)
+    else:
+        cross_section = CircularCrossSection(width)
+        cross_section_fat = CircularCrossSection(length / 100)
 
     # material law
     Ei = 1e4 * np.array([1, 1, 1])
@@ -179,7 +184,7 @@ def rod_to_helical_form(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    if new_eval:
+    if new_interface:
         # TODO: can we not slice like sol[-1]?
         xis, B_n, B_m = rod.eval_stresses(
             t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
@@ -237,17 +242,20 @@ def rod_to_helical_form(
 
 if __name__ == "__main__":
     if False:
-        from cardillo.rods.KirchhoffLoveRod import KirchhoffLoveRod
+        from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
+        from cardillo.rods._material_models_new import Simo1986
 
+        Rod = make_KirchhoffLoveRod()
         rod_to_helical_form(
-            KirchhoffLoveRod,
+            Rod,
             Simo1986,
             nelements=30,
             n_load_steps=90,
             show_plots=True,
             name="Rod to helical form",
-            new_eval=True,
+            new_interface=True,
         )
+
     Rod = make_CosseratRod(
         interpolation="Quaternion",
         mixed=True,
@@ -268,5 +276,5 @@ if __name__ == "__main__":
         # n_load_steps=2048,
         show_plots=True,
         name="Rod to helical form",
-        new_eval=True,
+        new_interface=True,
     )

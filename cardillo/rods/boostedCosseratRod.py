@@ -33,8 +33,6 @@ from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 from ._base_interface import RodInterface
-from ._base_export import RodExportBase
-from ._cross_section import CrossSectionInertias_new
 from .discretization.mesh1D import Mesh1D_equidistant
 
 zeros3 = np.zeros(3, dtype=float)

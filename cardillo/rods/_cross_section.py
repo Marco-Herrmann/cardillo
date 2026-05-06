@@ -9,8 +9,6 @@ from vtk import (
     VTK_LAGRANGE_WEDGE,
 )
 
-from cardillo.utility.parametrize import parametrize
-
 vtk_types = IntEnum(
     "VTK_TYPES",
     [("Hexahedron", 0), ("Wedge", 1)],
@@ -18,7 +16,6 @@ vtk_types = IntEnum(
 vtk_interpolation = namedtuple("vtk_interpolation", ["Hexahedron", "Wedge"])
 vtk_bezier = vtk_interpolation(VTK_BEZIER_HEXAHEDRON, VTK_BEZIER_WEDGE)
 vtk_lagrange = vtk_interpolation(VTK_LAGRANGE_HEXAHEDRON, VTK_LAGRANGE_WEDGE)
-
 
 
 class CrossSection(ABC):
@@ -344,26 +341,6 @@ class CircularCrossSection(ExportableCrossSection):
             return compute_points
 
 
-class VariableCircularCrossSection(CrossSection):
-    def __init__(self, radius):
-        self.radius = parametrize(radius)
-        self._second_moment = np.pi / 4 * np.diag([2, 1, 1])
-
-    def area(self, xi):
-        r = self.radius(xi)
-        return np.pi * r**2
-
-    def first_moment(self, xi):
-        # see https://en.wikipedia.org/wiki/First_moment_of_area
-        xi = np.asarray(xi)
-        return np.zeros(xi.shape + (3,))
-
-    def second_moment(self, xi):
-        # https://en.wikipedia.org/wiki/List_of_second_moments_of_area
-        r = self.radius(xi)
-        return (r**4)[..., None, None] * self._second_moment
-
-
 class RectangularCrossSection(ExportableCrossSection):
     def __init__(self, width, height):
         """Rectangular cross-section.
@@ -485,35 +462,6 @@ class RectangularCrossSection(ExportableCrossSection):
         return compute_points
 
 
-class VariableRectangularCrossSection(CrossSection):
-    def __init__(self, width, height):
-        self.width = parametrize(width)
-        self.height = parametrize(height)
-
-    def area(self, xi):
-        return self.width(xi) * self.height(xi)
-
-    def first_moment(self, xi):
-        # see https://en.wikipedia.org/wiki/First_moment_of_area
-        xi = np.asarray(xi)
-        return np.zeros(xi.shape + (3,))
-
-    def second_moment(self, xi):
-        # https://en.wikipedia.org/wiki/List_of_second_moments_of_area
-        width = self.width(xi)
-        height = self.height(xi)
-
-        Iyy = width * height**3 / 12.0
-        Izz = width**3 * height / 12.0
-        Ixx = Iyy + Izz
-
-        second_moment = np.zeros(width.shape + (3, 3))
-        second_moment[..., 0, 0] = Ixx
-        second_moment[..., 1, 1] = Iyy
-        second_moment[..., 2, 2] = Izz
-        return second_moment
-
-
 class CrossSectionInertias:
     def __init__(
         self, density=None, cross_section=None, A_rho0=1.0, B_I_rho0=np.eye(3)
@@ -538,32 +486,3 @@ class CrossSectionInertias:
         else:
             self.A_rho0 = density * cross_section.area
             self.B_I_rho0 = density * cross_section.second_moment
-
-
-class CrossSectionInertias_new:
-    def __init__(
-        self, density=None, cross_section=None, A_rho0=1.0, B_I_rho0=np.eye(3)
-    ):
-        """Inertial properties of cross-sections. Centerline must coincide with line of centroids.
-
-        Parameters:
-        -----
-        density : float or callable(xi) -> float
-            Mass per unit reference volume of the rod.
-        cross_section : CrossSection
-            Cross-section object, which provides cross-section area and second moment of area.
-        A_rho0 : float or callable(xi) -> float
-            Cross-section mass density, i.e., mass per unit reference length of rod.
-        B_I_rho0 : np.ndarray(3, 3) or  callable(xi) -> np.ndarray(3, 3)
-            Cross-section inertia tensor represented in the cross-section-fixed B-Basis.
-
-        """
-        if density is None or cross_section is None:
-            self.A_rho0 = parametrize(A_rho0)
-            self.B_I_rho0 = parametrize(B_I_rho0)
-        else:
-            _density = parametrize(density)
-            self.A_rho0 = lambda xi: _density(xi) * cross_section.area(xi)
-            self.B_I_rho0 = lambda xi: _density(xi)[
-                ..., None, None
-            ] * cross_section.second_moment(xi)

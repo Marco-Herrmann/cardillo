@@ -115,8 +115,6 @@ class Simo1986(RodMaterialModel):
         return 0.5 * np.einsum("ij,jk,ik->i", sigma, self.C_inv, sigma)
 
     def B_n(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
-        # TODO: allow for xi as argument
-        # Idea: write a function "prepare_quadrature(self, qpi)" that takes all qpi as vector and write C_ni and C_mi
         dG = B_Gamma - B_Gamma0
         return dG @ self.C_n
 

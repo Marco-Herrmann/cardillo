@@ -5,7 +5,12 @@ from cardillo.rods import (
     CircularCrossSection,
     Simo1986,
     CrossSectionInertias,
-    CrossSectionInertias_new,
+)
+from cardillo.rods._cross_section_new import (
+    CircularCrossSection as CircularCrossSection_new,
+)
+from cardillo.rods._cross_section_new import (
+    CrossSectionInertias as CrossSectionInertias_new,
 )
 from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
 from cardillo import System
@@ -54,6 +59,7 @@ def test_implementation(n_test=1_000):
     constitutive_law = Simo1986(Ei, Fi)
     constitutive_law_new = Simo1986_new(Ei, Fi)
     cross_section = CircularCrossSection(0.1)
+    cross_section_new = CircularCrossSection_new(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
@@ -98,7 +104,7 @@ def test_implementation(n_test=1_000):
 
     q0_new = Rod_new.straight_configuration(nelement, 5)
     rod_new = Rod_new(
-        cross_section,
+        cross_section_new,
         constitutive_law_new,
         nelement,
         Q=q0_new,
@@ -344,6 +350,7 @@ def compare_performance(n_test=1_000):
     constitutive_law = Simo1986(Ei, Fi)
     constitutive_law_new = Simo1986_new(Ei, Fi)
     cross_section = CircularCrossSection(0.1)
+    cross_section_new = CircularCrossSection_new(0.1)
     A_rho0 = np.random.rand()
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
@@ -378,7 +385,7 @@ def compare_performance(n_test=1_000):
 
     q0_new = Rod_new.straight_configuration(nelement, 5)
     rod_new = Rod_new(
-        cross_section,
+        cross_section_new,
         constitutive_law_new,
         nelement,
         Q=q0_new,

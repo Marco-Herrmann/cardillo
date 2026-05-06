@@ -9,6 +9,8 @@ from cardillo.constraints import RigidConnection
 from cardillo.forces import Force
 from cardillo.math import e3, A_IB_basic
 from cardillo.rods import RectangularCrossSection, animate_beam, Simo1986
+from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
+from cardillo.rods._cross_section_new import RectangularCrossSection as RectangularCrossSection_new
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.solver import Newton, SolverOptions
@@ -29,7 +31,7 @@ def bent_45(
     show_plots: bool = False,
     save_tip_displacement: bool = False,
     save_stresses: bool = False,
-    new_eval: bool = False,
+    new_interface: bool = False,
 ):
     # handle name
     plot_name = name.replace("_", " ")
@@ -50,9 +52,14 @@ def bent_45(
 
     # cross section
     w = R / slenderness
-    cross_section = RectangularCrossSection(w, w)
-    A = cross_section.area
-    I1, I2, I3 = np.diag(cross_section.second_moment)
+    if new_interface:
+        cross_section = RectangularCrossSection_new(w, w)
+        A = cross_section.area(0.0)
+        I1, I2, I3 = np.diag(cross_section.second_moment(0.0))
+    else:
+        cross_section = RectangularCrossSection(w, w)
+        A = cross_section.area
+        I1, I2, I3 = np.diag(cross_section.second_moment)
 
     # material model
     E = 1e7
@@ -182,7 +189,7 @@ def bent_45(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    if new_eval:
+    if new_interface:
         xis, B_n, B_m = rod.eval_stresses(
             t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
         )
@@ -246,12 +253,12 @@ if __name__ == "__main__":
 
     bent_45(
         Rod,
-        Simo1986,
+        Simo1986 if formulation == "old" else Simo1986_new,
         nelements=4,
         slenderness=1e1,
         tolType="MX",
         n_load_steps=20,
         show_plots=True,
         name="bent 45",
-        new_eval=not (formulation == "old"),
+        new_interface=not (formulation == "old"),
     )

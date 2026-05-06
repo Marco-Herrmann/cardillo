@@ -7,8 +7,15 @@ from cardillo import System
 from cardillo.constraints import RigidConnection
 from cardillo.forces import B_Moment
 from cardillo.math import e1, e3
-from cardillo.rods import CircularCrossSection, animate_beam, Simo1986
+from cardillo.rods import (
+    CircularCrossSection,
+    animate_beam,
+    Simo1986,
+)
 from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
+from cardillo.rods._cross_section_new import (
+    CircularCrossSection as CircularCrossSection_new,
+)
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.solver import Newton, SolverOptions
@@ -29,7 +36,7 @@ def helix(
     name: str = "rod",
     show_plots: bool = False,
     save_stresses: bool = False,
-    new_eval: bool = False,
+    new_interface: bool = False,
 ):
     # handle name
     plot_name = name.replace("_", " ")
@@ -49,9 +56,14 @@ def helix(
     # cross section properties
     width = length / slenderness
     radius = width / 2
-    cross_section = CircularCrossSection(radius=radius)
-    A = cross_section.area
-    Ip, I2, I3 = np.diag(cross_section.second_moment)
+    if new_interface:
+        cross_section = CircularCrossSection_new(radius=radius)
+        A = cross_section.area(0.0)
+        Ip, I2, I3 = np.diag(cross_section.second_moment(0.0))
+    else:
+        cross_section = CircularCrossSection(radius=radius)
+        A = cross_section.area
+        Ip, I2, I3 = np.diag(cross_section.second_moment)
 
     # material model
     E = 1.0  # Young's modulus
@@ -150,7 +162,8 @@ def helix(
             [rod],
             scale=length,
             show=False,
-            repeat=False,
+            # repeat=False,
+            repeat=True,
         )
 
     ########################
@@ -159,7 +172,7 @@ def helix(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    if new_eval:
+    if new_interface:
         # TODO: can we not slice like sol[-1]?
         xis, B_n, B_m = rod.eval_stresses(
             t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
@@ -218,22 +231,32 @@ if __name__ == "__main__":
         )
     elif formulation == "boosted":
         Rod = make_BoostedCosseratRod(
-            polynomial_degree=2,
+            # polynomial_degree=2,
+            # polynomial_degree=3,
             # idx_constraints=[0, 1, 2, 4],
-            # idx_displacement_based=[0, 1, 2, 3, 4, 5],
+            # idx_constraints=[1, 2],
+            idx_displacement_based=[0, 1, 2, 3, 4, 5],
         )
     elif formulation == "Kirchhoff":
         from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
 
-        Rod = make_KirchhoffLoveRod()
+        Rod = make_KirchhoffLoveRod(
+            # idx_displacement_based=[0, 1, 2, 3],
+            # idx_displacement_based=[0, 1] #, 2, 3],
+            # idx_displacement_based=[2, 3],
+            # idx_constraints=[0, 1],
+        )
 
     helix(
         Rod,
         Simo1986 if formulation == "old" else Simo1986_new,
         nelements=16,
         slenderness=1e1,
-        n_load_steps=1,
+        # atol=1e-12,
+        # n_load_steps=1,
+        # n_load_steps=15,
+        n_load_steps=128,
         show_plots=True,
         name="helix",
-        new_eval=not (formulation == "old"),
+        new_interface=not (formulation == "old"),
     )

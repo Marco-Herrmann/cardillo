@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-from ._cross_section import CrossSectionInertias_new
+from ._cross_section_new import CrossSectionInertias
 from ._base_export import RodExportBase
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
@@ -168,7 +168,7 @@ class RodInterface(RodExportBase):
         if cross_section_inertias is not None:
             if cross_section_inertias == False:
                 self.include_f_gyr = False
-                self.cross_section_inertias = CrossSectionInertias_new()
+                self.cross_section_inertias = CrossSectionInertias()
             else:
                 self.include_f_gyr = True
                 self.cross_section_inertias = cross_section_inertias

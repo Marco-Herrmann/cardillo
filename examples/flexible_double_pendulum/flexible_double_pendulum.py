@@ -8,14 +8,9 @@ from cardillo.constraints import RigidConnection, Revolute
 from cardillo.forces import B_Moment, Force
 from cardillo.math import e2, e3
 from cardillo.math.rotations import A_IB_basic
-from cardillo.rods import (
-    CircularCrossSection,
-    RectangularCrossSection,
-    CrossSectionInertias,
-    CrossSectionInertias_new,
-    animate_beam,
-)
+from cardillo.rods import animate_beam
 from cardillo.rods._material_models_new import Simo1986
+from cardillo.rods._cross_section_new import RectangularCrossSection, CrossSectionInertias
 
 from cardillo.solver import Newton, SolverOptions, ScipyDAE, DualStormerVerlet
 from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
@@ -33,18 +28,16 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
     rho = 7000.0
     cross_section = RectangularCrossSection(width_y, width_z)
-    A = cross_section.area
-    B_I = cross_section.second_moment
-    cross_section_inertias = CrossSectionInertias_new(
-        A_rho0=A * rho, B_I_rho0=B_I * rho
+    cross_section_inertias = CrossSectionInertias(
+        density=rho, cross_section=cross_section
     )
 
     # material properties
     E = 210_000_000
     mu = 0.3
     G = E / (2 * (1 + mu))
-    A = cross_section.area
-    I = np.diag(cross_section.second_moment)
+    A = cross_section.area(0.0)
+    I = np.diag(cross_section.second_moment(0.0))
     Ei = np.array([E * A, G * A, G * A])
     Fi = np.array([G * I[0], E * I[1], E * I[2]])
 
@@ -56,8 +49,10 @@ def flexible_double_pendulum(Rod, show_plots, name):
     #####
     # rod
     #####
+    A_IB0 = A_IB_basic(np.pi / 2 - np.pi / 10).y
+    r_OP0 = np.array([width_z, 0.0, 0.0])
     A_IB0 = A_IB_basic(np.pi / 2 * 0.0).y
-    r_OP0 = np.zeros(3, dtype=float)
+    r_OP0 = np.array([0.0, 0.0, 0.0])
     r_OP1 = r_OP0 + A_IB0 @ np.array([length, 0.0, 0.0])
 
     g = np.array([0.0, 0.0, -9.81 * A * rho])
@@ -140,9 +135,10 @@ def flexible_double_pendulum(Rod, show_plots, name):
         E_kin[i] = system.E_kin(sol.t[i], sol.q[i], sol.u[i])
 
     fig, ax = plt.subplots()
-    ax.plot(sol.t, E_pot)
-    ax.plot(sol.t, E_kin)
-    ax.plot(sol.t, E_kin + E_pot)
+    ax.plot(sol.t, E_pot, label="$E_{pot}$")
+    ax.plot(sol.t, E_kin, label="$E_{kin}$")
+    ax.plot(sol.t, E_kin + E_pot, label="$E_{tot}$")
+    ax.legend()
 
     # save solution
     path = Path(__file__)
