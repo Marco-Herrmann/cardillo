@@ -173,7 +173,8 @@ class RodInterface(RodExportBase):
                 self.include_f_gyr = True
                 self.cross_section_inertias = cross_section_inertias
 
-            self.cross_section_inertias.prepare_quadrature(self.qp_dyn_vec)
+            self.A_rho0_qp = self.cross_section_inertias.A_rho0(self.qp_dyn_vec)
+            self.B_I_rho0_qp = self.cross_section_inertias.B_I_rho0(self.qp_dyn_vec)
 
         if distributed_load is not None:
             assert (

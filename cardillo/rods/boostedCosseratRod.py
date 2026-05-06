@@ -352,13 +352,9 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         v = vO[:, :3]
         B_Omega = vO[:, 3:]
 
-        A_rho0 = self.cross_section_inertias.A_rho0(self.qp_dyn_vec, quadrature=True)
-        B_I_rho0 = self.cross_section_inertias.B_I_rho0(
-            self.qp_dyn_vec, quadrature=True
-        )
         E_kin_i = 0.5 * (
-            A_rho0 * np.sum(v * v, axis=1)
-            + np.einsum("ij,ijk,ik->i", B_Omega, B_I_rho0, B_Omega)
+            self.A_rho0_qp * np.sum(v * v, axis=1)
+            + np.einsum("ij,ijk,ik->i", B_Omega, self.B_I_rho0_qp, B_Omega)
         )
 
         E_kin = np.sum(E_kin_i * self.qw_dyn_vec * self.J_dyn_vec)
@@ -367,10 +363,8 @@ class CosseratRod_PetrovGalerkin(RodInterface):
     def linear_momentum(self, t, q, u):
         unodes = u.reshape(self.nnodes, -1)
         v = self.N_dyn @ unodes[:, :3]
-        A_rho0 = self.cross_section_inertias.A_rho0(self.qp_dyn_vec, quadrature=True)
-        linear_momentum_qp = v * A_rho0[:, None]
         linear_momentum = np.sum(
-            linear_momentum_qp * (self.J_dyn_vec * self.qw_dyn_vec)[:, None], axis=0
+            v * (self.A_rho0_qp * self.J_dyn_vec * self.qw_dyn_vec)[:, None], axis=0
         )
         return linear_momentum
 
@@ -385,13 +379,8 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         v_C = vO[:, :3]
         B_Omega = vO[:, 3:]
 
-        A_rho0 = self.cross_section_inertias.A_rho0(self.qp_dyn_vec, quadrature=True)
-        B_I_rho0 = self.cross_section_inertias.B_I_rho0(
-            self.qp_dyn_vec, quadrature=True
-        )
-
-        angular_momentum_qp = np.cross(r_OC, v_C) * A_rho0[:, None] + np.einsum(
-            "ijk,ikl,il->ij", A_IB, B_I_rho0, B_Omega
+        angular_momentum_qp = np.cross(r_OC, v_C) * self.A_rho0_qp[:, None] + np.einsum(
+            "ijk,ikl,il->ij", A_IB, self.B_I_rho0_qp, B_Omega
         )
         angular_momentum = np.sum(
             angular_momentum_qp * (self.J_dyn_vec * self.qw_dyn_vec)[:, None], axis=0
@@ -407,17 +396,12 @@ class CosseratRod_PetrovGalerkin(RodInterface):
     def _M_coo(self):
         self.constant_mass_matrix = True
 
-        A_rho0 = self.cross_section_inertias.A_rho0(self.qp_dyn_vec, quadrature=True)
-        B_I_rho0 = self.cross_section_inertias.B_I_rho0(
-            self.qp_dyn_vec, quadrature=True
-        )
-
         # TODO: make this sparse?
         M_qp = np.empty((1, self.nquadrature_dyn_total, 6, 6))
-        M_qp[0, :, :3, :3] = eye3 * A_rho0[:, None, None]
+        M_qp[0, :, :3, :3] = eye3 * self.A_rho0_qp[:, None, None]
         M_qp[0, :, :3, 3:] = 0.0
         M_qp[0, :, 3:, :3] = 0.0
-        M_qp[0, :, 3:, 3:] = B_I_rho0
+        M_qp[0, :, 3:, 3:] = self.B_I_rho0_qp
 
         self.__M = self.M_h_u_SAB.add_blocks(M_qp)
         return self.__M
@@ -427,10 +411,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
         # spin
-        B_I_rho0_qp = self.cross_section_inertias.B_I_rho0(
-            self.qp_dyn_vec, quadrature=True
-        )
-        B_L_qp = np.einsum("ijk,ik->ij", B_I_rho0_qp, B_Omega)
+        B_L_qp = np.einsum("ijk,ik->ij", self.B_I_rho0_qp, B_Omega)
         f_gyr_qp = np.cross(B_Omega, B_L_qp)
 
         f_gyr = np.empty((self.nnodes, 6))
@@ -445,15 +426,12 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         B_Omega = self.N_dyn @ unodes[:, 3:]
 
         # spin
-        B_I_rho0_qp = self.cross_section_inertias.B_I_rho0(
-            self.qp_dyn_vec, quadrature=True
-        )
-        B_L_qp = np.einsum("ijk,ik->ij", B_I_rho0_qp, B_Omega)
+        B_L_qp = np.einsum("ijk,ik->ij", self.B_I_rho0_qp, B_Omega)
 
         f_gyr_qp_ubar = np.zeros((self.nquadrature_dyn_total, 6, 6))
         # B_Omega_tilde @ B_I_rho0 - B_L_tilde
         f_gyr_qp_ubar[:, 3:, 3:] = np.cross(
-            B_I_rho0_qp, B_Omega[:, :, None], axisa=1, axisb=1, axisc=1
+            self.B_I_rho0_qp, B_Omega[:, :, None], axisa=1, axisb=1, axisc=1
         ) + ax2skew(B_L_qp)
 
         return self.M_h_u_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
