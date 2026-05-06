@@ -9,11 +9,14 @@ from cardillo.forces import B_Moment, Force
 from cardillo.math import e2, e3
 from cardillo.math.rotations import A_IB_basic
 from cardillo.rods import animate_beam
-from cardillo.rods._material_models_new import Simo1986
-from cardillo.rods._cross_section_new import RectangularCrossSection, CrossSectionInertias
+from cardillo.rods_new import (
+    Simo1986,
+    RectangularCrossSection,
+    CrossSectionInertias,
+    make_CosseratRod,
+)
 
 from cardillo.solver import Newton, SolverOptions, ScipyDAE, DualStormerVerlet
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 
 from cardillo.discrete import RigidBody, Sphere, Box, Frame
 from cardillo.forces import Force
@@ -165,11 +168,11 @@ def flexible_double_pendulum(Rod, show_plots, name):
 if __name__ == "__main__":
     pDeg = 2
     flexible_double_pendulum(
-        make_BoostedCosseratRod(
+        make_CosseratRod(
             polynomial_degree=pDeg,
             quadrature_dyn=(pDeg + 1, "Trapezoidal"),
             quadrature_ext=(pDeg + 1, "Trapezoidal"),
         ),
         show_plots=True,
-        name="boosted",
+        name="new",
     )

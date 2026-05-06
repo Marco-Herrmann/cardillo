@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
-from ._cross_section_new import CrossSectionInertias
-from ._base_export import RodExportBase
+from cardillo.rods._base_export import RodExportBase
 from cardillo.utility.check_time_derivatives import check_time_derivatives
+from ._cross_section import CrossSectionInertias
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)

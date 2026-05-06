@@ -993,7 +993,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         return xis, epsilon[:, :3], epsilon[:, 3:]
 
 
-def make_BoostedCosseratRod(
+def make_CosseratRod(
     *,
     polynomial_degree=None,
     idx_constraints=None,
@@ -1097,7 +1097,7 @@ def make_BoostedCosseratRod(
         _T_IB_inv_P = T_SO3_inv_R9_R9
         nq_node = 12
 
-    class BoostedCosseratRod_PetrovGalerkin(CosseratRod_PetrovGalerkin):
+    class CosseratRod_PetrovGalerkin_(CosseratRod_PetrovGalerkin):
         def _pre_init_(self):
             # functions for orientation
             self._A_IB = _A_IB
@@ -1213,4 +1213,4 @@ def make_BoostedCosseratRod(
             nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
         ): ...
 
-    return BoostedCosseratRod_PetrovGalerkin
+    return CosseratRod_PetrovGalerkin_

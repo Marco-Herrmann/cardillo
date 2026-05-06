@@ -10,7 +10,7 @@ from cardillo.constraints import RigidConnection
 from cardillo.forces import Force, Moment
 from cardillo.math import e3
 from cardillo.rods import CircularCrossSection, Simo1986, animate_beam
-from cardillo.rods._cross_section_new import CircularCrossSection as CircularCrossSection_new
+from cardillo.rods_new import CircularCrossSection as CircularCrossSection_new
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
 
@@ -262,10 +262,9 @@ if __name__ == "__main__":
         polynomial_degree=2,
         reduced_integration=True,
     )
-    from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
-    from cardillo.rods._material_models_new import Simo1986
+    from cardillo.rods_new import make_CosseratRod, Simo1986
 
-    Rod = make_BoostedCosseratRod(
+    Rod = make_CosseratRod(
         polynomial_degree=2,  # idx_displacement_based=[0, 1, 2, 3, 4, 5]
     )
     rod_to_helical_form(

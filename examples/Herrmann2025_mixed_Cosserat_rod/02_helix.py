@@ -12,12 +12,12 @@ from cardillo.rods import (
     animate_beam,
     Simo1986,
 )
-from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
-from cardillo.rods._cross_section_new import (
+from cardillo.rods_new import (
+    Simo1986 as Simo1986_new,
     CircularCrossSection as CircularCrossSection_new,
+    make_CosseratRod as make_CosseratRod_new,
 )
 from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.solver import Newton, SolverOptions
 
 
@@ -219,7 +219,7 @@ def helix(
 
 if __name__ == "__main__":
     formulation = "old"
-    formulation = "boosted"
+    formulation = "new"
     # formulation = "Kirchhoff"
 
     if formulation == "old":
@@ -229,8 +229,8 @@ if __name__ == "__main__":
             polynomial_degree=2,
             reduced_integration=True,
         )
-    elif formulation == "boosted":
-        Rod = make_BoostedCosseratRod(
+    elif formulation == "new":
+        Rod = make_CosseratRod_new(
             # polynomial_degree=2,
             # polynomial_degree=3,
             # idx_constraints=[0, 1, 2, 4],

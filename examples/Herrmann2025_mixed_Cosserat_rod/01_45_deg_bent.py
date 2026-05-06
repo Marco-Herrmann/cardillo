@@ -9,10 +9,12 @@ from cardillo.constraints import RigidConnection
 from cardillo.forces import Force
 from cardillo.math import e3, A_IB_basic
 from cardillo.rods import RectangularCrossSection, animate_beam, Simo1986
-from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
-from cardillo.rods._cross_section_new import RectangularCrossSection as RectangularCrossSection_new
+from cardillo.rods_new import (
+    Simo1986 as Simo1986_new,
+    RectangularCrossSection as RectangularCrossSection_new,
+    make_CosseratRod as make_CosseratRod_new,
+)
 from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.solver import Newton, SolverOptions
 
 
@@ -235,7 +237,7 @@ def bent_45(
 
 if __name__ == "__main__":
     formulation = "old"
-    formulation = "boosted"
+    formulation = "new"
 
     if formulation == "old":
         Rod = make_CosseratRod(
@@ -244,8 +246,8 @@ if __name__ == "__main__":
             polynomial_degree=2,
             reduced_integration=True,
         )
-    elif formulation == "boosted":
-        Rod = make_BoostedCosseratRod(
+    elif formulation == "new":
+        Rod = make_CosseratRod_new(
             polynomial_degree=2,
             # idx_constraints=[0, 1, 2, 4],
             idx_displacement_based=[0, 1, 2, 3, 4, 5],

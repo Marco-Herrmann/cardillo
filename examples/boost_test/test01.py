@@ -6,16 +6,14 @@ from cardillo.rods import (
     Simo1986,
     CrossSectionInertias,
 )
-from cardillo.rods._cross_section_new import (
+from cardillo.rods_new import (
     CircularCrossSection as CircularCrossSection_new,
-)
-from cardillo.rods._cross_section_new import (
+    Simo1986 as Simo1986_new,
     CrossSectionInertias as CrossSectionInertias_new,
+    make_CosseratRod as make_CosseratRod_new,
 )
-from cardillo.rods._material_models_new import Simo1986 as Simo1986_new
 from cardillo import System
 from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
 from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.solver import SolverOptions
@@ -86,7 +84,7 @@ def test_implementation(n_test=1_000):
         polynomial_degree=polynomial_degree,
         constraints=None if len(constraints) == 0 else constraints,
     )
-    Rod_new = make_BoostedCosseratRod(
+    Rod_new = make_CosseratRod_new(
         polynomial_degree=polynomial_degree,
         idx_constraints=constraints,
         idx_displacement_based=idx_db,
@@ -368,7 +366,7 @@ def compare_performance(n_test=1_000):
         polynomial_degree=polynomial_degree,
         constraints=constraints,
     )
-    Rod_new = make_BoostedCosseratRod(
+    Rod_new = make_CosseratRod_new(
         polynomial_degree=polynomial_degree,
         idx_constraints=constraints,
         idx_displacement_based=[] if mixed else np.setdiff1d(np.arange(6), constraints),
