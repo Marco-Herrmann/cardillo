@@ -5,8 +5,8 @@ from pathlib import Path
 from cardillo import System
 from cardillo.constraints import RigidConnection
 from cardillo.forces import B_Moment, Force
-from cardillo.rods import RectangularCrossSection, Simo1986, animate_beam
-from cardillo.rods.cosseratRod import make_CosseratRod
+from cardillo.rods_new import RectangularCrossSection, Simo1986, make_CosseratRod
+from cardillo.rods import animate_beam
 from cardillo.solver import Newton, SolverOptions
 
 
@@ -43,6 +43,7 @@ def cantilever(
     # material properties
     Ei = np.array([5, 1, 1])
     Fi = np.array([0.5, 2, 2])
+    Fi2 = Fi[2]
 
     material_model = constitutive_law(Ei, Fi)
 
@@ -68,12 +69,12 @@ def cantilever(
     ###############
     if load_type == "force":
         # spatially fixed load at cantilever tip
-        P = lambda t: material_model.Fi[2] * (10 * t) / length**2
+        P = lambda t: Fi2 * (10 * t) / length**2
         F = lambda t: np.array([0.0, -P(t), 0.0])
         force = Force(F, cantilever, 1)
         system.add(force)
     elif load_type == "force+moment":
-        P = lambda t: material_model.Fi[2] * (10 * t) / length**2
+        P = lambda t: Fi2 * (10 * t) / length**2
         F = lambda t: np.array([0.0, -P(t), 0.0])
         M = lambda t: np.array([0.0, 0.0, 2.5 * P(t)])
         force = Force(F, cantilever, 1)
@@ -202,11 +203,7 @@ if __name__ == "__main__":
     load_type = "force+moment"
 
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
-        polynomial_degree=2,
-        reduced_integration=True,
-        constraints=constraints,
+        idx_constraints=constraints,
     )
     cantilever(
         Rod,
