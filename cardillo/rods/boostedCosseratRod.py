@@ -322,7 +322,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
         la_sigma = self.Nc_int @ la_sigma_nodes
 
-        C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
+        C_qp = self.material_model.C_inv(self.material_model_qp)
         E_pot_i_star = 0.5 * np.einsum("ij,ijk,ik->i", la_sigma, C_qp, la_sigma)
         E_pot_i = np.sum(d_epsilon * la_sigma, axis=1) - E_pot_i_star
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
@@ -340,7 +340,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         epsilon0 = np.zeros_like(epsilon_db)
         epsilon0[:, self.idx_db] = self.epsilon0_int[:, self.idx_db]
         E_pot_i = self.material_model.potential(
-            self.qp_int_vec, epsilon, epsilon0, quadrature=True
+            epsilon, epsilon0, self.material_model_qp
         )
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
@@ -724,7 +724,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         return l_c_ddot, l_g_ddot
 
     def _c_la_c_coo(self):
-        C_qp = self.material_model.C_inv(self.qp_int_vec, quadrature=True)
+        C_qp = self.material_model.C_inv(self.material_model_qp)
         c_la_c = self.c_la_c_SAB.add_blocks(
             C_qp[None, :, self.idx_c[:, None], self.idx_c]
         )
@@ -832,7 +832,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
         sigma_db = self.material_model.sigma(
-            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+            epsilon, self.epsilon0_int, self.material_model_qp
         )
 
         sigma_qp = np.zeros((self.nquadrature_int_total, 6))
@@ -846,7 +846,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         )
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
         sigma_db = self.material_model.sigma(
-            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+            epsilon, self.epsilon0_int, self.material_model_qp
         )
 
         sigma_qp = np.zeros((self.nquadrature_int_total, 6))
@@ -862,7 +862,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         T_to_J = T / self.J_int_vec[:, None, None]
 
         sigma_epsilon = self.material_model.sigma_epsilon(
-            self.qp_int_vec, epsilon, self.epsilon0_int, quadrature=True
+            epsilon, self.epsilon0_int, self.material_model_qp
         )
         B_n_gamma, B_n_kappa, B_m_gamma, B_m_kappa = sigma_epsilon
 
@@ -958,9 +958,8 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
             epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
             epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
-            sigma_db = self.material_model.sigma(
-                xis, epsilon, epsilon0, quadrature=False
-            )
+            prepare = self.material_model.prepare(xis)
+            sigma_db = self.material_model.sigma(epsilon, epsilon0, prepare)
             sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
 
         return xis, sigma[:, :3], sigma[:, 3:]
@@ -986,7 +985,8 @@ class CosseratRod_PetrovGalerkin(RodInterface):
             la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
             la_sigma = Nc @ la_c_nodes
 
-            C_inv = self.material_model.C_inv(xis, quadrature=False)
+            prepare = self.material_model.prepare(xis)
+            C_inv = self.material_model.C_inv(prepare)
             epsilon[:, self.idx_c] = np.einsum("ijk,ik->ij", C_inv, la_sigma)
 
         # strains from constraints are always 0

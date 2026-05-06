@@ -163,7 +163,7 @@ class RodInterface(RodExportBase):
 
         if material_model is not None:
             self.material_model = material_model
-            self.material_model.prepare_quadrature(self.qp_int_vec)
+            self.material_model_qp = self.material_model.prepare(self.qp_int_vec)
 
         if cross_section_inertias is not None:
             if cross_section_inertias == False:

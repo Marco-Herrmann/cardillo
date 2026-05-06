@@ -9,6 +9,8 @@ from vtk import (
     VTK_LAGRANGE_WEDGE,
 )
 
+from cardillo.utility.parametrize import parametrize
+
 vtk_types = IntEnum(
     "VTK_TYPES",
     [("Hexahedron", 0), ("Wedge", 1)],
@@ -17,12 +19,6 @@ vtk_interpolation = namedtuple("vtk_interpolation", ["Hexahedron", "Wedge"])
 vtk_bezier = vtk_interpolation(VTK_BEZIER_HEXAHEDRON, VTK_BEZIER_WEDGE)
 vtk_lagrange = vtk_interpolation(VTK_LAGRANGE_HEXAHEDRON, VTK_LAGRANGE_WEDGE)
 
-
-def parametrize(f):
-    if callable(f):
-        return f
-    f = np.asarray(f)
-    return lambda xi: np.broadcast_to(f, np.shape(xi) + f.shape)
 
 
 class CrossSection(ABC):
@@ -532,7 +528,7 @@ class CrossSectionInertias:
             Cross-section object, which provides cross-section area and second moment of area.
         A_rho0 : float
             Cross-section mass density, i.e., mass per unit reference length of rod.
-        B_I_rho0 : np.array(3, 3)
+        B_I_rho0 : np.ndarray (3, 3)
             Cross-section inertia tensor represented in the cross-section-fixed B-Basis.
 
         """
@@ -558,7 +554,7 @@ class CrossSectionInertias_new:
             Cross-section object, which provides cross-section area and second moment of area.
         A_rho0 : float or callable(xi) -> float
             Cross-section mass density, i.e., mass per unit reference length of rod.
-        B_I_rho0 : np.array(3, 3) or  callable(xi) -> np.array(3, 3)
+        B_I_rho0 : np.ndarray(3, 3) or  callable(xi) -> np.ndarray(3, 3)
             Cross-section inertia tensor represented in the cross-section-fixed B-Basis.
 
         """
