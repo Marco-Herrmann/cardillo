@@ -31,6 +31,8 @@ eggs/
 *.txt
 *.dat
 *.csv
+*.pkl
+*.prof
 
 # videos
 *.mp4
@@ -53,6 +55,9 @@ examples_linearization
 
 # virtual environment
 myvenv
+myWSLvenv
+myCONDAvenv
+venv312
 
 # cardillo solutions
 *.pkl

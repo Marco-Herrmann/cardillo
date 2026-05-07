@@ -7,7 +7,16 @@ from cardillo import System
 from cardillo.constraints import RigidConnection
 from cardillo.forces import B_Moment
 from cardillo.math import e1, e3
-from cardillo.rods import CircularCrossSection, animate_beam, Simo1986
+from cardillo.rods import (
+    CircularCrossSection,
+    animate_beam,
+    Simo1986,
+)
+from cardillo.rods_new import (
+    Simo1986 as Simo1986_new,
+    CircularCrossSection as CircularCrossSection_new,
+    make_CosseratRod as make_CosseratRod_new,
+)
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
 
@@ -27,6 +36,7 @@ def helix(
     name: str = "rod",
     show_plots: bool = False,
     save_stresses: bool = False,
+    new_interface: bool = False,
 ):
     # handle name
     plot_name = name.replace("_", " ")
@@ -46,9 +56,14 @@ def helix(
     # cross section properties
     width = length / slenderness
     radius = width / 2
-    cross_section = CircularCrossSection(radius=radius)
-    A = cross_section.area
-    Ip, I2, I3 = np.diag(cross_section.second_moment)
+    if new_interface:
+        cross_section = CircularCrossSection_new(radius=radius)
+        A = cross_section.area(0.0)
+        Ip, I2, I3 = np.diag(cross_section.second_moment(0.0))
+    else:
+        cross_section = CircularCrossSection(radius=radius)
+        A = cross_section.area
+        Ip, I2, I3 = np.diag(cross_section.second_moment)
 
     # material model
     E = 1.0  # Young's modulus
@@ -101,7 +116,6 @@ def helix(
     ################
     # applied moment
     ################
-    Fi = material_model.Fi
     M = lambda t: (R0 * alpha_xi**2) / (length**2) * (c * e1 * Fi[0] + e3 * Fi[2]) * t
     moment = B_Moment(M, rod, 1)
     system.add(moment)
@@ -148,7 +162,8 @@ def helix(
             [rod],
             scale=length,
             show=False,
-            repeat=False,
+            # repeat=False,
+            repeat=True,
         )
 
     ########################
@@ -157,14 +172,23 @@ def helix(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
-    for el in range(rod.nelement):
-        xi_el = np.linspace(*rod.element_interval(el), nxi_el)
-        for i in range(nxi_el):
-            idx = el * nxi_el + i
-            stresses[0, idx] = xi_el[i]
-            B_n, B_m = rod.eval_stresses(t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el)
-            stresses[1:, idx] = *B_n, *B_m
+    if new_interface:
+        # TODO: can we not slice like sol[-1]?
+        xis, B_n, B_m = rod.eval_stresses(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        )
+        stresses = np.hstack([xis[:, None], B_n, B_m]).T
+    else:
+        stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
+        for el in range(rod.nelement):
+            xi_el = np.linspace(*rod.element_interval(el), nxi_el)
+            for i in range(nxi_el):
+                idx = el * nxi_el + i
+                stresses[0, idx] = xi_el[i]
+                B_n, B_m = rod.eval_stresses(
+                    t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el
+                )
+                stresses[1:, idx] = *B_n, *B_m
 
     fig2, ax2 = plt.subplots(2, 1)
     fig2.suptitle(f"Stresses {name}")
@@ -194,18 +218,45 @@ def helix(
 
 
 if __name__ == "__main__":
-    Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
-        polynomial_degree=2,
-        reduced_integration=True,
-    )
+    formulation = "old"
+    formulation = "new"
+    # formulation = "Kirchhoff"
+
+    if formulation == "old":
+        Rod = make_CosseratRod(
+            interpolation="Quaternion",
+            mixed=True,
+            polynomial_degree=2,
+            reduced_integration=True,
+        )
+    elif formulation == "new":
+        Rod = make_CosseratRod_new(
+            # polynomial_degree=2,
+            # polynomial_degree=3,
+            # idx_constraints=[0, 1, 2, 4],
+            # idx_constraints=[1, 2],
+            idx_displacement_based=[0, 1, 2, 3, 4, 5],
+        )
+    elif formulation == "Kirchhoff":
+        from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
+
+        Rod = make_KirchhoffLoveRod(
+            # idx_displacement_based=[0, 1, 2, 3],
+            # idx_displacement_based=[0, 1] #, 2, 3],
+            # idx_displacement_based=[2, 3],
+            # idx_constraints=[0, 1],
+        )
+
     helix(
         Rod,
-        Simo1986,
+        Simo1986 if formulation == "old" else Simo1986_new,
         nelements=16,
         slenderness=1e1,
-        n_load_steps=1,
+        # atol=1e-12,
+        # n_load_steps=1,
+        # n_load_steps=15,
+        n_load_steps=128,
         show_plots=True,
         name="helix",
+        new_interface=not (formulation == "old"),
     )

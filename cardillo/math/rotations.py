@@ -544,7 +544,7 @@ def smallest_rotation(
         return Exp_SO3(psi * axis)
 
 
-def Exp_SO3_quat(P, normalize=True):
+def Exp_SO3_quat(P: np.ndarray, normalize: bool = True) -> np.ndarray:
     """Exponential mapping defined by (unit) quaternion, see 
     Egeland2002 (6.163), Nuetzi2016 (3.31) and Rucker2018 (13).
 
@@ -557,50 +557,93 @@ def Exp_SO3_quat(P, normalize=True):
     Nuetzi2016: https://www.research-collection.ethz.ch/handle/20.500.11850/117165 \\
     Rucker2018: https://ieeexplore.ieee.org/document/8392463
     """
-    p0, p = P[0], P[1:]
-    matrix = 2.0 * (p0 * ax2skew(p) + ax2skew_squared(p))
+    P = np.asarray(P)
+    was_1d = P.ndim == 1
+    P = np.atleast_2d(P)
+    assert P.shape[1] == 4
+
+    p0, p = P[:, 0], P[:, 1:]
+    matrix = 2.0 * (p0[:, None, None] * ax2skew(p) + ax2skew_squared(p))
     if normalize:
-        matrix /= P @ P
-    return eye3 + matrix
+        matrix /= np.sum(P * P, axis=1)[:, None, None]
+
+    result = eye3[None, :, :] + matrix
+    return result[0] if was_1d else result
 
 
-def Exp_SO3_quat_P(P, normalize=True):
+def Exp_SO3_quat_P(P_IB, normalize=True):
     """Derivative of Exp_SO3_quat with respect to P."""
-    p0, p = P[0], P[1:]
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    n = P_IB.shape[0]
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
     p_tilde = ax2skew(p)
     p_tilde_p = ax2skew_a()
-    matrix_P = np.zeros((3, 3, 4), dtype=np.result_type(P, 1.0))
-    matrix_P[:, :, 0] = 2.0 * p_tilde
-    matrix_P[:, :, 1:] = 2.0 * (
-        p0 * p_tilde_p + (p_tilde_p @ p_tilde).T + p_tilde @ p_tilde_p.T
+    matrix_P = np.zeros((n, 3, 3, 4), dtype=np.result_type(P_IB, 1.0))
+    # deriv. w.r.t. p0
+    matrix_P[:, :, :, 0] = 2.0 * p_tilde
+    # deriv. w.r.t. p
+    term1 = p0[:, None, None, None] * p_tilde_p[None, :, :, :]
+    term2 = np.transpose(p_tilde_p @ p_tilde[:, None, :, :], (0, 2, 3, 1))
+    term3 = np.transpose(
+        p_tilde[:, None, :, :] @ p_tilde_p[None, :, :, :], (0, 2, 3, 1)
     )
+    matrix_P[:, :, :, 1:] = 2.0 * (term1 + term2 + term3)
+
     if normalize:
-        P2_inv = 1 / (P @ P)
-        matrix_P *= P2_inv
+        P2_inv = 1 / np.sum(P_IB * P_IB, axis=1)
+        matrix_P *= P2_inv[:, None, None, None]
         # inner derivative due to normalization
-        matrix = 2.0 * (p0 * p_tilde + ax2skew_squared(p))
-        matrix_P += np.multiply.outer(matrix, -2.0 * P2_inv**2 * P)
-    return matrix_P
+        matrix = 2.0 * (p0[:, None, None] * p_tilde + ax2skew_squared(p))
+        matrix_P += np.multiply.outer(
+            matrix, -2.0 * (P2_inv**2)[:, None] * P_IB
+        ).reshape(n, 3, 3, 4)
+    return matrix_P[0] if was_1d else matrix_P
 
 
 Log_SO3_quat = Spurrier
 
 
-def T_SO3_quat(P, normalize=True):
+def T_SO3_quat(P_IB: np.ndarray, normalize: bool = True) -> np.ndarray:
     """Tangent map for unit quaternion. See Egeland2002 (6.327).
 
     References:
     -----------
     Egeland2002: https://folk.ntnu.no/oe/Modeling%20and%20Simulation.pdf
     """
-    p0, p = P[0], P[1:]
-    matrix = 2.0 * np.hstack((-p[:, None], p0 * eye3 - ax2skew(p)))
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    result = np.empty((P_IB.shape[0], 3, 4), dtype=np.result_type(P_IB, 1.0))
+    result[:, :, 0] = -2.0 * p
+    result[:, :, 1:] = 2.0 * (p0[:, None, None] * eye3 - ax2skew(p))
     if normalize:
-        matrix /= P @ P
-    return matrix
+        result /= np.sum(P_IB * P_IB, axis=1)[:, None, None]
+    return result[0] if was_1d else result
 
 
-def T_SO3_inv_quat(P, normalize=True):
+def T_SO3_inv_quat(P_IB, normalize=True):
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    result = np.empty((P_IB.shape[0], 4, 3), dtype=np.result_type(P_IB, 1.0))
+    result[:, 0] = -p
+    result[:, 1:] = p0[:, None, None] * eye3 + ax2skew(p)
+    result *= 0.5
+
+    return result[0] if was_1d else result
+
+
+def T_SO3_inv_quat_(P, normalize=True):
     """Inverse tangent map for unit quaternion. See Egeland2002 (6.329) and
     (6.330), Nuetzi2016 (3.11) and (4.19) as well as Rucker2018 (21) 
     and (22).
@@ -615,44 +658,222 @@ def T_SO3_inv_quat(P, normalize=True):
     return np.vstack((-p, p0 * eye3 + ax2skew(p))) / 2
 
 
-def T_SO3_quat_P(P, normalize=True):
-    p0, p = P[0], P[1:]
-    T_P = np.zeros((3, 4, 4), dtype=np.result_type(P, 1.0))
-    T_P[:, 0, 1:] = -2.0 * eye3
-    T_P[:, 1:, 0] = 2.0 * eye3
-    T_P[:, 1:, 1:] = -2.0 * ax2skew_a()
+def T_SO3_quat_P(P_IB, normalize=True):
+    P_IB = np.asarray(P_IB)
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    assert P_IB.shape[1] == 4
+
+    n = P_IB.shape[0]
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    result = np.zeros((n, 3, 4, 4), dtype=np.result_type(P_IB, 1.0))
+    result[:, :, 0, 1:] = -2.0 * eye3
+    result[:, :, 1:, 0] = 2.0 * eye3
+    result[:, :, 1:, 1:] = -2.0 * ax2skew_a()
 
     if normalize:
-        P2_inv = 1 / (P @ P)
-        T_P *= P2_inv
-        # inner derivative due to normalization
-        matrix = 2.0 * np.hstack((-p[:, None], p0 * eye3 - ax2skew(p)))
-        T_P += np.multiply.outer(matrix, -2.0 * P2_inv**2 * P)
-    return T_P
+        P2_inv = 1 / np.sum(P_IB * P_IB, axis=1)
+        result *= P2_inv[:, None, None, None]
+
+        # matrix = 2 * [ -p , p0*I - skew(p) ]
+        matrix = np.empty((n, 3, 4), dtype=result.dtype)
+        matrix[:, :, 0] = -2.0 * p
+        matrix[:, :, 1:] = 2.0 * (p0[:, None, None] * eye3 - ax2skew(p))
+
+        result += (
+            matrix[:, :, :, None]
+            * (-2.0 * P2_inv**2)[:, None, None, None]
+            * P_IB[:, None, None, :]
+        )
+    return result[0] if was_1d else result
 
 
+def T_SO3_quat_Q_P(P, Q, normalize=True):
+    p0, p = P[0, None], P[1:]
+    P2 = P @ P
+    if normalize:
+        factor = 2 / P2
+        factor_P = -4 * P / P2**2
+    else:
+        factor = 2 * P2
+        factor_P = 4 * P
+
+    mtx_Q = -p * Q[0] + p0 * Q[1:] - cross3(p, Q[1:])
+    TQ_P = np.outer(mtx_Q, factor_P)
+    TQ_P[:, 1:] -= factor * eye3 * Q[0]
+    TQ_P[:, 0] += factor * Q[1:]
+    TQ_P[:, 1:] += factor * ax2skew(Q[1:])
+    return TQ_P
+
+
+# fmt: off
+T_inv_P = np.zeros((4, 3, 4), dtype=float)
+T_inv_P[0, :, 1:] = -0.5 * eye3
+T_inv_P[1:, :, 0] = 0.5 * eye3
+T_inv_P[1:, :, 1:] = 0.5 * ax2skew_a()
 def T_SO3_inv_quat_P(P, normalize=True):
-    T_inv_P = np.zeros((4, 3, 4), dtype=float)
-    T_inv_P[0, :, 1:] = -0.5 * eye3
-    T_inv_P[1:, :, 0] = 0.5 * eye3
-    T_inv_P[1:, :, 1:] = 0.5 * ax2skew_a()
     return T_inv_P
+# fmt: on
 
 
-def quatprod(P, Q):
+def Exp_SO3_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    A_IB = R9.reshape(-1, 3, 3, order="F")
+    return A_IB[0] if was_1d else A_IB
+
+
+# fmt: off
+A_IB_R9 = np.zeros((3, 3, 9), dtype=float)
+A_IB_R9[:, 0, :3] = eye3
+A_IB_R9[:, 1, 3:6] = eye3
+A_IB_R9[:, 2, 6:] = eye3
+def Exp_SO3_R9_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+    return A_IB_R9 if was_1d else np.broadcast_to(A_IB_R9, (R9.shape[0], 3, 3, 9))
+# fmt: on
+
+
+def Log_SO3_R9(A_IB):
+    return A_IB.reshape(9, order="F")
+
+
+def T_SO3_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    T_IB = np.empty((R9.shape[0], 3, 9), dtype=np.result_type(R9, 1.0))
+    T_IB[:, 0, :3] = 0.0
+    T_IB[:, 0, 3:6] = 0.5 * R9[:, 6:]
+    T_IB[:, 0, 6:] = -0.5 * R9[:, 3:6]
+    T_IB[:, 1, :3] = -0.5 * R9[:, 6:]
+    T_IB[:, 1, 3:6] = 0.0
+    T_IB[:, 1, 6:] = 0.5 * R9[:, :3]
+    T_IB[:, 2, :3] = 0.5 * R9[:, 3:6]
+    T_IB[:, 2, 3:6] = -0.5 * R9[:, :3]
+    T_IB[:, 2, 6:] = 0.0
+    return T_IB[0] if was_1d else T_IB
+
+
+# fmt: off
+T_IB_R9 = np.zeros((3, 9, 9), dtype=float)
+T_IB_R9[0, 3:6, 6:] = 0.5 * eye3
+T_IB_R9[0, 6:, 3:6] = -0.5 * eye3
+T_IB_R9[1, :3, 6:] = -0.5 * eye3
+T_IB_R9[1, 6:, :3] = 0.5 * eye3
+T_IB_R9[2, :3, 3:6] = 0.5 * eye3
+T_IB_R9[2, 3:6, :3] = -0.5 * eye3
+def T_SO3_R9_R9(R9):
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+    return T_IB_R9 if was_1d else np.broadcast_to(T_IB_R9, (R9.shape[0], 3, 9, 9))
+# fmt: on
+
+
+def T_SO3_inv_R9(R9):
+    # is this 4 * T_SO3_R9.T?
+    R9 = np.asarray(R9)
+    was_1d = R9.ndim == 1
+    R9 = np.atleast_2d(R9)
+    assert R9.shape[1] == 9
+
+    T_IB_inv = np.empty((R9.shape[0], 9, 3), dtype=np.result_type(R9, 1.0))
+    T_IB_inv[:, :3, 0] = 0.0
+    T_IB_inv[:, :3, 1] = -R9[:, 6:]
+    T_IB_inv[:, :3, 2] = R9[:, 3:6]
+
+    T_IB_inv[:, 3:6, 0] = R9[:, 6:]
+    T_IB_inv[:, 3:6, 1] = 0.0
+    T_IB_inv[:, 3:6, 2] = -R9[:, :3]
+
+    T_IB_inv[:, 6:, 0] = -R9[:, 3:6]
+    T_IB_inv[:, 6:, 1] = R9[:, :3]
+    T_IB_inv[:, 6:, 2] = 0.0
+    return T_IB_inv[0] if was_1d else T_IB_inv
+
+
+# fmt: off
+T_IB_inv_R9 = np.zeros((9, 3, 9), dtype=float)
+T_IB_inv_R9[:3, 1, 6:] = -eye3
+T_IB_inv_R9[:3, 2, 3:6] = eye3
+T_IB_inv_R9[3:6, 0, 6:] = eye3
+T_IB_inv_R9[3:6, 2, :3] = -eye3
+T_IB_inv_R9[6:, 0, 3:6] = -eye3
+T_IB_inv_R9[6:, 1, :3] = eye3
+def T_SO3_inv_R9_R9(R9):
+    return T_IB_inv_R9
+# fmt: on
+
+
+def quatprod(P_IB, Q_IB):
     """Quaternion product, see Egeland2002 (6.190).
 
     References:
     -----------
     Egeland2002: https://folk.ntnu.no/oe/Modeling%20and%20Simulation.pdf
     """
-    p0, p = P[0], P[1:]
-    q0, q = Q[0], Q[1:]
-    z0 = p0 * q0 - p @ q
-    z = p0 * q + q0 * p + cross3(p, q)
-    return np.array([z0, *z])
+    P_IB = np.asarray(P_IB)
+    Q_IB = np.asarray(Q_IB)
+
+    was_1d = P_IB.ndim == 1
+    P_IB = np.atleast_2d(P_IB)
+    Q_IB = np.atleast_2d(Q_IB)
+
+    assert P_IB.shape == Q_IB.shape
+    assert P_IB.shape[1] == 4
+
+    p0, p = P_IB[:, 0], P_IB[:, 1:]
+    q0, q = Q_IB[:, 0], Q_IB[:, 1:]
+
+    # scalar part
+    z0 = p0 * q0 - np.sum(p * q, axis=1)
+
+    # vectorial part
+    z = p0[:, None] * q + q0[:, None] * p + np.cross(p, q)
+
+    result = np.concatenate((z0[:, None], z), axis=1)
+    return result[0] if was_1d else result
 
 
 def axis_angle2quat(axis, angle):
     n = axis / norm(axis)
     return np.concatenate([[np.cos(angle / 2)], np.sin(angle / 2) * n])
+
+
+if __name__ == "__main__":
+    from timeit import timeit
+
+    num = 50_000
+
+    P = np.random.rand(4)
+    Q = np.random.rand(4)
+
+    # globals().update(locals())
+
+    def old():
+        T_P = T_SO3_quat_P(P, normalize=True)
+        return Q @ T_P
+        return np.einsum("ijk, j -> ik", T_P, Q)
+
+    def new():
+        return T_SO3_quat_Q_P(P, Q, normalize=True)
+
+    n = np.linalg.norm(old() - new())
+    print(n)
+
+    tmt_old = timeit("old()", globals=globals(), number=num)
+    tmt_new = timeit("new()", globals=globals(), number=num)
+
+    print(f"{tmt_old = :.5f}")
+    print(f"{tmt_new = :.5f}")
+    print(f"speed up: {(1 - tmt_new / tmt_old ) * 100:.3}%")

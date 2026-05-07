@@ -6,8 +6,8 @@ from cardillo import System
 from cardillo.constraints import Prismatic, RigidConnection
 from cardillo.discrete import Frame, RigidBody
 from cardillo.math import A_IB_basic
-from cardillo.rods import RectangularCrossSection, Simo1986, animate_beam
-from cardillo.rods.cosseratRod import make_CosseratRod
+from cardillo.rods_new import RectangularCrossSection, Simo1986, make_CosseratRod
+from cardillo.rods import animate_beam
 from cardillo.solver import Newton, SolverOptions
 
 """ Elastic buckling phenomenon applicable to deployable rings:
@@ -39,8 +39,8 @@ def deployment_of_elastic_ring(
     width = 1.0 / 3
     height = 1.0
     cross_section = RectangularCrossSection(width, height)
-    A = cross_section.area
-    I1, I2, I3 = np.diag(cross_section.second_moment)
+    A = cross_section.area(0.0)
+    I1, I2, I3 = np.diag(cross_section.second_moment(0.0))
 
     # material model
     EE = 2.1 * 1.0e7  # Young's modulus
@@ -181,12 +181,7 @@ def deployment_of_elastic_ring(
 
 
 if __name__ == "__main__":
-    Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
-        polynomial_degree=2,
-        reduced_integration=True,
-    )
+    Rod = make_CosseratRod()
     deployment_of_elastic_ring(
         Rod,
         Simo1986,

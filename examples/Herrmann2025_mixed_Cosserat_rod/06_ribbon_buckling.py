@@ -5,9 +5,12 @@ from pathlib import Path
 from cardillo import System
 from cardillo.constraints import RigidConnection
 from cardillo.math import e2, e3, A_IB_basic
-from cardillo.rods import RectangularCrossSection, Simo1986, RodMaterialModel
-from cardillo.rods.force_line_distributed import Force_line_distributed
-from cardillo.rods.cosseratRod import make_CosseratRod
+from cardillo.rods_new import (
+    RectangularCrossSection,
+    Simo1986,
+    RodMaterialModel,
+    make_CosseratRod,
+)
 from cardillo.solver import Newton, SolverOptions
 from cardillo.utility.sensor import Sensor, SensorRecords
 
@@ -37,6 +40,50 @@ class Ribbon(RodMaterialModel):
         self.kappa_char = (12 * (1 - nu**2)) ** (-0.5) * t / a**2  # eq. 2.7
 
         self.phi = self.phi_B1
+
+    def prepare(self, xi):
+        return None
+
+    def potential(self, epsilon, epsilon0, prepare):
+        nxi = np.atleast_2d(epsilon).shape[0]
+        pot = np.empty(nxi)
+        for i in range(nxi):
+            Gamma = epsilon[i, :3]
+            Gamma0 = epsilon0[i, :3]
+            Kappa = epsilon[i, 3:]
+            Kappa0 = epsilon0[i, 3:]
+            pot[i] = self.potential_old(Gamma, Gamma0, Kappa, Kappa0)
+        return pot
+
+    def sigma(self, epsilon, epsilon0, prepare):
+        nxi = np.atleast_2d(epsilon).shape[0]
+        sigma = np.zeros((nxi, 6))
+        for i in range(nxi):
+            Gamma = epsilon[i, :3]
+            Gamma0 = epsilon0[i, :3]
+            Kappa = epsilon[i, 3:]
+            Kappa0 = epsilon0[i, 3:]
+            sigma[i, 3:] = self.B_n(Gamma, Gamma0, Kappa, Kappa0)
+            sigma[i, 3:] = self.B_m(Gamma, Gamma0, Kappa, Kappa0)
+        return sigma
+
+    def sigma_epsilon(self, epsilon, epsilon0, prepare):
+        nxi = np.atleast_2d(epsilon).shape[0]
+        n_Ga = np.empty((nxi, 3, 3))
+        n_Ka = np.empty((nxi, 3, 3))
+        m_Ga = np.empty((nxi, 3, 3))
+        m_Ka = np.empty((nxi, 3, 3))
+        for i in range(nxi):
+            Gamma = epsilon[i, :3]
+            Gamma0 = epsilon0[i, :3]
+            Kappa = epsilon[i, 3:]
+            Kappa0 = epsilon0[i, 3:]
+            n_Ga[i] = self.B_n_B_Gamma(Gamma, Gamma0, Kappa, Kappa0)
+            n_Ka[i] = self.B_n_B_Kappa(Gamma, Gamma0, Kappa, Kappa0)
+            m_Ga[i] = self.B_m_B_Gamma(Gamma, Gamma0, Kappa, Kappa0)
+            m_Ka[i] = self.B_m_B_Kappa(Gamma, Gamma0, Kappa, Kappa0)
+
+        return n_Ga, n_Ka, m_Ga, m_Ka
 
     ###############
     # phi functions
@@ -127,7 +174,7 @@ class Ribbon(RodMaterialModel):
     ###########
     # potential
     ###########
-    def potential(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
+    def potential_old(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         """eq. 2.9"""
         dK = B_Kappa - B_Kappa0
 
@@ -314,7 +361,7 @@ class Sadowsky(Ribbon):
 
         return strain, strain_kappa, strain_kappa_kappa
 
-    def potential(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
+    def potential_old(self, B_Gamma, B_Gamma0, B_Kappa, B_Kappa0):
         """Eq. (2.12), last line"""
         dK = B_Kappa - B_Kappa0
 
@@ -465,8 +512,7 @@ def ribbon(
             tau = (5 * t - 1) / 4
             return -factor * gamma(tau) * e3
 
-    f_grav = Force_line_distributed(f_new, cantilever)
-    system.add(f_grav)
+    cantilever.set_parameter(distributed_load=[f_new, None])
 
     ########
     # Sensor
@@ -502,7 +548,7 @@ def ribbon(
         )
         / length
     )
-    forces = np.array([f_grav.force(ti, 0.0) for ti in sol.t])
+    forces = np.array([f_new(ti, 0.0) for ti in sol.t])
     gammas = np.abs(forces[:, 2]) / gamma_crit_rib / factor
 
     if show_plots:
@@ -543,16 +589,13 @@ def ribbon(
         for i, (ti, qi, la_ci, la_gi) in enumerate(
             zip(sol.t, sol.q, sol.la_c, sol.la_g)
         ):
-            for el in range(cantilever.nelement):
-                la_ge = la_gi[cantilever.elDOF_la_g[el]]
-                for qpi in cantilever.qp[el]:
-                    eps_ga, eps_ka = cantilever.eval_strains(
-                        ti, qi, None, la_ge, qpi, el
-                    )
-                    eps_b = eps_ka[material_model.bendable_axis]
-                    if np.abs(eps_b) <= material_model.bend_switch:
-                        if not ti in t_sdw_approx and ti != 0.0:
-                            t_sdw_approx.append(ti)
+            _, _, eps_ka = cantilever._eval_internal_vec(
+                cantilever.N_int, cantilever.N_xi_int, qi[cantilever.qDOF]
+            )
+            eps_b = eps_ka[:, material_model.bendable_axis]
+            if np.any(np.abs(eps_b) <= material_model.bend_switch):
+                if ti != 0.0:
+                    t_sdw_approx.append(ti)
 
         # print times, where we are below the bending switch, i.e., the approximation is used
         print(f"Quadratic approximation is used for times: {t_sdw_approx}")
@@ -587,11 +630,8 @@ if __name__ == "__main__":
     name = f"W_{constitutive_laws[c_law][1]}_geometry_{geometry}"
     print(f"\n   {name}\n")
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=constitutive_laws[c_law][0],
-        polynomial_degree=2,
-        reduced_integration=True,
-        constraints=[0, 1, 2, 5],
+        idx_constraints=[0, 1, 2, 5],
+        idx_displacement_based=None if constitutive_laws[c_law][0] else [3, 4],
     )
     ribbon(
         Rod,

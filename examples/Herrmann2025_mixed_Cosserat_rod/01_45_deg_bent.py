@@ -9,6 +9,11 @@ from cardillo.constraints import RigidConnection
 from cardillo.forces import Force
 from cardillo.math import e3, A_IB_basic
 from cardillo.rods import RectangularCrossSection, animate_beam, Simo1986
+from cardillo.rods_new import (
+    Simo1986 as Simo1986_new,
+    RectangularCrossSection as RectangularCrossSection_new,
+    make_CosseratRod as make_CosseratRod_new,
+)
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
 
@@ -28,6 +33,7 @@ def bent_45(
     show_plots: bool = False,
     save_tip_displacement: bool = False,
     save_stresses: bool = False,
+    new_interface: bool = False,
 ):
     # handle name
     plot_name = name.replace("_", " ")
@@ -48,9 +54,14 @@ def bent_45(
 
     # cross section
     w = R / slenderness
-    cross_section = RectangularCrossSection(w, w)
-    A = cross_section.area
-    I1, I2, I3 = np.diag(cross_section.second_moment)
+    if new_interface:
+        cross_section = RectangularCrossSection_new(w, w)
+        A = cross_section.area(0.0)
+        I1, I2, I3 = np.diag(cross_section.second_moment(0.0))
+    else:
+        cross_section = RectangularCrossSection(w, w)
+        A = cross_section.area
+        I1, I2, I3 = np.diag(cross_section.second_moment)
 
     # material model
     E = 1e7
@@ -146,7 +157,7 @@ def bent_45(
     # tip displacement over load steps
     fig, ax = plt.subplots(1, 1)
     if len(t) == n_load_steps + 1:
-        qDOF_tip = rod.elDOF_P(1)
+        qDOF_tip = rod.local_qDOF_P(1)
         r_OP0_tip = rod.r_OP(0, q0[qDOF_tip], 1)
         delta_tip_header = "load, delta_x, delta_y, delta_z"
         delta_tip = np.zeros((4, n_load_steps + 1), dtype=float)
@@ -180,14 +191,22 @@ def bent_45(
     nxi_ges_min = 201
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod.nelement - 1) / rod.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz"
-    stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
-    for el in range(rod.nelement):
-        xi_el = np.linspace(*rod.element_interval(el), nxi_el)
-        for i in range(nxi_el):
-            idx = el * nxi_el + i
-            stresses[0, idx] = xi_el[i]
-            B_n, B_m = rod.eval_stresses(t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el)
-            stresses[1:, idx] = *B_n, *B_m
+    if new_interface:
+        xis, B_n, B_m = rod.eval_stresses(
+            t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        )
+        stresses = np.hstack([xis[:, None], B_n, B_m]).T
+    else:
+        stresses = np.zeros((7, nxi_el * rod.nelement), dtype=float)
+        for el in range(rod.nelement):
+            xi_el = np.linspace(*rod.element_interval(el), nxi_el)
+            for i in range(nxi_el):
+                idx = el * nxi_el + i
+                stresses[0, idx] = xi_el[i]
+                B_n, B_m = rod.eval_stresses(
+                    t[-1], q[-1], la_c[-1], la_g[-1], xi_el[i], el
+                )
+                stresses[1:, idx] = *B_n, *B_m
 
     fig2, ax2 = plt.subplots(2, 1)
     fig2.suptitle(f"Stresses {name}")
@@ -217,19 +236,31 @@ def bent_45(
 
 
 if __name__ == "__main__":
-    Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
-        polynomial_degree=2,
-        reduced_integration=True,
-    )
+    formulation = "old"
+    formulation = "new"
+
+    if formulation == "old":
+        Rod = make_CosseratRod(
+            interpolation="Quaternion",
+            mixed=False,
+            polynomial_degree=2,
+            reduced_integration=True,
+        )
+    elif formulation == "new":
+        Rod = make_CosseratRod_new(
+            polynomial_degree=2,
+            # idx_constraints=[0, 1, 2, 4],
+            idx_displacement_based=[0, 1, 2, 3, 4, 5],
+        )
+
     bent_45(
         Rod,
-        Simo1986,
+        Simo1986 if formulation == "old" else Simo1986_new,
         nelements=4,
         slenderness=1e1,
         tolType="MX",
         n_load_steps=20,
         show_plots=True,
         name="bent 45",
+        new_interface=not (formulation == "old"),
     )

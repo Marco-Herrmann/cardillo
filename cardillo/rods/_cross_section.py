@@ -476,7 +476,7 @@ class CrossSectionInertias:
             Cross-section object, which provides cross-section area and second moment of area.
         A_rho0 : float
             Cross-section mass density, i.e., mass per unit reference length of rod.
-        B_I_rho0 : np.array(3, 3)
+        B_I_rho0 : np.ndarray (3, 3)
             Cross-section inertia tensor represented in the cross-section-fixed B-Basis.
 
         """
