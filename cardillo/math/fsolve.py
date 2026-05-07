@@ -135,6 +135,9 @@ def fsolve(
     fun_args=(),
     jac_args=(),
     inexact=False,
+    update_rule=None,
+    update_callback=None,
+    update_args=(),
     options=SolverOptions(),
 ) -> tuple[np.ndarray, bool, float, int, np.ndarray]:
     """Solve a nonlinear system of equations using (inexact) Newton method.
@@ -159,6 +162,7 @@ def fsolve(
         Additional arguments passed to `jac`.
     inexact: Bool, optional
         Apply inexact Newton method (Newton chord) with constant `J = jac(x0)`.
+    # TODO
     options: SolverOptions
         Defines all required solver options.
 
@@ -187,6 +191,10 @@ def fsolve(
         jac_args = fun_args
     elif not isinstance(jac_args, tuple):
         jac_args = (jac_args,)
+    if not update_args:
+        update_args = fun_args
+    elif not isinstance(update_args, tuple):
+        update_args = (update_args,)
 
     # wrap function
     def fun(x, *args, f=fun):
@@ -237,9 +245,25 @@ def fsolve(
         def solve(x, rhs):
             return options.linear_solver(jacobian(x, *jac_args), rhs)
 
+    if update_rule is None:
+        update_rule = lambda x, Delta_x_bar, *update_args: Delta_x_bar
+        nx_bar = x0.size
+    else:
+        assert callable(update_rule), "update_rule must be callable"
+        nx_bar = fun(x0, *fun_args).size
+        jac0 = jac(x0, *jac_args)
+        assert jac0.shape[0] == jac0.shape[1] == nx_bar, "size of jacobian do not match"
+
+    if update_callback is None:
+        update_callback = lambda x, *update_args: x
+
     # eliminate round-off errors
-    Delta_x = np.zeros_like(x0)
-    x = x0 + Delta_x
+    Delta_x_bar = np.zeros(nx_bar, dtype=x0.dtype)
+    Delta_x = update_rule(x0, Delta_x_bar, *update_args)
+    x = update_callback(x0 + Delta_x, *update_args)
+
+    # create list for all x-iterates
+    all_x = [x]
 
     # initial function value
     f = np.atleast_1d(fun(x, *fun_args))
@@ -255,9 +279,11 @@ def fsolve(
     if not converged:
         for i in range(options.newton_max_iter):
             # Newton update
-            dx = solve(x, f)
-            Delta_x -= dx
-            x = x0 + Delta_x
+            dx_bar = solve(x, f)
+            Delta_x -= update_rule(x, dx_bar, *update_args)
+            x = update_callback(x0 + Delta_x, *update_args)
+
+            all_x.append(x)
 
             # new function value, error and convergence check
             f = np.atleast_1d(fun(x, *fun_args))
@@ -267,9 +293,22 @@ def fsolve(
                 break
 
         if not converged:
-            warn(f"fsolve is not converged after {i} iterations with error {error:.2e}")
+            msg = f"fsolve is not converged after {i} iterations with error {error:.2e}"
+            print(msg)
+            warn(msg)
 
         nit = i + 1
+
+    # compute final quadratic rate of convergence
+    if not converged:
+        final_rate = np.inf
+    else:
+        if nit > 2:
+            epsilon_m1 = np.linalg.norm(all_x[-2] - all_x[-1])
+            epsilon_m2 = np.linalg.norm(all_x[-3] - all_x[-1])
+            final_rate = epsilon_m1 / epsilon_m2**2
+        else:
+            final_rate = np.nan
 
     return OptimizeResult(
         x=x,
@@ -279,4 +318,6 @@ def fsolve(
         nit=nit,
         nfev=nfev,
         njev=njev,
+        all_x=np.array(all_x),
+        final_quadratic_rate=final_rate,
     )
