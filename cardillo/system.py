@@ -1,12 +1,13 @@
 import numpy as np
 import warnings
 from copy import deepcopy
-from scipy.sparse import diags
+import scipy
 
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.discrete.frame import Frame
 from cardillo.discrete.meshed import Axis
-from cardillo.solver import consistent_initial_conditions
+from cardillo.math.approx_fprime import approx_fprime
+from cardillo.solver import consistent_initial_conditions, Solution
 from cardillo.visualization import Export
 
 properties = []
@@ -335,6 +336,19 @@ class System:
             self.la_F0,
         ) = consistent_initial_conditions(self, *args, **kwargs)
 
+        self.sol0 = Solution(
+            self,
+            [self.t0],
+            [self.q0],
+            [self.u0],
+            [self.u_dot0],
+            [self.la_g0],
+            [self.la_gamma0],
+            [self.la_c0],
+            [self.la_N0],
+            [self.la_F0],
+        )
+
     def assembler_callback(self):
         for contr in self.__assembler_callback_contr:
             contr.assembler_callback()
@@ -420,6 +434,15 @@ class System:
             coo[contr.uDOF, contr.uDOF] = contr.h_u(t, q[contr.qDOF], u[contr.uDOF])
         return coo.asformat(format)
 
+    def KN_h(self, t, q, u, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__h_q_contr:
+            K, N = contr.KN_h(t, q[contr.qDOF], u[contr.uDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
     ############
     # compliance
     ############
@@ -469,6 +492,15 @@ class System:
                 t, q[contr.qDOF], la_c[contr.la_cDOF]
             )
         return coo.asformat(format)
+
+    def KN_c(self, t, q, la_c, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__c_contr:
+            K, N = contr.KN_c(t, q[contr.qDOF], la_c[contr.la_cDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
 
     ###########
     # actuators
@@ -561,6 +593,15 @@ class System:
                 t, q[contr.qDOF], la_g[contr.la_gDOF]
             )
         return coo.asformat(format)
+
+    def KN_g(self, t, q, la_g, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__g_contr:
+            K, N = contr.KN_g(t, q[contr.qDOF], la_g[contr.la_gDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
 
     def g_dot(self, t, q, u):
         g_dot = np.zeros(self.nla_g, dtype=np.common_type(q, u))
@@ -833,3 +874,45 @@ class System:
                 t, q[contr.qDOF], la_F[contr.la_FDOF]
             )
         return coo.asformat(format)
+
+    #########################
+    # general linearization #
+    #########################
+    def KN_tau(self, t, q, u, format="coo"): ...
+
+    def KN_gamma(self, t, q, la_gamma, format="coo"): ...
+    def KN_N(self, t, q, la_N, format="coo"):
+        assert self.nla_N == 0
+        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
+            (self.nu, self.nu)
+        ).asformat(format)
+
+    def KN_F(self, t, q, la_F, format="coo"): ...
+
+    def DG_h(self, t, q, u, format="coo"): ...
+    def DG_tau(self, t, q, u, format="coo"): ...
+
+    def KN(self, sol, format="coo"):
+        KNs = [
+            self.KN_h(sol.t, sol.q, sol.u, format=format),
+            self.KN_c(sol.t, sol.q, sol.la_c, format=format),
+            self.KN_tau(sol.t, sol.q, sol.u, format=format),
+            self.KN_g(sol.t, sol.q, sol.la_g, format=format),
+            self.KN_gamma(sol.t, sol.q, sol.la_gamma, format=format),
+            self.KN_N(sol.t, sol.q, sol.la_N, format=format),
+            self.KN_F(sol.t, sol.q, sol.la_F, format=format),
+        ]
+
+        K = sum([KNi[0] for KNi in KNs])
+        N = sum([KNi[1] for KNi in KNs])
+        return K, N
+
+    def DG(self, sol, format="coo"):
+        DGs = [
+            self.DG_h(sol.t, sol.q, sol.u, format=format),
+            self.DG_tau(sol.t, sol.q, sol.u, format=format),
+        ]
+
+        D = sum([DGi[0] for DGi in DGs])
+        G = sum([DGi[1] for DGi in DGs])
+        return D, G

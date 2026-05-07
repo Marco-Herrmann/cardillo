@@ -27,6 +27,7 @@ class B_Moment:
 
         self.B_J_R = lambda t, q: subsystem.B_J_R(t, q, xi=xi)
         self.B_J_R_q = lambda t, q: subsystem.B_J_R_q(t, q, xi=xi)
+        self.B_J2_R = lambda t, q: subsystem.B_J2_R(t, q, xi=xi)
 
     def assembler_callback(self):
         self.qDOF = self.subsystem.qDOF[self.subsystem.local_qDOF_P(self.xi)]
@@ -37,6 +38,15 @@ class B_Moment:
 
     def h_q(self, t, q, u):
         return einsum("i,ijk->jk", self.moment(t), self.B_J_R_q(t, q))
+
+    def KN_h(self, t, q, u):
+        KN = einsum("i, ijk -> jk", self.moment(t), self.B_J2_R(t, q))
+        # TODO: figure out if it is always skew-symmetric
+        import numpy as np
+        isskew = np.linalg.norm(KN + KN.T) < 1e-12
+        if not isskew:
+            print(f"B_moment {self.name}: N of KN_h is not skew-symmetric!")
+        return None, KN
 
     def export(self, sol_i, **kwargs):
         r_OP = self.subsystem.r_OP(sol_i.t, sol_i.q[self.qDOF], xi=self.xi)

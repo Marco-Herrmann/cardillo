@@ -17,4 +17,4 @@ from .rattle import Rattle
 from .dual_stormer_verlet import DualStormerVerlet
 
 # static solvers
-from .statics import Newton, Riks
+from .statics import Newton, Riks, Eigenmodes

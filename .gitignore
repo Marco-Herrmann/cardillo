@@ -53,3 +53,5 @@ examples/results
 # virtual environment
 myvenv
 
+# cardillo solutions
+*.pkl

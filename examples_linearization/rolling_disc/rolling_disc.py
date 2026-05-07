@@ -3,6 +3,8 @@ import matplotlib.animation as animation
 import numpy as np
 from pathlib import Path
 
+import scipy.sparse
+
 from cardillo import System
 from cardillo.discrete import RigidBody, Frame, Cylinder, Box
 from cardillo.math import axis_angle2quat, e1, e2, e3, cross3, norm, A_IB_basic
@@ -180,9 +182,9 @@ if __name__ == "__main__":
     ####################
     # initial conditions
     ####################
-    case = "circular"
+    # case = "circular"
     # case = 'spinning'
-    # case = 'rolling'
+    case = "rolling"
 
     if case == "circular":
         # radius of of the circular motion
@@ -233,12 +235,12 @@ if __name__ == "__main__":
         R = 0
 
         # initial rolling velocity
-        gamma_dot0 = 1
+        gamma_dot0 = 2
         # initial spinning velocity
         alpha_dot0 = 0
 
         # simulation time
-        t1 = 2.5  # simulation time
+        t1 = 2 * np.pi / gamma_dot0  # simulation time
 
     else:
         raise ValueError(
@@ -293,6 +295,7 @@ if __name__ == "__main__":
     # simulation
     ############
     dt = 2.0e-2  # time step
+    # dt = 1.0e-2 / gamma_dot0
 
     # sol = ScipyIVP(system, t1, dt).solve()
     # sol = Rattle(system, t1, dt).solve()
@@ -307,6 +310,23 @@ if __name__ == "__main__":
     g = np.array([system.g(ti, qi) for ti, qi in zip(t, q)])
     g_dot = np.array([system.g_dot(ti, qi, ui) for ti, qi, ui in zip(t, q, u)])
     gamma = np.array([system.gamma(ti, qi, ui) for ti, qi, ui in zip(t, q, u)])
+
+    #################
+    # linearization #
+    #################
+    Phi_T = system.fundamental_perturbation_matrix(sol)
+    np.set_printoptions(linewidth=300)
+    print(Phi_T)
+    floquet_multipliers = np.linalg.eigvals(Phi_T)
+    print(np.abs(floquet_multipliers))
+
+    if case == "rolling":
+        # before 5.4
+        g_tilde = gravity / r
+        # after eq 5.22
+        omega_squared = -4 / 5 * (g_tilde - 3 * gamma_dot0**2)
+
+        print(f"{omega_squared = }")
 
     #################
     # post-processing
@@ -352,7 +372,7 @@ if __name__ == "__main__":
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]")
-    scale = R
+    scale = np.max([R, r])
     ax.set_xlim3d(left=-scale, right=scale)
     ax.set_ylim3d(bottom=-scale, top=scale)
     ax.set_zlim3d(bottom=0, top=2 * scale)
