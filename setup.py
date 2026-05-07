@@ -31,6 +31,7 @@ setup(
         "vtk>=9.3.0",
         "scipy_dae>=0.1.0",
         "urdf_parser_py",
+        "pygltflib",
     ],
     packages=find_packages(),
     python_requires=">=3.10",

@@ -226,9 +226,9 @@ class Newton:
         self.jac_coo["g_q"       , sf0:sf1,    :sx0] = g_q
         self.jac_coo["c_q"       , sf1:sf2,    :sx0] = c_q
         self.jac_coo["c_la_c"    , sf1:sf2, sx1:sx2] = c_la_c
-        self.jac_coo["g_S_q"     , sf2:sf3,    :sx0] = g_S_q
-        self.jac_coo["Rla_N_q"   , sf3:   ,    :sx0] = Rla_N_q
-        self.jac_coo["Rla_N_la_N", sf3:   , sf3:   ] = Rla_N_la_N
+        self.jac_coo["Rla_N_q"   , sf2:sf3:,    :sx0] = Rla_N_q
+        self.jac_coo["Rla_N_la_N", sf2:sf3:, sf3:   ] = Rla_N_la_N
+        self.jac_coo["g_S_q"     , sf3:    ,    :sx0] = g_S_q
         # fmt: on
         return self.jac_coo.asformat("csc")
 
