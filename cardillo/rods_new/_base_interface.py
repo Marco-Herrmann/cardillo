@@ -1,9 +1,15 @@
 from abc import ABC, abstractmethod
+import json
 import numpy as np
+import os
 
 from cardillo.rods._base_export import RodExportBase
 from cardillo.utility.check_time_derivatives import check_time_derivatives
-from ._cross_section import CrossSectionInertias
+from ._cross_section import (
+    CrossSectionInertias,
+    RectangularCrossSection,
+    CircularCrossSection,
+)
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -344,3 +350,129 @@ class RodInterface(RodExportBase):
     def straight_initial_configuration(
         nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
     ): ...
+
+    ##################
+    # blender export #
+    ##################
+    def export_blender(self, path, solution):
+        # TODO: allow for higher resolution than self.nnodes
+        num_bones = self.nnodes
+        data = np.empty((len(solution.t), num_bones, 7), dtype=float)
+        for i in range(len(solution.t)):
+            data[i] = self.get_export_nodes(solution.q[i, self.qDOF])
+
+        # TODO: get rid of os
+        filename = os.path.join(path, f"{self.name}.glb")
+        times = solution.t
+
+        assert (
+            data.shape[2] == 7
+        ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
+
+        verts, indices, joints, weights = self.cross_section.create_mesh(num_bones)
+
+        # inverse binding matrices (TODO: what is that)
+        eye4 = np.eye(4, dtype=np.float32)
+        ibm = np.array([eye4 for _ in range(num_bones)])
+
+        from cardillo.visualization.glTF_export import (
+            BufferBuilder,
+            cardillo_to_gltf_trans,
+            cardillo_to_gltf_rot,
+        )
+        from pygltflib import (
+            Mesh,
+            Primitive,
+            Node,
+            Skin,
+            GLTF2,
+            Buffer,
+            Scene,
+            AnimationSampler,
+            AnimationChannel,
+            AnimationChannelTarget,
+            Animation,
+        )
+
+        buf = BufferBuilder()
+
+        pos_acc = buf.add(verts, 5126, "VEC3")
+        idx_acc = buf.add(indices, 5125, "SCALAR")
+        joint_acc = buf.add(joints, 5123, "VEC4")
+        weight_acc = buf.add(weights, 5126, "VEC4")
+        ibm_acc = buf.add(ibm.reshape(-1, 16), 5126, "MAT4")
+        t_acc = buf.add(times.astype(np.float32), 5126, "SCALAR")
+
+        mesh = Mesh(
+            name=f"{self.name}_mesh",
+            primitives=[
+                Primitive(
+                    attributes={
+                        "POSITION": pos_acc,
+                        "JOINTS_0": joint_acc,
+                        "WEIGHTS_0": weight_acc,
+                    },
+                    indices=idx_acc,
+                )
+            ],
+        )
+
+        nodes = [Node(name=f"bone_{i}") for i in range(num_bones)]
+        mesh_node = Node(name=f"{self.name}_obj", mesh=0, skin=0)
+        nodes.append(mesh_node)
+
+        skin = Skin(
+            name=f"{self.name}_skin",
+            joints=list(range(num_bones)),
+            inverseBindMatrices=ibm_acc,
+        )
+
+        samplers = []
+        channels = []
+        for i in range(num_bones):
+            trans = cardillo_to_gltf_trans(data[:, i, 0:3])
+            rot = cardillo_to_gltf_rot(data[:, i, 3:7])
+            trans_acc = buf.add(trans, 5126, "VEC3")
+            rot_acc = buf.add(rot, 5126, "VEC4")
+
+            # Translation sampler
+            samplers.append(
+                AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR")
+            )
+            channels.append(
+                AnimationChannel(
+                    sampler=len(samplers) - 1,
+                    target=AnimationChannelTarget(node=i, path="translation"),
+                )
+            )
+
+            # Rotation sampler
+            samplers.append(
+                AnimationSampler(input=t_acc, output=rot_acc, interpolation="LINEAR")
+            )
+            channels.append(
+                AnimationChannel(
+                    sampler=len(samplers) - 1,
+                    target=AnimationChannelTarget(node=i, path="rotation"),
+                )
+            )
+
+        anim = Animation(samplers=samplers, channels=channels)
+
+        gltf = GLTF2(
+            buffers=[Buffer(byteLength=len(buf.data))],
+            bufferViews=buf.views,
+            accessors=buf.accessors,
+            meshes=[mesh],
+            nodes=nodes,
+            skins=[skin],
+            animations=[anim],
+            scenes=[Scene(nodes=[len(nodes) - 1])],
+            scene=0,
+        )
+
+        gltf.set_binary_blob(buf.data)
+        gltf.save_binary(filename)
+
+    @abstractmethod
+    def get_export_nodes(self, q): ...

@@ -33,6 +33,9 @@ eggs/
 *.csv
 *.pkl
 *.prof
+*.glb
+*.blend
+*.blend1
 
 # videos
 *.mp4

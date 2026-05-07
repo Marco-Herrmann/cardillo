@@ -163,6 +163,42 @@ class SmallestRotation:
         return kappa
 
 
+def smallest_rotation_quaternion(v, i=None):
+    v_norm = np.linalg.norm(v)
+    if v_norm < 1e-12:
+        if i is None:
+            i = 0
+        return np.array([1, 0, 0, 0], dtype=float), i
+
+    u = v / v_norm
+
+    ei = np.zeros(3, dtype=float)
+    if i is None:
+        dots = [u @ e for e in np.eye(3)]
+        i = int(np.argmax([abs(d) for d in dots]))
+        ei[i] = 1.0 * np.sign(dots[i])
+    else:
+        ei[i] = 1.0
+
+    inner = u @ ei
+    # Handle the case where u is parallel to ei
+    if abs(inner) > 1.0 - 1e-12:
+        if inner > 0:
+            # already aligned
+            return np.array([1, 0, 0, 0], dtype=float), i
+        else:
+            # 180° rotation
+            q = np.zeros(4, dtype=float)
+            q[1 + (i + 1) % 3] = 1.0
+            return q, i
+
+    angle = np.acos(u @ ei)
+    axis = np.cross(ei, u)
+    axis = axis / np.linalg.norm(axis)
+    p, p0 = np.sin(angle / 2) * axis, np.cos(angle / 2)
+    return np.array([p0, *p]), i
+
+
 if __name__ == "__main__":
     for _ in range(100):
         R_u = np.random.rand(3)
