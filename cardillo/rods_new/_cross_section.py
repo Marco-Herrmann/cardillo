@@ -24,8 +24,8 @@ class CrossSection(ABC):
 
 
 class ExportableCrossSection(CrossSection):
-    # TODO: check with blender export
-    ...
+    @abstractmethod
+    def create_mesh(self, num_segments): ...
 
 
 class UserDefinedCrossSection(CrossSection):
@@ -55,8 +55,8 @@ class UserDefinedCrossSection(CrossSection):
         return self._second_moment(xi)
 
 
-class CircularCrossSection(CrossSection):
-    def __init__(self, radius):
+class CircularCrossSection(ExportableCrossSection):
+    def __init__(self, radius, *, export_resolution=16):
         """Circular cross-section.
 
         Parameters
@@ -66,6 +66,8 @@ class CircularCrossSection(CrossSection):
         """
         self.radius = parametrize(radius)
         self._second_moment = np.pi / 4 * np.diag([2, 1, 1])
+
+        self.export_resolution = export_resolution
 
     def area(self, xi):
         r = self.radius(xi)
@@ -78,11 +80,55 @@ class CircularCrossSection(CrossSection):
 
     def second_moment(self, xi):
         # https://en.wikipedia.org/wiki/List_of_second_moments_of_area
-        r = self.radius(xi)
+        r = np.asarray(self.radius(xi))
         return (r**4)[..., None, None] * self._second_moment
 
+    def create_mesh(self, nxi):
+        ncirc = self.export_resolution
 
-class RectangularCrossSection(CrossSection):
+        verts = []
+        indices = []
+        joints = []
+        weights = []
+        for j in range(nxi):
+            xi = j / (nxi - 1)
+            radius = self.radius(xi)
+            for i in range(ncirc):
+                a = 2 * np.pi * i / ncirc
+                y = radius * np.cos(a)
+                z = radius * np.sin(a)
+
+                # cardillo to glTF: y <- z and z <- -y
+                verts.append([0.0, z, -y])
+                joints.append([j, 0, 0, 0])
+                weights.append([1.0, 0.0, 0.0, 0.0])
+
+        # indices (grid)
+        for j in range(nxi - 1):
+            for i in range(ncirc):
+                i0 = j * ncirc + i
+                i1 = j * ncirc + (i + 1) % ncirc
+                i2 = (j + 1) * ncirc + i
+                i3 = (j + 1) * ncirc + (i + 1) % ncirc
+
+                indices.extend([i0, i1, i2])
+                indices.extend([i1, i3, i2])
+
+        # close surfaces
+        last = (nxi - 1) * ncirc
+        for i in range(ncirc - 2):
+            indices.extend([0, i + 2, i + 1])
+            indices.extend([last, last + i + 2, last + i + 1])
+
+        return (
+            np.array(verts, np.float32),
+            np.array(indices, np.uint32),
+            np.array(joints, np.uint16),
+            np.array(weights, np.float32),
+        )
+
+
+class RectangularCrossSection(ExportableCrossSection):
     def __init__(self, width, height):
         """Rectangular cross-section.
 
@@ -113,11 +159,54 @@ class RectangularCrossSection(CrossSection):
         Izz = width**3 * height / 12.0
         Ixx = Iyy + Izz
 
-        second_moment = np.zeros(width.shape + (3, 3))
+        second_moment = np.zeros(np.asarray(width).shape + (3, 3))
         second_moment[..., 0, 0] = Ixx
         second_moment[..., 1, 1] = Iyy
         second_moment[..., 2, 2] = Izz
         return second_moment
+
+    def create_mesh(self, nxi):
+        verts = []
+        indices = []
+        joints = []
+        weights = []
+        for j in range(nxi):
+            xi = j / (nxi - 1)
+            y_ = self.width(xi) / 2
+            z_ = self.height(xi) / 2
+            for i in range(4):
+                y = y_ * (1 if i % 4 in (1, 2) else -1)
+                z = z_ * (-1 if i % 4 < 2 else 1)
+
+                # cardillo to glTF: y <- z and z <- -y
+                verts.append([0.0, z, -y])
+                joints.append([j, 0, 0, 0])
+                weights.append([1.0, 0.0, 0.0, 0.0])
+
+        # indices (grid)
+        for j in range(nxi - 1):
+            for i in range(4):
+                i0 = j * 4 + i
+                i1 = j * 4 + (i + 1) % 4
+                i2 = (j + 1) * 4 + i
+                i3 = (j + 1) * 4 + (i + 1) % 4
+
+                indices.extend([i0, i1, i2])
+                indices.extend([i1, i3, i2])
+
+        # close surfaces
+        last = (nxi - 1) * 4
+        for i in range(2):
+            indices.extend([0, i + 2, i + 1])
+            # TODO: why is this swapepd?
+            indices.extend([last, last + i + 1, last + i + 2])
+
+        return (
+            np.array(verts, np.float32),
+            np.array(indices, np.uint32),
+            np.array(joints, np.uint16),
+            np.array(weights, np.float32),
+        )
 
 
 class CrossSectionInertias:
