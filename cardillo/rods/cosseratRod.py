@@ -86,7 +86,9 @@ def make_CosseratRod(
             raise ValueError("constraint values must between 0 and 5")
 
     if interpolation == "Quaternion":
-        Basis = make_CosseratRod_Quat(mixed=mixed, constraints=constraints, updated=updated)
+        Basis = make_CosseratRod_Quat(
+            mixed=mixed, constraints=constraints, updated=updated
+        )
         polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
     elif interpolation == "SE3":
         Basis = make_CosseratRod_SE3(mixed=mixed, constraints=constraints)

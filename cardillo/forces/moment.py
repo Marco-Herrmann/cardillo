@@ -43,6 +43,7 @@ class B_Moment:
         KN = einsum("i, ijk -> jk", self.moment(t), self.B_J2_R(t, q))
         # TODO: figure out if it is always skew-symmetric
         import numpy as np
+
         isskew = np.linalg.norm(KN + KN.T) < 1e-12
         if not isskew:
             print(f"B_moment {self.name}: N of KN_h is not skew-symmetric!")
