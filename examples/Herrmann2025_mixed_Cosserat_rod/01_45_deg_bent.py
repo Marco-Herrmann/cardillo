@@ -129,6 +129,8 @@ def bent_45(
     if VTK_export:
         system.export(dir_name, f"vtk/slen_{slenderness:1.0e}/{save_name}", sol)
 
+    system.export_blender(dir_name, f"blender", sol, create_blend=True)
+
     ##########################
     # matplotlib visualization
     ##########################

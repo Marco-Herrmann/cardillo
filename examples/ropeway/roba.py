@@ -4,9 +4,12 @@ from pathlib import Path
 from cardillo import System
 from cardillo.math import e1, e2, e3
 from cardillo.math.rotations import A_IB_basic
-from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods import CircularCrossSection, CrossSectionInertias, Simo1986
-from cardillo.rods.force_line_distributed import Force_line_distributed
+from cardillo.rods_new import (
+    CircularCrossSection,
+    CrossSectionInertias,
+    Simo1986,
+    make_CosseratRod,
+)
 
 from cardillo.forces import Force
 from cardillo.discrete import Frame, RigidBody, Meshed, Box, Cylinder
@@ -16,16 +19,12 @@ from cardillo.contacts import Sphere2Sphere
 
 from cardillo.solver import Newton, SolverOptions, DualStormerVerlet
 
-
 system = System()
 
 
 Rod = make_CosseratRod(
-    interpolation="Quaternion",
-    mixed=True,
-    constraints=[0, 1, 2],
+    idx_constraints=[0, 1, 2],
     polynomial_degree=2,
-    reduced_integration=True,
 )
 
 E = 210_000_000.0
@@ -43,10 +42,14 @@ A_IB0 = A_IB_basic(3 * np.pi / 4).y
 cross_section = CircularCrossSection(r_rope)
 cross_section_intertias = CrossSectionInertias(rho_rope, cross_section)
 
-I = cross_section.second_moment[1, 1]
+A = cross_section.area(0.0)
+I = cross_section.second_moment(0.0)[1, 1]
 Ei = np.ones(3, dtype=float)
 Fi = np.array([G * I, E * I, E * I])
 material_model = Simo1986(Ei, Fi)
+
+gravity_static = lambda t, xi: -A * 9.81 * e3 * np.max([2 * t - 1, 0.0])
+gravity_dynamic = lambda t, xi: -A * 9.81 * e3
 
 q0 = Rod.straight_configuration(nelement, L, r_OP0, A_IB0)
 rope = Rod(
@@ -57,14 +60,10 @@ rope = Rod(
     q0=q0,
     cross_section_inertias=cross_section_intertias,
     name="Rope",
+    distributed_load=[gravity_static, None],
 )
 
-rope_gravity = [
-    Force_line_distributed(
-        lambda t, xi: -cross_section.area * 9.81 * e3 * np.max([2 * t - 1, 0.0]), rope
-    ),
-    Force_line_distributed(lambda t, xi: -cross_section.area * 9.81 * e3, rope),
-]
+
 rope_tension = [
     Force(lambda t: -100 * 9.81 * (e3 + e1) * t, rope, xi=1, name=f"tenioning_static"),
     Force(lambda t: -100 * 9.81 * (e3 + e1), rope, xi=1, name=f"tenioning_dynamic"),
@@ -186,21 +185,21 @@ for i, rol in enumerate(rols):
             )
         )
 
-
-system.add(rope, rope_gravity[0], rope_guidance[0], rope_tension[0])
+system.add(rope, rope_guidance[0], rope_tension[0])
 system.assemble()
 
 sol_static = Newton(system, 5).solve()
 
 dir_name = Path(__file__).parent
-system.export(dir_name, "vtk_static", sol_static)
+system.export_blender(
+    dir_name, "blender/static_", solution=sol_static, create_blend=True
+)
 
 system.set_new_initial_state(sol_static.q[-1], sol_static.u[-1], 0.0)
 
-
-system.remove(rope_gravity[0], rope_guidance[0], rope_tension[0])
-system.add(guidance, rope_gravity[1], rope_guidance[1], rope_tension[1])
-
+system.remove(rope_guidance[0], rope_tension[0])
+system.add(guidance, rope_guidance[1], rope_tension[1])
+rope.set_parameter(distributed_load=[gravity_dynamic, None])
 
 # add rols, wippen, constraints and contacts
 system.add(*rols, *wippen_constraints, *contacts)
@@ -211,4 +210,7 @@ system.assemble()
 t1 = 5.0
 dt = 1e-2
 sol_dynamic = DualStormerVerlet(system, t1, dt).solve()
-system.export(dir_name, "sol_dynamic", sol_dynamic)
+# system.export(dir_name, "sol_dynamic", sol_dynamic)
+system.export_blender(
+    dir_name, "blender/dynamic", solution=sol_dynamic, create_blend=True
+)
