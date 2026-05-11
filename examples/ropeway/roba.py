@@ -192,7 +192,7 @@ sol_static = Newton(system, 5).solve()
 
 dir_name = Path(__file__).parent
 system.export_blender(
-    dir_name, "blender/static_", solution=sol_static, create_blend=True
+    dir_name, "blender/static", solution=sol_static, create_blend=True
 )
 
 system.set_new_initial_state(sol_static.q[-1], sol_static.u[-1], 0.0)

@@ -3,7 +3,7 @@ from cachetools.keys import hashkey
 import numpy as np
 from vtk import VTK_VERTEX
 
-from cardillo.discrete.discrete_export_base import make_glTF
+from cardillo.discrete.discrete_export_base import make_glTF, make_glTF_modes
 from cardillo.math import (
     cross3,
     ax2skew,
@@ -14,6 +14,7 @@ from cardillo.math import (
     T_SO3_inv_quat,
     T_SO3_inv_quat_P,
     Spurrier,
+    skew2ax,
 )
 
 
@@ -336,6 +337,33 @@ class RigidBody:
         B_Omega = solution.u[:, self.uDOF[3:]]
         return r_OP, v_P, P_IB, B_Omega
 
+    def _export_nodes_modes(self, solution):
+        t0 = solution.t[0]
+        q0 = solution.q[0, self.qDOF]
+        r_OP = q0[:3]
+        P_IB = q0[3:]
+
+        # TODO: go from dq to Delta_z
+        # z = solution.Delta_z.T
+        # Delta_r = self.J_P(t0, q0) @ z
+        # B_Delta_phi = self.B_J_R(t0, q0) @ z
+
+        mode_dq = solution.modes_dq[0, self.qDOF]
+        Delta_r = self.r_OP_q(t0, q0) @ mode_dq
+        A_IB = self.A_IB(t0, q0)
+        A_IB_q = self.A_IB_q(t0, q0)
+        B_Delta_phi = np.array(
+            [skew2ax(np.einsum("ij,ikl,l->jk", A_IB, A_IB_q, zi)) for zi in mode_dq.T]
+        )
+
+        return r_OP, Delta_r.T, P_IB, B_Delta_phi
+
     def export_blender(self, path, solution):
         r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
         make_glTF(path, self.name, solution.t, r_OP, v_P, P_IB, B_Omega)
+
+    def export_blender_modes(self, path, solution):
+        r_OP, Delta_r, P_IB, B_Delta_phi = self._export_nodes_modes(solution)
+        make_glTF_modes(
+            path, self.name, solution.omegas[0], r_OP, Delta_r, P_IB, B_Delta_phi
+        )

@@ -54,7 +54,6 @@ jupyter_execute/
 
 # results
 examples/results
-examples_linearization
 
 # virtual environment
 myvenv

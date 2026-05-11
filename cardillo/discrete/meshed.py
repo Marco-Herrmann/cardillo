@@ -3,6 +3,9 @@ import trimesh
 from vtk import VTK_TRIANGLE
 
 
+from cardillo.discrete.discrete_export_base import make_glTF, make_glTF_modes
+
+
 def Meshed(Base):
     """Generate an object (typically with Base `Frame` or `RigidBody`)
     from a given Trimesh object.
@@ -153,8 +156,6 @@ def Meshed(Base):
             return points, cells, point_data, None
 
         def export_blender(self, path, solution):
-            from cardillo.discrete.discrete_export_base import make_glTF
-
             r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)
             make_glTF(
                 path,
@@ -164,6 +165,19 @@ def Meshed(Base):
                 v_P,
                 P_IB,
                 B_Omega,
+                self.B_visual_mesh,
+            )
+
+        def export_blender_modes(self, path, solution):
+            r_OP, Delta_r, P_IB, B_Delta_phi = self._export_nodes_modes(solution)
+            make_glTF_modes(
+                path,
+                self.name,
+                solution.omegas[0],
+                r_OP,
+                Delta_r,
+                P_IB,
+                B_Delta_phi,
                 self.B_visual_mesh,
             )
 

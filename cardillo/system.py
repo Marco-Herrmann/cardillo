@@ -183,12 +183,20 @@ class System:
     def export_blender(
         self, path, folder_name, solution, create_blend=False, blenderPath="blender"
     ):
+        # TODO: go from modes_dq to Delta_z and maybe use simpler flag instead
+        if hasattr(solution, "omegas") and hasattr(solution, "modes_dq"):
+            assert len(solution.t) == 1
+            export_str = "export_blender_modes"
+        else:
+            export_str = "export_blender"
+
         # TODO: can we get rid of os?
         path = Path(path, folder_name)
         os.makedirs(path, exist_ok=True)
         for contr in self.contributions:
-            if hasattr(contr, "export_blender"):
-                contr.export_blender(path, solution)
+            if hasattr(contr, export_str):
+                export = getattr(contr, export_str)
+                export(path, solution)
 
         if not create_blend:
             return

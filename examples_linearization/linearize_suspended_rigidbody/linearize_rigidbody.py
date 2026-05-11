@@ -83,3 +83,4 @@ if __name__ == "__main__":
     # vtk-export
     dir_name = Path(__file__).parent
     system.export(dir_name, f"vtk", sol, fps=25)
+    system.export_blender(dir_name, f"blender", sol, create_blend=True)

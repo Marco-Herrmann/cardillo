@@ -165,3 +165,71 @@ def make_glTF(path, name, t, r_OP, v_P=None, P_IB=None, B_Omega=None, mesh=None)
 
     gltf.set_binary_blob(buf.data)
     gltf.save_binary(filename)
+
+
+def make_glTF_modes(
+    path, name, omegas, r_OP, Delta_r=None, P_IB=None, B_Delta_phi=None, mesh=None
+):
+    # TODO: get rid of os
+    filename = os.path.join(path, f"{name}.glb")
+    buf = BufferBuilder()
+
+    nodes = []
+    # create an empty
+    if mesh is None:
+        nodes.append(
+            Node(
+                name=f"{name}_obj",
+            )
+        )
+        mesh_gltf = []
+    else:
+        # create a mesh node
+        verts = cardillo_to_gltf_trans(mesh.vertices)
+        faces = mesh.faces.astype(np.uint32)
+
+        pos_acc = buf.add(verts, 5126, "VEC3")
+        idx_acc = buf.add(faces.reshape(-1), 5125, "SCALAR")
+
+        prim = Primitive(attributes={"POSITION": pos_acc}, indices=idx_acc)
+
+        nodes.append(Node(name=f"{name}_obj", mesh=0))
+        mesh_gltf = [Mesh(primitives=[prim], name=f"{name}_mesh")]
+
+    # equilibrium position and orientation
+    if P_IB is None:
+        P_IB = np.array([[1.0, 0.0, 0.0, 0.0]])
+
+    nom = len(omegas)
+    if Delta_r is None:
+        Delta_r = np.zeros((nom, 3), dtype=np.float32)
+
+    if B_Delta_phi is None:
+        B_Delta_phi = np.zeros((nom, 3), dtype=np.float32)
+
+    nodes.append(
+        Node(
+            name=f"{name}_root",
+            children=[0],
+            extras={
+                "r_OP0": r_OP.tolist(),
+                "P_IB0": P_IB.tolist(),
+                "omegas": omegas.tolist(),
+                "Delta_r": Delta_r.tolist(),
+                "B_Delta_phi": B_Delta_phi.tolist(),
+            },
+        )
+    )
+
+    gltf = GLTF2(
+        buffers=[Buffer(byteLength=len(buf.data))],
+        bufferViews=buf.views,
+        accessors=buf.accessors,
+        nodes=nodes,
+        scenes=[Scene(nodes=[1])],
+        scene=0,
+        meshes=mesh_gltf,
+    )
+
+    gltf.set_binary_blob(buf.data)
+    gltf.save_binary(filename)
