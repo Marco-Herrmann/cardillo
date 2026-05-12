@@ -343,20 +343,10 @@ class RigidBody:
         r_OP = q0[:3]
         P_IB = q0[3:]
 
-        # TODO: go from dq to Delta_z
-        # z = solution.Delta_z.T
-        # Delta_r = self.J_P(t0, q0) @ z
-        # B_Delta_phi = self.B_J_R(t0, q0) @ z
-
-        mode_dq = solution.modes_dq[0, self.qDOF]
-        Delta_r = self.r_OP_q(t0, q0) @ mode_dq
-        A_IB = self.A_IB(t0, q0)
-        A_IB_q = self.A_IB_q(t0, q0)
-        B_Delta_phi = np.array(
-            [skew2ax(np.einsum("ij,ikl,l->jk", A_IB, A_IB_q, zi)) for zi in mode_dq.T]
-        )
-
-        return r_OP, Delta_r.T, P_IB, B_Delta_phi
+        Delta_z = solution.Delta_z[0, self.uDOF]
+        Delta_r = self.J_P(t0, q0) @ Delta_z
+        B_Delta_phi = self.B_J_R(t0, q0) @ Delta_z
+        return r_OP, Delta_r.T, P_IB, B_Delta_phi.T
 
     def export_blender(self, path, solution):
         r_OP, v_P, P_IB, B_Omega = self._export_nodes(solution)

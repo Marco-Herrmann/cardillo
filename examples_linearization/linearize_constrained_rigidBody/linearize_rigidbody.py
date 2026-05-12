@@ -14,7 +14,6 @@ from cardillo.constraints import RigidConnection, FixedDistance, Revolute, Cylin
 from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei, norm
 from cardillo.solver import Eigenmodes, Newton
 
-
 if __name__ == "__main__":
     ###################
     # system parameters

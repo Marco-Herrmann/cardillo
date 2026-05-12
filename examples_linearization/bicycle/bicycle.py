@@ -2,7 +2,6 @@ import numpy as np
 
 from cardillo.discrete import RigidBody
 
-
 # https://link.springer.com/article/10.1007/s11071-020-06069-5
 if __name__ == "__main__":
     # values from table 1

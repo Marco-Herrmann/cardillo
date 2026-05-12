@@ -14,7 +14,6 @@ from cardillo.solver import BackwardEuler, Newton
 from cardillo.rods import CircularCrossSection, CrossSectionInertias, Simo1986
 from cardillo.rods.cosseratRod import make_CosseratRod
 
-
 if __name__ == "__main__":
     # create cardillo system
     system = System()

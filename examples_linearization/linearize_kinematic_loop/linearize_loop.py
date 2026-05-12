@@ -13,7 +13,7 @@ from cardillo.constraints import RigidConnection, FixedDistance, Revolute, Cylin
 from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei, A_IB_basic
 from cardillo.solver import Solution
-
+from cardillo.solver.statics import Eigenmodes
 
 if __name__ == "__main__":
     ###################
@@ -95,13 +95,11 @@ if __name__ == "__main__":
     system.add(closing)
     system.assemble()
 
-    omegas, modes_dq, sol = system.eigenmodes(
-        system.t0, system.q0, system.la_g0, system.la_gamma0, system.la_c0
-    )
+    omegas, modes_dq, sol = Eigenmodes(system, system.sol0).solve(-1)
 
     print(omegas)
 
     # vtk-export
     dir_name = Path(__file__).parent
     system.export(dir_name, f"vtk", sol, fps=25)
-
+    system.export_blender(dir_name, f"blender", sol, create_blend=True)

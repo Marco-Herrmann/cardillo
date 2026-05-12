@@ -782,7 +782,8 @@ class Eigenmodes:
         # compute omegas
         omegas = np.zeros([len(las_ud_squared)])
         valids = np.ones_like(omegas, dtype=bool)
-        modes_dq = B @ T @ Vs_ud
+        Delta_z = T @ Vs_ud
+        modes_dq = B @ Delta_z
         for i, lai in enumerate(las_ud_squared):
             if np.abs(lai) <= self.la_sqared_tol:
                 omegas[i] = 0.0
@@ -800,6 +801,7 @@ class Eigenmodes:
             np.array([t]),
             np.array([q]),
             omegas=np.array([omegas]),
+            Delta_z=np.array([Delta_z]),
             modes_dq=np.array([modes_dq]),
             valids=np.array([valids]),
         )
