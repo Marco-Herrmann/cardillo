@@ -169,6 +169,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         self.h_pot_q_SAB = SparseArrayBlocks(
             (self.nu, self.nq), (6, self.nq_node), h_pot_q_pairs
         )
+        self.K_sigma_SAB = SparseArrayBlocks((self.nu, self.nu), (6, 6), h_pot_q_pairs)
 
     def _create_system_interfaces(self):
         # total number of generalized position and velocity coordinates
@@ -482,6 +483,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
                 B_J_R=Nu[3:],
                 zero_3_nqi=np.zeros((3, self.nq_node * nnodes), dtype=float),
                 zero_3_nui=np.zeros((3, 6 * nnodes), dtype=float),
+                zero_3_nui_nui=np.zeros((3, 6 * nnodes, 6 * nnodes), dtype=float),
                 zero_3_nui_nqi=np.zeros(
                     (3, 6 * nnodes, self.nq_node * nnodes), dtype=float
                 ),
@@ -531,6 +533,12 @@ class CosseratRod_PetrovGalerkin(RodInterface):
             -B_r_CP[:, None], point_dict["B_J_R"], axisa=0, axisb=0, axisc=0
         )
         return np.einsum("ijk, jl -> ilk", self.A_IB_q(t, qi, xi), B_J_CP)
+
+    def J2_P(self, t, qi, xi, B_r_CP=zeros3):
+        # TODO: implement for B_r_CP != 0.0
+        assert np.linalg.norm(B_r_CP) == 0.0
+        point_dict = self.get_interaction_point(xi)
+        return point_dict["zero_3_nui_nui"]
 
     def v_P(self, t, qi, ui, xi, B_r_CP=zeros3):
         point_dict = self.get_interaction_point(xi)
@@ -619,6 +627,15 @@ class CosseratRod_PetrovGalerkin(RodInterface):
     def B_J_R_q(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
         return point_dict["zero_3_nui_nqi"]
+
+    def B_J2_R(self, t, qi, xi):
+        point_dict = self.get_interaction_point(xi)
+        N = point_dict["N"]
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
+
+        z = point_dict["zero_3_nui_nui"]
+        warn("B_J2_R not implemented yet")
+        return z
 
     def B_Omega(self, t, qi, ui, xi):
         point_dict = self.get_interaction_point(xi)
@@ -825,6 +842,41 @@ class CosseratRod_PetrovGalerkin(RodInterface):
             + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
         )
         return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
+
+    def K_sigma(self, q, la_c=None, la_g=None):
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if la_c is not None:
+            la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
+        if la_g is not None:
+            la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
+        sigma_qp = self.Nc_int @ la_sigma_nodes
+
+        A_IB, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(
+            self.N_int, self.N_xi_int, q
+        )
+
+        # TODO: np.cross
+        r_xi__phi = -np.einsum("ijk,ikl->ijl", A_IB, ax2skew(sigma_qp[:, :3]))
+        phi_xi__phi = 0.5 * ax2skew(sigma_qp[:, 3:])
+
+        phi__phi = np.einsum(
+            "ijk,ikl->ijl", ax2skew(B_gamma_bar), ax2skew(sigma_qp[:, :3])
+        ) + np.einsum("ijk,ikl->ijl", ax2skew(B_kappa_bar), ax2skew(sigma_qp[:, 3:]))
+
+        # TODO: make sparse?
+        # K_qp[N/N_xi, qpi, uDOF, qDOF]
+        K_qp = np.zeros((4, self.nquadrature_int_total, 6, 6))
+        # to be multiplied with N_xi <-> N
+        K_qp[2, :, :3, 3:] = r_xi__phi
+        K_qp[2, :, 3:, 3:] = phi_xi__phi
+
+        # to be multiplied with N <-> N_xi
+        K_qp[1, :, 3:, :3] = r_xi__phi.transpose(0, 2, 1)
+        K_qp[1, :, 3:, 3:] = -phi_xi__phi
+
+        # to be multiplied with N <-> N
+        K_qp[0, :, 3:, 3:] = 0.5 * (phi__phi + phi__phi.transpose(0, 2, 1))
+        return self.K_sigma_SAB.add_blocks(K_qp)
 
     def f_pot(self, t, q, u):
         _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
@@ -1154,6 +1206,16 @@ def make_CosseratRod(
 
                 return np.linspace(0, 1, num_bones), data
 
+            def _export_nodes_modes(self, solution):
+                # TODO: allow for higher resolution than self.nnodes
+                num_bones = self.nnodes
+                data = solution.q[0, self.qDOF].reshape(self.nnodes, -1)
+                delta = solution.Delta_z[0, self.uDOF].reshape(
+                    self.nnodes, -1, len(solution.omegas[0])
+                )
+
+                return np.linspace(0, 1, num_bones), data, delta
+
         elif parametrization == "R12":
 
             def g_S(self, t, q):
@@ -1165,6 +1227,7 @@ def make_CosseratRod(
                 return np.zeros((self.nla_S, self.nq))
 
             def _export_nodes(self, solution): ...
+            def _export_nodes_modes(self, solution): ...
 
             # TODO: step_callback?
 
@@ -1221,7 +1284,19 @@ def make_CosseratRod(
 
         @staticmethod
         def straight_initial_configuration(
-            nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
-        ): ...
+            nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=zeros3
+        ):
+            nnodes = polynomial_degree * nelement + 1
+
+            r_OP = np.zeros((3, nnodes))
+            r_OP[0] = np.linspace(0, L, num=nnodes)
+            P = _Log_A_IB(A_IB0)
+            rP = np.zeros((nnodes, nq_node), dtype=float)
+            for i in range(nnodes):
+                rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
+                rP[i, 3:] = P
+
+            warn("v_P0 and B_omega_IB0 are ignored for straight initial configuration")
+            return rP.reshape(-1), np.zeros(nnodes * 6, dtype=float)
 
     return CosseratRod_PetrovGalerkin_

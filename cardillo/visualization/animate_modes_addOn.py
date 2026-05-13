@@ -88,8 +88,8 @@ def bake_animation(idx, amplitude, play_time):
         t = frame / fps
         return np.sin(2.0 * np.pi * t / play_time)
 
+    # discrete
     for root in bpy.data.objects:
-
         if not root.name.endswith("_root"):
             continue
 
@@ -100,6 +100,10 @@ def bake_animation(idx, amplitude, play_time):
             continue
 
         child = root.children[0]
+
+        # set rotation modes
+        root.rotation_mode = "QUATERNION"
+        child.rotation_mode = "QUATERNION"
 
         # eq position
         r_OP0 = np.array(root["r_OP0"], dtype=float)
@@ -136,7 +140,6 @@ def bake_animation(idx, amplitude, play_time):
                 angle = np.arctan(dphi)
                 dq = Quaternion(axis, angle)
 
-            root.rotation_mode = "QUATERNION"
             root.rotation_quaternion = P_IB0 @ q_align
             root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
@@ -146,9 +149,80 @@ def bake_animation(idx, amplitude, play_time):
             root.keyframe_insert(data_path="scale", frame=frame)
 
             # child rotation
-            child.rotation_mode = "QUATERNION"
             child.rotation_quaternion = q_align.inverted() @ dq
             child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+    # armatures
+    for arm_obj in bpy.data.objects:
+        if arm_obj.type != "ARMATURE":
+            continue
+        print(f"print {arm_obj}")
+        pose_bones = arm_obj.pose.bones
+
+        arm_obj.animation_data_clear()
+
+        for root in pose_bones:
+            if not root.name.endswith("_root"):
+                continue
+
+            if "Delta_r" not in root:
+                continue
+
+            if "B_Delta_phi" not in root:
+                continue
+
+            if len(root.children) == 0:
+                continue
+
+            child = root.children[0]
+
+            # set rotation modes
+            root.rotation_mode = "QUATERNION"
+            child.rotation_mode = "QUATERNION"
+
+            # eq position
+            r_OP0 = np.array(root["r_OP0"], dtype=float)
+            P_IB0 = Quaternion(np.array(root["P_IB0"], dtype=float))
+
+            # displacements
+            Delta_r = np.array(root["Delta_r"][idx], dtype=float)
+
+            B_Delta_phi = np.array(root["B_Delta_phi"][idx], dtype=float)
+
+            # update for scale
+            q_align, align_idx = get_q_align(B_Delta_phi)
+
+            # go trhough frames
+            for frame in range(frame_start, frame_end + 1):
+                A_t = amplitude * time_factor(frame)
+
+                # translation
+                d_r = A_t * Delta_r
+                root.location = Vector(r_OP0 + d_r)
+                root.keyframe_insert(data_path="location", frame=frame)
+
+                # rotation
+                dphi_vec = A_t * B_Delta_phi
+                dphi = np.linalg.norm(dphi_vec)
+
+                if dphi < 1e-12:
+                    dq = Quaternion((1, 0, 0, 0))
+                else:
+                    axis = Vector(dphi_vec / dphi)
+                    angle = np.arctan(dphi)
+                    dq = Quaternion(axis, angle)
+
+                root.rotation_quaternion = P_IB0 @ q_align
+                root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+                s = np.sqrt(1 + dphi**2) * np.ones(3)
+                s[align_idx] = 1.0
+                root.scale = s
+                root.keyframe_insert(data_path="scale", frame=frame)
+
+                # child rotation
+                child.rotation_quaternion = q_align.inverted() @ dq
+                child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
 
 class AnimateModesProperties(bpy.types.PropertyGroup):

@@ -877,7 +877,7 @@ class ProjectedPositionOrientationBase:
             J2_R1 = self.J2_R1(t, q)
             J2_R2 = self.J2_R2(t, q)
 
-            for i, (a, b) in enumerate(self.projection_pairs):
+            for i, (a, b) in enumerate(self.projection_pairs_rotation):
                 e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
                 n = cross3(e_a, e_b)
                 double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[nla_g_trans + i]

@@ -9,18 +9,18 @@ from cardillo.constraints import Prismatic, RigidConnection
 from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.forces import Force
 from cardillo.math import A_IB_basic, cross3, smoothstep2, Exp_SO3_quat, e3
-from cardillo.solver import BackwardEuler, Newton
-from cardillo.rods import (
+from cardillo.solver import BackwardEuler, Newton, Eigenmodes, SolverOptions
+from cardillo.rods_new import (
     CircularCrossSection,
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
+    make_CosseratRod,
 )
-from cardillo.rods.cosseratRod import make_CosseratRod
 
 
 def consistent_constraints(sys, rod, constraints):
-    rod_impressed = rod.idx_impressed
+    rod_impressed = rod.idx_db
     # constraint left side (xi=0)
     g_pos0 = [0, 1, 2]
     g_rot0 = [(1, 2), (2, 0), (0, 1)]
@@ -78,8 +78,8 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     density = 8.0e3  # [kg / m^3]
     cross_section = RectangularCrossSection(width, height)
     cross_section_inertias = CrossSectionInertias(density, cross_section)
-    A = cross_section.area  # [m^2]
-    Ip, Iy, Iz = np.diagonal(cross_section.second_moment)  # [m^4]
+    A = cross_section.area(0.0)  # [m^2]
+    Ip, Iy, Iz = np.diagonal(cross_section.second_moment(0.0))  # [m^4]
 
     # material properties
     E = 260.0e9  # [N / m^2]
@@ -127,16 +127,28 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     c = consistent_constraints(system, rod, constraints)
     system.add(*c)
 
-    system.assemble()
+    system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
     ######################
     # compute eigenmodes #
     ######################
-    n_steps = 1
-    sol = Newton(system, n_steps).solve()
-    omegas, modes_dq, sol_modes = system.new_eigenmodes(sol, n_steps)
+    omegas, modes_dq, sol_modes = Eigenmodes(system, system.sol0).solve(-1)
     print(omegas)
     print(len(omegas))
+
+    # theoretical values for axial vibrations in clamped-clamped
+    factor = np.pi / length * np.sqrt(E / density)
+    theo = (np.arange(len(omegas)) + 1) * factor
+    # theoretical values for axial vibrations in clamped-free
+    factor = np.pi / length * np.sqrt(E / density)
+    theo = (2 * np.arange(len(omegas)) + 1) / 2 * factor
+    ratio = omegas / theo
+
+    fig, ax = plt.subplots()
+    ax.plot(np.linspace(0, 1, len(omegas)), ratio)
+    ax.plot([0.5, 0.5], [min(ratio), max(ratio)])
+    ax.plot([2 / 3, 2 / 3], [min(ratio), max(ratio)])
+    plt.show()
 
     # vtk-export
     rod._export_dict["level"] = "NodalVolume"
@@ -145,16 +157,15 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
 
 
 if __name__ == "__main__":
-    nel = 1
-    pDeg = 1
+    nel = 20
+    pDeg = 2
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
         polynomial_degree=pDeg,
-        constraints=[0, 1, 2, 3, 4, 5],
+        idx_constraints=[1, 2, 3, 5],
     )
 
-    constraints = ["free", "free"]
+    # constraints = ["free", "free"]
+    constraints = ["rigid", "rigid"]
     # constraints = ["rigid", "rigid"]
     # constraints = ["rot_z", "rot_z"]
     cantilever(Rod, nel, constraints)

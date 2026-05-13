@@ -143,6 +143,7 @@ class RodInterface(RodExportBase):
             self.c_la_c = lambda: self._cla_c
             self.W_c = lambda t, q: self.W_sigma(q)[0]
             self.Wla_c_q = lambda t, q, la_c: self.Wla_sigma_q(q, la_c, None)
+            self.KN_c = lambda t, q, la_c: (self.K_sigma(q, la_c, None), None)
             self.E_pot_comp = self._E_pot_comp
         else:
             self._nla_c = 0
@@ -160,6 +161,7 @@ class RodInterface(RodExportBase):
             self.g_q = lambda t, q: -self.l_sigma_q(q)[1]
             self.W_g = lambda t, q: self.W_sigma(q)[1]
             self.Wla_g_q = lambda t, q, la_g: self.Wla_sigma_q(q, None, la_g)
+            self.KN_g = lambda t, q, la_g: (self.K_sigma(q, None, la_g), None)
 
             self.g_dot = lambda t, q, u: self.W_sigma(q)[1].T @ u
             self.g_dot_u = lambda t, q: self.W_sigma(q)[1].T
@@ -368,7 +370,7 @@ class RodInterface(RodExportBase):
     @staticmethod
     @abstractmethod
     def straight_initial_configuration(
-        nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
+        nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=zeros3
     ): ...
 
     ##################
@@ -401,7 +403,7 @@ class RodInterface(RodExportBase):
             ],
         )
 
-        nodes = [Node(name=f"bone_{i}") for i in range(len(xis))]
+        nodes = [Node(name=f"bone_{i}_obj") for i in range(len(xis))]
         mesh_node = Node(
             name=f"{self.name}_obj", mesh=0, skin=0, children=list(range(len(xis)))
         )
@@ -433,8 +435,8 @@ class RodInterface(RodExportBase):
         samplers = []
         channels = []
         for i in range(len(xis)):
-            trans = cardillo_to_gltf_trans(data[:, i, 0:3])
-            rot = cardillo_to_gltf_rot(data[:, i, 3:7])
+            trans = cardillo_to_gltf_trans(data[:, i, :3])
+            rot = cardillo_to_gltf_rot(data[:, i, 3:])
             trans_acc = buf.add(trans, 5126, "VEC3")
             rot_acc = buf.add(rot, 5126, "VEC4")
 
@@ -477,5 +479,51 @@ class RodInterface(RodExportBase):
         gltf.set_binary_blob(buf.data)
         gltf.save_binary(filename)
 
+    def export_blender_modes(self, path, solution):
+        xis, data, delta = self._export_nodes_modes(solution)
+
+        # TODO: get rid of os
+        filename = os.path.join(path, f"{self.name}.glb")
+
+        assert (
+            data.shape[1] == 7
+        ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
+
+        buf = BufferBuilder()
+        meshes, nodes, skins = self.create_object(xis, buf)
+        node_rod = nodes[-1]
+        node_rod.children = []
+
+        for i, node_obj in enumerate(nodes[: len(xis)]):
+            node_root = Node(
+                name=node_obj.name.replace("_obj", "_root"),
+                extras={
+                    "r_OP0": data[i, :3].tolist(),
+                    "P_IB0": data[i, 3:].tolist(),
+                    "omegas": solution.omegas[0].tolist(),
+                    "Delta_r": delta[i, :3].T.tolist(),
+                    "B_Delta_phi": delta[i, 3:].T.tolist(),
+                },
+                children=[i],
+            )
+            nodes.append(node_root)
+            node_rod.children.append(len(nodes) - 1)
+
+        gltf = GLTF2(
+            buffers=[Buffer(byteLength=len(buf.data))],
+            bufferViews=buf.views,
+            accessors=buf.accessors,
+            meshes=meshes,
+            nodes=nodes,
+            skins=skins,
+            scenes=[Scene(nodes=[len(xis)])],
+            scene=0,
+        )
+
+        gltf.set_binary_blob(buf.data)
+        gltf.save_binary(filename)
+
     @abstractmethod
     def _export_nodes(self, solution): ...
+    @abstractmethod
+    def _export_nodes_modes(self, solution): ...
