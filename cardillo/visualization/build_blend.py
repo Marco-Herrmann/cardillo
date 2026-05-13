@@ -11,7 +11,7 @@ gltf_files = argv[1:]
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 for f in gltf_files:
-    bpy.ops.import_scene.gltf(filepath=f)
+    bpy.ops.import_scene.gltf(filepath=f, bone_heuristic="TEMPERANCE")
 
 # auto smooth objects
 # TODO: it is not the best way to go via selection and active objects

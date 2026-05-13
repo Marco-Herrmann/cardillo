@@ -374,32 +374,18 @@ class RodInterface(RodExportBase):
     ##################
     # blender export #
     ##################
-    def export_blender(self, path, solution):
-        xis, data = self._export_nodes(solution)
-        num_bones = len(xis)
-
-        # TODO: get rid of os
-        filename = os.path.join(path, f"{self.name}.glb")
-        times = solution.t
-
-        assert (
-            data.shape[2] == 7
-        ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
-
+    def create_object(self, xis, buf):
         verts, indices, joints, weights = self.cross_section.create_mesh(xis)
 
         # inverse binding matrices (TODO: what is that)
         eye4 = np.eye(4, dtype=np.float32)
-        ibm = np.array([eye4 for _ in range(num_bones)])
-
-        buf = BufferBuilder()
+        ibm = np.array([eye4 for _ in range(len(xis))])
 
         pos_acc = buf.add(verts, 5126, "VEC3")
         idx_acc = buf.add(indices, 5125, "SCALAR")
         joint_acc = buf.add(joints, 5123, "VEC4")
         weight_acc = buf.add(weights, 5126, "VEC4")
         ibm_acc = buf.add(ibm.reshape(-1, 16), 5126, "MAT4")
-        t_acc = buf.add(times.astype(np.float32), 5126, "SCALAR")
 
         mesh = Mesh(
             name=f"{self.name}_mesh",
@@ -415,19 +401,38 @@ class RodInterface(RodExportBase):
             ],
         )
 
-        nodes = [Node(name=f"bone_{i}") for i in range(num_bones)]
-        mesh_node = Node(name=f"{self.name}_obj", mesh=0, skin=0)
+        nodes = [Node(name=f"bone_{i}") for i in range(len(xis))]
+        mesh_node = Node(
+            name=f"{self.name}_obj", mesh=0, skin=0, children=list(range(len(xis)))
+        )
         nodes.append(mesh_node)
 
         skin = Skin(
             name=f"{self.name}_skin",
-            joints=list(range(num_bones)),
+            joints=list(range(len(xis))),
             inverseBindMatrices=ibm_acc,
         )
 
+        return [mesh], nodes, [skin]
+
+    def export_blender(self, path, solution):
+        xis, data = self._export_nodes(solution)
+
+        # TODO: get rid of os
+        filename = os.path.join(path, f"{self.name}.glb")
+
+        assert (
+            data.shape[2] == 7
+        ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
+
+        buf = BufferBuilder()
+        t_acc = buf.add(solution.t.astype(np.float32), 5126, "SCALAR")
+
+        meshes, nodes, skins = self.create_object(xis, buf)
+
         samplers = []
         channels = []
-        for i in range(num_bones):
+        for i in range(len(xis)):
             trans = cardillo_to_gltf_trans(data[:, i, 0:3])
             rot = cardillo_to_gltf_rot(data[:, i, 3:7])
             trans_acc = buf.add(trans, 5126, "VEC3")
@@ -461,9 +466,9 @@ class RodInterface(RodExportBase):
             buffers=[Buffer(byteLength=len(buf.data))],
             bufferViews=buf.views,
             accessors=buf.accessors,
-            meshes=[mesh],
+            meshes=meshes,
             nodes=nodes,
-            skins=[skin],
+            skins=skins,
             animations=[anim],
             scenes=[Scene(nodes=[len(nodes) - 1])],
             scene=0,
