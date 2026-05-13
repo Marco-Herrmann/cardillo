@@ -2,6 +2,20 @@ from abc import ABC, abstractmethod
 import json
 import numpy as np
 import os
+from pygltflib import (
+    Mesh,
+    Primitive,
+    Node,
+    Skin,
+    GLTF2,
+    Buffer,
+    Scene,
+    AnimationSampler,
+    AnimationChannel,
+    AnimationChannelTarget,
+    Animation,
+)
+
 
 from cardillo.rods._base_export import RodExportBase
 from cardillo.utility.check_time_derivatives import check_time_derivatives
@@ -9,6 +23,12 @@ from ._cross_section import (
     CrossSectionInertias,
     RectangularCrossSection,
     CircularCrossSection,
+)
+
+from cardillo.visualization.glTF_export import (
+    BufferBuilder,
+    cardillo_to_gltf_trans,
+    cardillo_to_gltf_rot,
 )
 
 zeros3 = np.zeros(3, dtype=float)
@@ -355,11 +375,8 @@ class RodInterface(RodExportBase):
     # blender export #
     ##################
     def export_blender(self, path, solution):
-        # TODO: allow for higher resolution than self.nnodes
-        num_bones = self.nnodes
-        data = np.empty((len(solution.t), num_bones, 7), dtype=float)
-        for i in range(len(solution.t)):
-            data[i] = self.get_export_nodes(solution.q[i, self.qDOF])
+        xis, data = self._export_nodes(solution)
+        num_bones = len(xis)
 
         # TODO: get rid of os
         filename = os.path.join(path, f"{self.name}.glb")
@@ -369,30 +386,11 @@ class RodInterface(RodExportBase):
             data.shape[2] == 7
         ), "Expected last dimension of data to be 7 (3 for translation + 4 for rotation)."
 
-        verts, indices, joints, weights = self.cross_section.create_mesh(num_bones)
+        verts, indices, joints, weights = self.cross_section.create_mesh(xis)
 
         # inverse binding matrices (TODO: what is that)
         eye4 = np.eye(4, dtype=np.float32)
         ibm = np.array([eye4 for _ in range(num_bones)])
-
-        from cardillo.visualization.glTF_export import (
-            BufferBuilder,
-            cardillo_to_gltf_trans,
-            cardillo_to_gltf_rot,
-        )
-        from pygltflib import (
-            Mesh,
-            Primitive,
-            Node,
-            Skin,
-            GLTF2,
-            Buffer,
-            Scene,
-            AnimationSampler,
-            AnimationChannel,
-            AnimationChannelTarget,
-            Animation,
-        )
 
         buf = BufferBuilder()
 
@@ -475,4 +473,4 @@ class RodInterface(RodExportBase):
         gltf.save_binary(filename)
 
     @abstractmethod
-    def get_export_nodes(self, q): ...
+    def _export_nodes(self, solution): ...

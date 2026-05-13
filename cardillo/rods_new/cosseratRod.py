@@ -1145,8 +1145,14 @@ def make_CosseratRod(
                 # Note: qnodes shares still memory with q here
                 return qnodes.reshape(-1), u
 
-            def get_export_nodes(self, q):
-                return q.reshape(self.nnodes, -1)
+            def _export_nodes(self, solution):
+                # TODO: allow for higher resolution than self.nnodes
+                num_bones = self.nnodes
+                data = np.empty((len(solution.t), num_bones, 7), dtype=float)
+                for i in range(len(solution.t)):
+                    data[i] = solution.q[i, self.qDOF].reshape(self.nnodes, -1)
+
+                return np.linspace(0, 1, num_bones), data
 
         elif parametrization == "R12":
 
@@ -1158,7 +1164,7 @@ def make_CosseratRod(
                 # TODO
                 return np.zeros((self.nla_S, self.nq))
 
-            def get_export_nodes(self, q): ...
+            def _export_nodes(self, solution): ...
 
             # TODO: step_callback?
 

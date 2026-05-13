@@ -25,7 +25,7 @@ class CrossSection(ABC):
 
 class ExportableCrossSection(CrossSection):
     @abstractmethod
-    def create_mesh(self, num_segments): ...
+    def create_mesh(self, xis): ...
 
 
 class UserDefinedCrossSection(CrossSection):
@@ -83,15 +83,14 @@ class CircularCrossSection(ExportableCrossSection):
         r = np.asarray(self.radius(xi))
         return (r**4)[..., None, None] * self._second_moment
 
-    def create_mesh(self, nxi):
+    def create_mesh(self, xis):
         ncirc = self.export_resolution
 
         verts = []
         indices = []
         joints = []
         weights = []
-        for j in range(nxi):
-            xi = j / (nxi - 1)
+        for j, xi in enumerate(xis):
             radius = self.radius(xi)
             for i in range(ncirc):
                 a = 2 * np.pi * i / ncirc
@@ -104,7 +103,7 @@ class CircularCrossSection(ExportableCrossSection):
                 weights.append([1.0, 0.0, 0.0, 0.0])
 
         # indices (grid)
-        for j in range(nxi - 1):
+        for j in range(len(xis) - 1):
             for i in range(ncirc):
                 i0 = j * ncirc + i
                 i1 = j * ncirc + (i + 1) % ncirc
@@ -115,7 +114,7 @@ class CircularCrossSection(ExportableCrossSection):
                 indices.extend([i1, i3, i2])
 
         # close surfaces
-        last = (nxi - 1) * ncirc
+        last = (len(xis) - 1) * ncirc
         for i in range(ncirc - 2):
             indices.extend([0, i + 2, i + 1])
             indices.extend([last, last + i + 2, last + i + 1])
@@ -165,13 +164,12 @@ class RectangularCrossSection(ExportableCrossSection):
         second_moment[..., 2, 2] = Izz
         return second_moment
 
-    def create_mesh(self, nxi):
+    def create_mesh(self, xis):
         verts = []
         indices = []
         joints = []
         weights = []
-        for j in range(nxi):
-            xi = j / (nxi - 1)
+        for j, xi in enumerate(xis):
             y_ = self.width(xi) / 2
             z_ = self.height(xi) / 2
             for i in range(4):
@@ -184,7 +182,7 @@ class RectangularCrossSection(ExportableCrossSection):
                 weights.append([1.0, 0.0, 0.0, 0.0])
 
         # indices (grid)
-        for j in range(nxi - 1):
+        for j in range(len(xis) - 1):
             for i in range(4):
                 i0 = j * 4 + i
                 i1 = j * 4 + (i + 1) % 4
@@ -195,7 +193,7 @@ class RectangularCrossSection(ExportableCrossSection):
                 indices.extend([i1, i3, i2])
 
         # close surfaces
-        last = (nxi - 1) * 4
+        last = (len(xis) - 1) * 4
         for i in range(2):
             indices.extend([0, i + 2, i + 1])
             # TODO: why is this swapepd?
