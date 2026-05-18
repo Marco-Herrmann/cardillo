@@ -1077,7 +1077,56 @@ def make_CosseratRod(
     quadrature_ext=None,
     parametrization=None,
 ) -> RodInterface:
-    """idx_constraints and idx_displacement_based in [0, 1, 2, 3, 4, 5]"""
+    """Factory for Petrov-Galerkin Cosserat rod classes.
+
+    Parameters
+    ----------
+    polynomial_degree : int, optional
+        Polynomial degree (p) of the interpolation of centerline, orientation,
+        virtual displacement, and virtual rotation. If not specified, p = 2 is used.
+    
+    continuity : int, optional
+        If None: C^0 Lagrange elements, otherwise C^(continuity) B-spline elements
+    
+    idx_constraints : array_like of int
+        Indices (0-5) of constrained strain components. Must not overlap with "idx_displacement_based".
+
+    idx_displacement_based : array_like of int
+        Indices (0-5) of displacement-based strain components. Must not overlap with "idx_constraints".
+
+    quadrature_int : int or tuple[int, str]
+        Quadrature rule for internal virtual work integration.
+
+    quadrature_dyn : int or tuple[int, str]
+        Quadrature rule for dynamic virtual work integration.
+
+    quadrature_ext : int or tuple[int, str]
+        Quadrature rule for external virtual work integration.
+
+    parametrization : str
+        Choice of parametrization and interpolation
+
+
+    Strain component mapping
+    ----------
+        0 : Gamma_1 (dilatation)
+        1 : Gamma_2 (shear in e_y^B direction)
+        2 : Gamma_3 (shear in e_z^B direction)
+        3 : kappa_1 (torsion)
+        4 : kappa_2 (bending around e_y^B)
+        5 : kappa_3 (bending around e_z^B)
+
+
+    Parametrization
+    ----------
+        - "Quaternion" : quaternion parametrization and interpolation
+        - "R12" : R12 parametrization and interpolation
+
+    Returns
+    -------
+    RodInterface
+        Constructed rod interface class.
+    """
     # polynomila degree
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 

@@ -72,8 +72,8 @@ def test_implementation(n_test=1_000):
 
     nquadrature_dyn = int(np.ceil((polynomial_degree + 1) ** 2 / 2))
 
-    # mixed = True
-    mixed = False
+    mixed = True
+    # mixed = False
     if not mixed:
         idx_db = np.setdiff1d(np.arange(6), constraints)
     else:
@@ -370,6 +370,7 @@ def compare_performance(n_test=1_000):
         polynomial_degree=polynomial_degree,
         idx_constraints=constraints,
         idx_displacement_based=[] if mixed else np.setdiff1d(np.arange(6), constraints),
+        # parametrization="R12",
     )
 
     q0_old = Rod_old.straight_configuration(nelement, 5)
