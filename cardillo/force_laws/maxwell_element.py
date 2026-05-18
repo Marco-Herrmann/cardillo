@@ -83,3 +83,9 @@ class MaxwellElement:
         )
         h_q[:, 0] -= self.subsystem.W_l(t, q[1:]) * self.k
         return h_q
+
+    def KN_h(self, t, q, u):
+        raise NotImplementedError()
+
+    def DG_h(self, t, q, u):
+        raise NotImplementedError()

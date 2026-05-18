@@ -79,6 +79,13 @@ class ScalarForceLawBase(ABC):
         N = -np.outer(W_l, W2_l @ u) * la_c_l_dot
         return K, N
 
+    def _DG_h(self, t, q, u):
+        # TODO: this should be equal to +- self._h_u(t, q, u)
+        la_c_l_dot = self._la_c_l_dot(t, self.l(t, q), self.l_dot(t, q, u))
+        W_l = self.subsystem.W_l(t, q).reshape(self.subsystem._nu)
+        D = -np.outer(W_l, la_c_l_dot * W_l)
+        return D, np.zeros((self.subsystem._nu, self.subsystem._nu))
+
     def export(self, sol_i, **kwargs):
         return self.subsystem.export(sol_i, **kwargs)
 
@@ -90,6 +97,7 @@ class ScalarForceLaw(ScalarForceLawBase):
         self.h_q = self._h_q
         self.h_u = self._h_u
         self.KN_h = self._KN_h
+        self.DG_h = self._DG_h
 
 
 class ScalarForceLawComplianceForm(ScalarForceLawBase):
@@ -107,6 +115,7 @@ class ScalarForceLawComplianceForm(ScalarForceLawBase):
             self.h_q = self._h_q
             self.h_u = self._h_u
             self.KN_h = self._KN_h
+            self.DG_h = self._DG_h
 
     @abstractmethod
     def _c(self, t, l, l_dot, la_c): ...

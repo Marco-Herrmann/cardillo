@@ -476,6 +476,15 @@ class System:
             coo[i, contr.uDOF, contr.qDOF] = contr.Mu_q(t, q[contr.qDOF], u[contr.uDOF])
         return coo.asformat(format)
 
+    def KN_M(self, t, q, u, u_dot, format="coo"):
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for contr in self.__M_contr:
+            K, N = contr.KN_M(t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF])
+            coo_K[contr.uDOF, contr.uDOF] = K
+            coo_N[contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
     def h(self, t, q, u):
         h = np.zeros(self.nu, dtype=np.common_type(q, u))
         for contr in self.__h_contr:
@@ -504,6 +513,15 @@ class System:
             coo_K[contr.uDOF, contr.uDOF] = K
             coo_N[contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
+
+    def DG_h(self, t, q, u, format="coo"):
+        coo_D = CooMatrix((self.nu, self.nu))
+        coo_G = CooMatrix((self.nu, self.nu))
+        for contr in self.__h_q_contr:
+            D, G = contr.DG_h(t, q[contr.qDOF], u[contr.uDOF])
+            coo_D[contr.uDOF, contr.uDOF] = D
+            coo_G[contr.uDOF, contr.uDOF] = G
+        return coo_D.asformat(format), coo_G.asformat(format)
 
     ############
     # compliance
@@ -983,30 +1001,6 @@ class System:
 
     def KN_F(self, t, q, la_F, format="coo"): ...
 
-    def DG_h(self, t, q, u, format="coo"): ...
+    def DG_c(self, t, q, u, format="coo"): ...
+
     def DG_tau(self, t, q, u, format="coo"): ...
-
-    def KN(self, sol, format="coo"):
-        KNs = [
-            self.KN_h(sol.t, sol.q, sol.u, format=format),
-            self.KN_c(sol.t, sol.q, sol.la_c, format=format),
-            self.KN_tau(sol.t, sol.q, sol.u, format=format),
-            self.KN_g(sol.t, sol.q, sol.la_g, format=format),
-            self.KN_gamma(sol.t, sol.q, sol.la_gamma, format=format),
-            self.KN_N(sol.t, sol.q, sol.la_N, format=format),
-            self.KN_F(sol.t, sol.q, sol.la_F, format=format),
-        ]
-
-        K = sum([KNi[0] for KNi in KNs])
-        N = sum([KNi[1] for KNi in KNs])
-        return K, N
-
-    def DG(self, sol, format="coo"):
-        DGs = [
-            self.DG_h(sol.t, sol.q, sol.u, format=format),
-            self.DG_tau(sol.t, sol.q, sol.u, format=format),
-        ]
-
-        D = sum([DGi[0] for DGi in DGs])
-        G = sum([DGi[1] for DGi in DGs])
-        return D, G

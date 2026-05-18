@@ -447,6 +447,8 @@ class PositionOrientationBase:
         K[:nu1, :nu1] -= np.einsum("i,ijk->jk", -la_g[:3], self.J2_J1(t, q))
         K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[:3], self.J2_J2(t, q))
 
+        test_sign = -1
+
         if self.constrain_orientation:
             A_IJ1 = self.A_IJ1(t, q)
             A_IJ2 = self.A_IJ2(t, q)
@@ -462,13 +464,13 @@ class PositionOrientationBase:
                 n = cross3(e_a, e_b)
                 double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[3 + i]
                 off_diag_term = J_R1.T @ double_tilde @ J_R2
-                K[:nu1, :nu1] += (
+                K[:nu1, :nu1] += test_sign * (
                     np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R1)
                     + J_R1.T @ double_tilde @ J_R1
                 )
-                K[:nu1, nu1:] -= off_diag_term
-                K[nu1:, :nu1] -= off_diag_term.T
-                K[nu1:, nu1:] += (
+                K[:nu1, nu1:] -= test_sign * off_diag_term
+                K[nu1:, :nu1] -= test_sign * off_diag_term.T
+                K[nu1:, nu1:] += test_sign * (
                     -np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R2)
                     + J_R2.T @ double_tilde.T @ J_R2
                 )
@@ -859,24 +861,35 @@ class ProjectedPositionOrientationBase:
         K = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
         N = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
 
+        A_IJ1 = self.A_IJ1(t, q)
+        J_R1 = self.J_R1(t, q)
+        J2_R1 = self.J2_R1(t, q)
         if self.constrain_translation:
+            r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
+            J_J1 = self.J_J1(t, q)
+            J_J2 = self.J_J2(t, q)
             J2_J1 = self.J2_J1(t, q)
             J2_J2 = self.J2_J2(t, q)
             for i, ax in enumerate(self.constrained_axes_displacement):
-                K[:nu1, :nu1] += la_g[i] * J2_J1[ax]
-                K[nu1:, nu1:] -= la_g[i] * J2_J2[ax]
+                axis_tilde = ax2skew(A_IJ1[:, ax]) * la_g[i]
+                n = cross3(A_IJ1[:, ax], r_J1J2) * la_g[i]
+                off_diag_term = J_R1.T @ axis_tilde @ J_J2
+                K[:nu1, :nu1] -= (
+                    -np.einsum("i,ijk->jk", la_g[i] * A_IJ1[:, ax], J2_J1)
+                    + J_J1.T @ axis_tilde @ J_R1
+                    - J_R1.T @ axis_tilde @ J_J1
+                    - np.einsum("i,ijk->jk", n, J2_R1)
+                    + J_R1.T @ axis_tilde @ ax2skew(r_J1J2) @ J_R1
+                )
+                K[:nu1, nu1:] -= off_diag_term
+                K[nu1:, :nu1] -= off_diag_term.T
+                K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[i] * A_IJ1[:, ax], J2_J2)
 
         nla_g_trans = self.nla_g_trans
         if self.constrain_orientation:
-            A_IJ1 = self.A_IJ1(t, q)
             A_IJ2 = self.A_IJ2(t, q)
-
-            J_R1 = self.J_R1(t, q)
             J_R2 = self.J_R2(t, q)
-
-            J2_R1 = self.J2_R1(t, q)
             J2_R2 = self.J2_R2(t, q)
-
             for i, (a, b) in enumerate(self.projection_pairs_rotation):
                 e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
                 n = cross3(e_a, e_b)

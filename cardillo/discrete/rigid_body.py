@@ -148,6 +148,17 @@ class RigidBody:
         h_u[3:, 3:] = ax2skew(self.B_Theta_C @ omega) - ax2skew(omega) @ self.B_Theta_C
         return h_u
 
+    def DG_h(self, t, q, u):
+        # TODO: Can we split this up earlier? OR just do it simple
+        G1 = self.h_u(t, np.zeros(self.nq), u)
+        G2 = self.__M @ np.hstack(
+            [np.zeros((3, 6)), np.vstack([np.zeros(3, 3), ax2skew(u[3:])])]
+        )
+        G = G1 + G2
+        return np.zeros((self.nu, self.nu)), 0.5 * (G - G.T)
+
+    def KN_M(self, t, q, u, u_dot): ...
+
     #####################################################
     # stabilization conditions for the kinematic equation
     #####################################################
