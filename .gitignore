@@ -60,6 +60,3 @@ myvenv
 myWSLvenv
 myCONDAvenv
 venv312
-
-# cardillo solutions
-*.pkl
