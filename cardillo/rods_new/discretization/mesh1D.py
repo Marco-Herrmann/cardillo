@@ -13,14 +13,14 @@ class Mesh1D_equidistant:
         self,
         basis,
         nelement,
-        polynomial_degere,
+        polynomial_degree,
         derivative_order,
     ):
         assert basis in ["Lagrange", "Lagrange_Disc", "Hermite_C0", "Hermite_C1"]
 
         self.basis = basis
         self.nelement = nelement
-        self.polynomial_degere = polynomial_degere
+        self.polynomial_degree = polynomial_degree
         self.derivative_order = derivative_order
 
         # element boundaries
@@ -31,27 +31,27 @@ class Mesh1D_equidistant:
 
         # number of nodes
         if basis == "Lagrange":
-            self.nnodes = self.npolynoms = polynomial_degere * nelement + 1
-            self.nnodes_element = self.npolynoms_element = polynomial_degere + 1
+            self.nnodes = self.npolynomials = polynomial_degree * nelement + 1
+            self.nnodes_element = self.npolynomials_element = polynomial_degree + 1
             self.col = (
-                lambda el: np.arange(self.npolynoms_element) + el * polynomial_degere
+                lambda el: np.arange(self.npolynomials_element) + el * polynomial_degree
             )
             polynom_generator = lagrange
 
         elif basis == "Lagrange_Disc":
-            self.nnodes = self.npolynoms = (polynomial_degere + 1) * nelement
-            self.nnodes_element = self.npolynoms_element = polynomial_degere + 1
-            self.col = lambda el: np.arange(self.npolynoms_element) + el * (
-                polynomial_degere + 1
+            self.nnodes = self.npolynomials = (polynomial_degree + 1) * nelement
+            self.nnodes_element = self.npolynomials_element = polynomial_degree + 1
+            self.col = lambda el: np.arange(self.npolynomials_element) + el * (
+                polynomial_degree + 1
             )
             polynom_generator = lagrange
 
         elif basis == "Hermite_C0":
-            assert polynomial_degere % 2 == 1, "polynomial_degere must be odd"
-            self.nnodes = (polynomial_degere - 1) // 2 * nelement + 1
-            self.nnodes_element = (polynomial_degere + 1) // 2
-            self.npolynoms = polynomial_degere * nelement + 1
-            self.npolynoms_element = polynomial_degere + 1
+            assert polynomial_degree % 2 == 1, "polynomial_degree must be odd"
+            self.nnodes = (polynomial_degree - 1) // 2 * nelement + 1
+            self.nnodes_element = (polynomial_degree + 1) // 2
+            self.npolynomials = polynomial_degree * nelement + 1
+            self.npolynomials_element = polynomial_degree + 1
             polynom_generator = hermite
 
             def col(el):
@@ -73,12 +73,12 @@ class Mesh1D_equidistant:
 
         elif basis == "Hermite_C1":
             raise NotImplementedError
-            # assert polynomial_degere % 2 == 1, "polynomial_degere must be odd"
-            # self.nnodes = (polynomial_degere - 1) // 2 * nelement + 1
-            # self.nnodes_element = (polynomial_degere + 1) // 2
-            # self.npolynoms = 2 * self.nnodes
-            # self.npolynoms_element = 2 * self.nnodes_element
-            # self.offset = polynomial_degere
+            # assert polynomial_degree % 2 == 1, "polynomial_degree must be odd"
+            # self.nnodes = (polynomial_degree - 1) // 2 * nelement + 1
+            # self.nnodes_element = (polynomial_degree + 1) // 2
+            # self.npolynomials = 2 * self.nnodes
+            # self.npolynomials_element = 2 * self.nnodes_element
+            # self.offset = polynomial_degree
             polynom_generator = hermite
 
         # xis in element
@@ -98,7 +98,7 @@ class Mesh1D_equidistant:
 
         # shape functions
         polynomials = np.empty(
-            (self.derivative_order + 1, self.nelement, self.npolynoms_element),
+            (self.derivative_order + 1, self.nelement, self.npolynomials_element),
             dtype=Polynomial,
         )
 
@@ -137,9 +137,9 @@ class Mesh1D_equidistant:
         was_scalar = xis.ndim == 0
         xis = np.atleast_1d(xis)
 
-        N_dense = np.zeros((derivative_order + 1, len(xis), self.npolynoms_element))
+        N_dense = np.zeros((derivative_order + 1, len(xis), self.npolynomials_element))
         for d in range(derivative_order + 1):
-            for p in range(self.npolynoms_element):
+            for p in range(self.npolynomials_element):
                 N_dense[d, :, p] = self.polynomials[d, el, p](xis)
 
         return N_dense[:, 0, :] if was_scalar else N_dense
@@ -149,7 +149,7 @@ class Mesh1D_equidistant:
         Nd = self.shape_functions_element(xis, el, derivative_order)
         col = self.col(el)
         for d in range(derivative_order + 1):
-            Nd_sparse = lil_array((len(xis), self.npolynoms))
+            Nd_sparse = lil_array((len(xis), self.npolynomials))
             Nd_sparse[:, col] = Nd[d]
             N_sparse.append(Nd_sparse)
 
@@ -169,7 +169,8 @@ class Mesh1D_equidistant:
             els = np.tile(els, nxis)
 
         N_sparse = [
-            lil_array((len(xis), self.npolynoms)) for _ in range(derivative_order + 1)
+            lil_array((len(xis), self.npolynomials))
+            for _ in range(derivative_order + 1)
         ]
         for el in np.unique(els):
             selection = els == el
@@ -219,6 +220,6 @@ class Mesh1D_equidistant:
         return np.array(
             [
                 self.polynomials[derivative, el, p](xi)
-                for p in range(self.npolynoms_element)
+                for p in range(self.npolynomials_element)
             ]
         )

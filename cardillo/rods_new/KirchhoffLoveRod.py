@@ -52,25 +52,25 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         mesh_rP = Mesh1D_equidistant(
             basis="Hermite_C0",
             nelement=self.nelement,
-            polynomial_degere=3,
+            polynomial_degree=3,
             derivative_order=2,
         )
         mesh_alpha = Mesh1D_equidistant(
             basis="Lagrange",
             nelement=self.nelement,
-            polynomial_degere=2,
+            polynomial_degree=2,
             derivative_order=1,
         )
         mesh_n = Mesh1D_equidistant(
             basis="Lagrange_Disc",
             nelement=self.nelement,
-            polynomial_degere=2,
+            polynomial_degree=2,
             derivative_order=0,
         )
         mesh_m = Mesh1D_equidistant(
             basis="Lagrange_Disc",
             nelement=self.nelement,
-            polynomial_degere=1,
+            polynomial_degree=1,
             derivative_order=0,
         )
 
