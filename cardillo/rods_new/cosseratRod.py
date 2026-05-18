@@ -1084,10 +1084,10 @@ def make_CosseratRod(
     polynomial_degree : int, optional
         Polynomial degree (p) of the interpolation of centerline, orientation,
         virtual displacement, and virtual rotation. If not specified, p = 2 is used.
-    
+
     continuity : int, optional
         If None: C^0 Lagrange elements, otherwise C^(continuity) B-spline elements
-    
+
     idx_constraints : array_like of int
         Indices (0-5) of constrained strain components. Must not overlap with "idx_displacement_based".
 

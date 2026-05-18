@@ -14,7 +14,6 @@ from cardillo.rods import (
 )
 from cardillo.rods.cosseratRod import make_CosseratRod
 
-
 ##########################
 # make Sakman parameters #
 ##########################

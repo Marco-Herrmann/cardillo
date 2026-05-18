@@ -8,7 +8,6 @@ from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.math import A_IB_basic
 from cardillo.solver import Eigenmodes
 
-
 if __name__ == "__main__":
     ###################
     # system parameters

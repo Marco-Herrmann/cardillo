@@ -7,7 +7,6 @@ from cardillo import System
 from cardillo.discrete import Box, RigidBody
 from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei
 
-
 ################
 # TODO: Do we want to keep this example?
 ################

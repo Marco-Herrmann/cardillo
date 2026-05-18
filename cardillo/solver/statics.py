@@ -211,10 +211,16 @@ class Newton:
         Rla_N_q = lil_array((self.nla_N, self.nq), dtype=float)
         Rla_N_la_N = lil_array((self.nla_N, self.nla_N), dtype=float)
         for i in range(self.nla_N):
+            # TODO: solve dirty fix with 1e-99
             if la_N[i] < self.g_N[i]:
                 Rla_N_la_N[i, i] = 1.0
+                Rla_N_q[i] = g_N_q[i] * 1e-99
             else:
+                Rla_N_la_N[i, i] = 1e-99
                 Rla_N_q[i] = g_N_q[i]
+
+        # Rla_N_q = Rla_N_q.toarray()
+        # Rla_N_la_N = Rla_N_la_N.toarray()
 
         # fmt: off
         sf0, sf1, sf2, sf3 = self.split_f
