@@ -9,7 +9,7 @@ from cardillo.constraints import Prismatic, RigidConnection
 from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.forces import Force
 from cardillo.math import A_IB_basic, cross3, smoothstep2, Exp_SO3_quat, e3
-from cardillo.solver import BackwardEuler, Newton, SolverOptions
+from cardillo.solver import BackwardEuler, Newton, SolverOptions, Eigenmodes
 from cardillo.rods import (
     CircularCrossSection,
     RectangularCrossSection,
@@ -26,6 +26,16 @@ PARAMS = {
     "G": 100.0e9,  # [N / m^2]
     "shear_corr": 5 / 6,
 }
+
+#####
+# TODO: always go to planar
+#   T: 1 bending, extension, 1 shear
+#  EB: 1 bending, extension
+# IEB: 1 bending
+#
+# add constraints similar to euler buckling
+# compare with analytical values
+#######
 
 
 def consistent_constraints(sys, rod, constraints):
@@ -163,12 +173,8 @@ def cantilever(Rod, nel, constraints, export_vtk=False, name=None):
     ######################
     # compute eigenmodes #
     ######################
-    # omegas, modes_dq, sol_modes = system.eigenmodes(
-    #     system.t0, system.q0, constraints=proj, ccic=False
-    # )
-    omegas, modes_dq, sol_modes = system.new_eigenmodes(
-        system.t0, system.q0, remove_uDOFs=c_uDOFs
-    )
+    solver = Eigenmodes(system, system.sol0)
+    omegas, modes_dq, sol_modes = solver.solve(-1)
 
     if export_vtk:
         rod._export_dict["level"] = "NodalVolume"
@@ -371,8 +377,8 @@ if __name__ == "__main__":
     )
 
     # analyze convergence by increasing nel
-    N0 = 3
-    N = 6  # bei 9 Eskalation!
+    N0 = 1
+    N = 4  # bei 9 Eskalation!
     n_analytical = len(omegas_analytical)
     nels = [2**i for i in range(N0, N0 + N)]
     nnodes = np.zeros(N, dtype=int)

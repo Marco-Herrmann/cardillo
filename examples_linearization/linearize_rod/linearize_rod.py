@@ -132,7 +132,9 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     ######################
     # compute eigenmodes #
     ######################
-    omegas, modes_dq, sol_modes = Eigenmodes(system, system.sol0).solve(-1)
+    solver = Eigenmodes(system, system.sol0)
+    omegas, modes_dq, sol_modes = solver.solve(-1)
+
     print(omegas)
     print(len(omegas))
 

@@ -1,19 +1,13 @@
-import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-from pprint import pprint
-import scipy
-import scipy.linalg
 
 from cardillo import System
 from cardillo.discrete import Box, RigidBody
-from cardillo.force_laws import KelvinVoigtElement as SpringDamper
-from cardillo.interactions import TwoPointInteraction
 from cardillo.constraints import RigidConnection, FixedDistance, Revolute, Cylindrical
 from cardillo.constraints._base import ProjectedPositionOrientationBase
-from cardillo.math import Exp_SO3_quat, ax2skew, cross3, ei, A_IB_basic
-from cardillo.solver import Solution
-from cardillo.solver.statics import Eigenmodes
+from cardillo.math import A_IB_basic
+from cardillo.solver import Eigenmodes
+
 
 if __name__ == "__main__":
     ###################
@@ -95,7 +89,8 @@ if __name__ == "__main__":
     system.add(closing)
     system.assemble()
 
-    omegas, modes_dq, sol = Eigenmodes(system, system.sol0).solve(-1)
+    solver = Eigenmodes(system, system.sol0)
+    omegas, modes_dq, sol = solver.solve(-1)
 
     print(omegas)
 
