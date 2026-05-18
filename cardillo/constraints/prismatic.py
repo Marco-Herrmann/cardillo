@@ -195,17 +195,20 @@ class Prismatic(ProjectedPositionOrientationBase):
             -A_IJ1[:, self.axis] @ J_J1 + cross3(A_IJ1[:, self.axis], r_J1J2) @ J_R1
         )
         W_l[nu1:] = A_IJ1[:, self.axis] @ J_J2
-        
+
         return W_l
 
     def W_l_q(self, t, q):
         raise NotImplementedError
         W_l_q_num = approx_fprime(
             # q, lambda q: self.W_g(t, q), method="3-point", eps=1e-6
-            q, lambda q: self.W_l(t, q), method="cs", eps=1e-12
+            q,
+            lambda q: self.W_l(t, q),
+            method="cs",
+            eps=1e-12,
         )
         return W_l_q_num
-    
+
         nq1 = self._nq1
         nu1 = self._nu1
         W_l_q = np.zeros((self._nu, 1, self._nq), dtype=q.dtype)
@@ -214,7 +217,7 @@ class Prismatic(ProjectedPositionOrientationBase):
         A_IJ1_q1 = self.A_IJ1_q1(t, q)
         J_R1 = self.J_R1(t, q)
         J_R1_q1 = self.J_R1_q1(t, q)
-        
+
         r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
         r_OJ1_q1 = self.r_OJ1_q1(t, q)
         r_OJ2_q2 = self.r_OJ2_q2(t, q)
@@ -259,7 +262,7 @@ class Prismatic(ProjectedPositionOrientationBase):
 
         # return Wla_g_q_num
 
-    def Wla_l_q(self, t, q, la_l): 
+    def Wla_l_q(self, t, q, la_l):
         nq1 = self._nq1
         nu1 = self._nu1
         Wla_l_q = np.zeros((self._nu, self._nq), dtype=q.dtype)
@@ -268,7 +271,7 @@ class Prismatic(ProjectedPositionOrientationBase):
         A_IJ1_q1 = self.A_IJ1_q1(t, q)
         J_R1 = self.J_R1(t, q)
         J_R1_q1 = self.J_R1_q1(t, q)
-        
+
         r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
         r_OJ1_q1 = self.r_OJ1_q1(t, q)
         r_OJ2_q2 = self.r_OJ2_q2(t, q)
@@ -276,7 +279,7 @@ class Prismatic(ProjectedPositionOrientationBase):
         J_J2 = self.J_J2(t, q)
         J_J1_q1 = self.J_J1_q1(t, q)
         J_J2_q2 = self.J_J2_q2(t, q)
-        
+
         Wla_l_q[:nu1, :nq1] += (
             np.einsum("i,ijk->jk", -la_l * A_IJ1[:, self.axis], J_J1_q1)
             + np.einsum("ik,ij->jk", -la_l * A_IJ1_q1[:, self.axis], J_J1)
@@ -301,6 +304,3 @@ class Prismatic(ProjectedPositionOrientationBase):
             "i,ijk->jk", la_l * A_IJ1[:, self.axis], J_J2_q2
         )
         return Wla_l_q
-
-
-

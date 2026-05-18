@@ -91,11 +91,9 @@ class Sphere2Plane:
     def assembler_callback(self):
         qDOF = self.subsystem.local_qDOF_P(self.xi)
         self.qDOF = self.subsystem.qDOF[qDOF]
-        self.nq = len(self.qDOF)
 
         uDOF = self.subsystem.local_uDOF_P(self.xi)
         self.uDOF = self.subsystem.uDOF[uDOF]
-        self.nu = len(self.uDOF)
 
         self.r_OP = lambda t, q: self.subsystem.r_OP(
             t, q, xi=self.xi, B_r_CP=self.B_r_CP
