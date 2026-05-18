@@ -3,7 +3,7 @@ from numpy.polynomial import Polynomial
 from scipy.sparse import lil_array
 from cachetools import cachedmethod, LRUCache
 from cachetools.keys import hashkey
-from .interpolations import lagrange, hermite
+from .interpolations import lagrange, hermite, B_spline_basis
 
 from cardillo.rods.discretization.gauss import gauss, lobatto, trapezoidal
 
@@ -222,4 +222,75 @@ class Mesh1D_equidistant:
                 self.polynomials[derivative, el, p](xi)
                 for p in range(self.npolynomials_element)
             ]
+        )
+
+
+class Mesh1D_IGA(Mesh1D_equidistant):
+    def __init__(
+        self,
+        nelement,
+        polynomial_degree,
+        continuity,
+        derivative_order,
+    ):
+        self.nelement = nelement
+        self.polynomial_degree = polynomial_degree
+        self.continuity = continuity
+        self.derivative_order = derivative_order
+
+        # element boundaries
+        self.xis_element = np.linspace(0, 1, self.nelement + 1)
+        self.element_interval = np.array(
+            [self.xis_element[:-1], self.xis_element[1:]]
+        ).T
+
+        self.polynomials = B_spline_basis(
+            nelement, polynomial_degree, continuity, derivative_order
+        )
+        self.nnodes = self.npolynomials = self.polynomials.shape[1]
+        self.nnodes_element = self.npolynomials_element = polynomial_degree + 1
+
+    # TODO: vectorize
+    def node_number(self, xi):
+        if xi == 0.0:
+            return 0
+        elif xi == 1.0:
+            return self.nnodes - 1
+        else:
+            return False
+
+    def shape_functions(self, xis, els=None, derivative_order=0):
+        xis = np.atleast_1d(xis)
+        nxis = len(xis)
+        if els is None:
+            els = self.element_number(xis)
+
+        els = np.atleast_1d(els)
+        nels = len(els)
+
+        if nels != nxis:
+            assert nels == 1, "Missmatch in lengths of given xi values and elements!"
+            els = np.tile(els, nxis)
+
+        N_sparse = [
+            lil_array((len(xis), self.npolynomials))
+            for _ in range(derivative_order + 1)
+        ]
+        for el in np.unique(els):
+            selection = els == el
+            for d in range(derivative_order + 1):
+                N_sparse[d][selection] = np.array(
+                    [p(xis[selection]) for p in self.polynomials[d, :, el]]
+                ).T
+
+        for d in range(derivative_order + 1):
+            N_sparse[d] = N_sparse[d].tocsr()
+
+        return N_sparse
+
+    def shape_function_array_element(self, xi, el, derivative):
+        s = self.polynomial_degree - self.continuity
+        element_range = range(s * el, s * el + self.npolynomials_element)
+        return np.array(
+            [self.polynomials[derivative, p, el](xi) for p in element_range]
         )

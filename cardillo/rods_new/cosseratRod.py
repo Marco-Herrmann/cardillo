@@ -32,7 +32,7 @@ from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 from ._base_interface import RodInterface
-from .discretization.mesh1D import Mesh1D_equidistant
+from .discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -40,18 +40,34 @@ eye3 = np.eye(3, dtype=float)
 
 class CosseratRod_PetrovGalerkin(RodInterface):
     def _create_meshs(self):
-        mesh_kin = Mesh1D_equidistant(
-            basis="Lagrange",
-            nelement=self.nelement,
-            polynomial_degere=self.polynomial_degree,
-            derivative_order=1,
-        )
-        mesh_cg = Mesh1D_equidistant(
-            basis="Lagrange_Disc",
-            nelement=self.nelement,
-            polynomial_degere=self.polynomial_degree - 1,
-            derivative_order=0,
-        )
+        if self.IGA == False:
+            mesh_kin = Mesh1D_equidistant(
+                basis="Lagrange",
+                nelement=self.nelement,
+                polynomial_degree=self.polynomial_degree,
+                derivative_order=1,
+            )
+            mesh_cg = Mesh1D_equidistant(
+                basis="Lagrange_Disc",
+                nelement=self.nelement,
+                polynomial_degree=self.polynomial_degree - 1,
+                derivative_order=0,
+            )
+
+        else:
+            mesh_kin = Mesh1D_IGA(
+                nelement=self.nelement,
+                polynomial_degree=self.polynomial_degree,
+                continuity=self.continuity,
+                derivative_order=1,
+            )
+            mesh_cg = Mesh1D_IGA(
+                nelement=self.nelement,
+                polynomial_degree=self.polynomial_degree - 1,
+                continuity=np.max(self.continuity - 1, -1),  # TODO: or always -1?
+                # continuity=-1,
+                derivative_order=0,
+            )
 
         # element intervals
         self.element_interval = mesh_kin.element_interval
@@ -465,8 +481,13 @@ class CosseratRod_PetrovGalerkin(RodInterface):
                 Nu[rows, cols] = N
 
                 # elDOF
-                start = self.polynomial_degree * el
-                end = self.polynomial_degree * (el + 1) + 1
+                if self.IGA:
+                    s = self.polynomial_degree - self.continuity
+                    start = s * el
+                    end = s * el + self.polynomial_degree + 1
+                else:
+                    start = self.polynomial_degree * el
+                    end = self.polynomial_degree * (el + 1) + 1
                 qDOF = np.arange(self.nq_node * start, self.nq_node * end)
                 uDOF = np.arange(6 * start, 6 * end)
 
@@ -1048,6 +1069,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 def make_CosseratRod(
     *,
     polynomial_degree=None,
+    continuity=None,
     idx_constraints=None,
     idx_displacement_based=None,
     quadrature_int=None,
@@ -1149,8 +1171,18 @@ def make_CosseratRod(
         _T_IB_inv_P = T_SO3_inv_R9_R9
         nq_node = 12
 
+    if continuity is None:
+        IGA = False
+    else:
+        IGA = True
+
     class CosseratRod_PetrovGalerkin_(CosseratRod_PetrovGalerkin):
         def _pre_init_(self):
+            # prepare to take different mesh later
+            self.IGA = IGA
+            if self.IGA:
+                self.continuity = continuity
+
             # functions for orientation
             self._A_IB = _A_IB
             self._A_IB_P = _A_IB_P
@@ -1231,72 +1263,151 @@ def make_CosseratRod(
 
             # TODO: step_callback?
 
-        @staticmethod
-        def straight_configuration(
-            nelement,
-            L,
-            r_OP0=zeros3,
-            A_IB0=eye3,
-        ):
-            """Compute generalized position coordinates for straight configuration."""
-            nnodes = polynomial_degree * nelement + 1
+        ##################
+        # configurations #
+        ##################
+        if IGA:
 
-            r_OP = np.zeros((3, nnodes))
-            r_OP[0] = np.linspace(0, L, num=nnodes)
-            P = _Log_A_IB(A_IB0)
-            rP = np.zeros((nnodes, nq_node), dtype=float)
-            for i in range(nnodes):
-                rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
-                rP[i, 3:] = P
+            @staticmethod
+            def straight_configuration(nelement, L, r_OP0=zeros3, A_IB0=eye3):
+                mesh = Mesh1D_IGA(nelement, polynomial_degree, continuity, 0)
+                nnodes = mesh.nnodes
+                rP = straight_configuration(_Log_A_IB, nq_node, nnodes, L, r_OP0, A_IB0)
 
-            return rP.reshape(-1)
+                A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+                q = spsolve(A, rP)
+                return q.reshape(-1)
 
-        @staticmethod
-        def pose_configuration(
-            nelement,
-            r_OP,
-            A_IB,
-            xi1=1.0,
-            r_OP0=zeros3,
-            A_IB0=eye3,
-        ):
-            """Compute generalized position coordinates for a pre-curved rod with centerline curve r_OP and orientation of A_IB."""
-            assert callable(r_OP), "r_OP must be callable!"
-            assert callable(A_IB), "A_IB must be callable!"
+            @staticmethod
+            def pose_configuration(
+                nelement, r_OP, A_IB, xi1=1, r_OP0=zeros3, A_IB0=eye3
+            ):
+                mesh = Mesh1D_IGA(nelement, polynomial_degree, continuity, 0)
+                nnodes = mesh.nnodes
+                rP = pose_configuration(
+                    _Log_A_IB, nq_node, nnodes, r_OP, A_IB, xi1, r_OP0, A_IB0
+                )
 
-            nnodes = polynomial_degree * nelement + 1
-            xis = np.linspace(0, xi1, nnodes)
+                A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+                q = spsolve(A, rP)
+                return q.reshape(-1)
 
-            # nodal positions and unit quaternions
-            rP = np.zeros((nnodes, nq_node))
-            for i, xii in enumerate(xis):
-                rP[i, :3] = r_OP0 + A_IB0 @ r_OP(xii)
-                A_IBi = A_IB0 @ A_IB(xii)
-                rP[i, 3:] = _Log_A_IB(A_IBi)
+            @staticmethod
+            def straight_initial_configuration(
+                nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
+            ):
+                mesh = Mesh1D_IGA(nelement, polynomial_degree, continuity, 0)
+                nnodes = mesh.nnodes
+                rP, vO = straight_initial_configuration(
+                    _Log_A_IB, nq_node, nnodes, L, r_OP0, A_IB0, v_P0, B_omega_IB0
+                )
 
-            # check for the right quaternion hemisphere
-            for i in range(nnodes - 1):
-                inner = rP[i, 3:] @ rP[i + 1, 3:]
-                if inner < 0:
-                    rP[i + 1, 3:] *= -1
+                A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+                q = spsolve(A, rP)
+                u = spsolve(A, vO)
+                # TODO: untit length of these quaternuins here
+                return q.reshape(-1), u.reshape(-1)
 
-            return rP.reshape(-1)
+        else:
 
-        @staticmethod
-        def straight_initial_configuration(
-            nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=zeros3
-        ):
-            nnodes = polynomial_degree * nelement + 1
+            @staticmethod
+            def straight_configuration(nelement, L, r_OP0=zeros3, A_IB0=eye3):
+                nnodes = polynomial_degree * nelement + 1
+                return straight_configuration(
+                    _Log_A_IB, nq_node, nnodes, L, r_OP0, A_IB0
+                ).reshape(-1)
 
-            r_OP = np.zeros((3, nnodes))
-            r_OP[0] = np.linspace(0, L, num=nnodes)
-            P = _Log_A_IB(A_IB0)
-            rP = np.zeros((nnodes, nq_node), dtype=float)
-            for i in range(nnodes):
-                rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
-                rP[i, 3:] = P
+            @staticmethod
+            def pose_configuration(
+                nelement, r_OP, A_IB, xi1=1, r_OP0=zeros3, A_IB0=eye3
+            ):
+                nnodes = polynomial_degree * nelement + 1
+                return pose_configuration(
+                    _Log_A_IB, nq_node, nnodes, r_OP, A_IB, xi1, r_OP0, A_IB0
+                ).reshape(-1)
 
-            warn("v_P0 and B_omega_IB0 are ignored for straight initial configuration")
-            return rP.reshape(-1), np.zeros(nnodes * 6, dtype=float)
+            @staticmethod
+            def straight_initial_configuration(
+                nelement, L, r_OP0=zeros3, A_IB0=eye3, v_P0=zeros3, B_omega_IB0=eye3
+            ):
+                nnodes = polynomial_degree * nelement + 1
+                rP, vO = straight_initial_configuration(
+                    _Log_A_IB, nq_node, nnodes, L, r_OP0, A_IB0, v_P0, B_omega_IB0
+                )
+                return rP.reshape(-1), vO.reshape(-1)
 
     return CosseratRod_PetrovGalerkin_
+
+
+def straight_configuration(
+    _Log_A_IB,
+    nq_node,
+    nnodes,
+    L,
+    r_OP0=zeros3,
+    A_IB0=eye3,
+):
+    r_OP = np.zeros((3, nnodes))
+    r_OP[0] = np.linspace(0, L, num=nnodes)
+    P = _Log_A_IB(A_IB0)
+    rP = np.zeros((nnodes, nq_node), dtype=float)
+    for i in range(nnodes):
+        rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
+        rP[i, 3:] = P
+
+    return rP
+
+
+def pose_configuration(
+    _Log_A_IB,
+    nq_node,
+    nnodes,
+    r_OP,
+    A_IB,
+    xi1=1.0,
+    r_OP0=zeros3,
+    A_IB0=eye3,
+):
+    assert callable(r_OP), "r_OP must be callable!"
+    assert callable(A_IB), "A_IB must be callable!"
+
+    xis = np.linspace(0, xi1, nnodes)
+
+    # nodal positions and unit quaternions
+    rP = np.zeros((nnodes, nq_node))
+    for i, xii in enumerate(xis):
+        rP[i, :3] = r_OP0 + A_IB0 @ r_OP(xii)
+        A_IBi = A_IB0 @ A_IB(xii)
+        rP[i, 3:] = _Log_A_IB(A_IBi)
+
+    # check for the right quaternion hemisphere
+    for i in range(nnodes - 1):
+        inner = rP[i, 3:] @ rP[i + 1, 3:]
+        if inner < 0:
+            rP[i + 1, 3:] *= -1
+
+    return rP
+
+
+# TODO: check old code
+@staticmethod
+def straight_initial_configuration(
+    _Log_A_IB,
+    nq_node,
+    nnodes,
+    L,
+    r_OP0=zeros3,
+    A_IB0=eye3,
+    v_P0=zeros3,
+    B_omega_IB0=zeros3,
+):
+    r_OP = np.zeros((3, nnodes))
+    r_OP[0] = np.linspace(0, L, num=nnodes)
+    P = _Log_A_IB(A_IB0)
+    rP = np.zeros((nnodes, nq_node), dtype=float)
+    for i in range(nnodes):
+        rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
+        rP[i, 3:] = P
+
+    warn("v_P0 and B_omega_IB0 are ignored for straight initial configuration")
+    return rP, np.zeros((nnodes, 6), dtype=float)
