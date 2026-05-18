@@ -3,12 +3,12 @@ import numpy as np
 from pathlib import Path
 
 from cardillo import System
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
-from cardillo.rods import (
+from cardillo.rods_new import (
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
     CircularCrossSection,
+    make_CosseratRod,
 )
 from cardillo.discrete import RigidBody, Frame
 from cardillo.constraints import RigidConnection, Prismatic
@@ -56,7 +56,7 @@ def motion_stage():
     # discretization and model
     system = System()
     nelement = 20
-    Cable = make_BoostedCosseratRod(
+    Cable = make_CosseratRod(
         # idx_constraints=[0, 1, 2],
     )
 
@@ -65,8 +65,8 @@ def motion_stage():
 
     # cross section
     cross_section = RectangularCrossSection(width=w, height=h)
-    A = cross_section.area
-    Ix, Iy, Iz = np.diag(cross_section.second_moment)
+    A = cross_section.area(0.0)
+    Ix, Iy, Iz = np.diag(cross_section.second_moment(0.0))
 
     # TODO: get this into Simo
     Ei = np.array([E * A, G * A, G * A])
@@ -227,7 +227,7 @@ def motion_stage():
 
     # vtk-export
     dir_name = Path(__file__).parent
-    system.export(dir_name, "vtk_01", sol_dyn, fps=25)
+    system.export_blender(dir_name, "blender_01", sol_dyn, create_blend=True)
 
     # make nice visuals with multiple individual cables
     ny = 10
@@ -276,7 +276,7 @@ def motion_stage():
         t=sol_dyn.t,
         q=q_mult,
     )
-    system_mult.export(dir_name, "vtk_01_multiple", sol_mult, fps=25)
+    system_mult.export_blender(dir_name, "blender_01_multiple", sol_mult, create_blend=True)
 
 
 if __name__ == "__main__":

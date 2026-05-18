@@ -4,12 +4,12 @@ from pathlib import Path
 
 from cardillo import System
 from cardillo.actuators.constraint import ActuatedConstraint
-from cardillo.rods.boostedCosseratRod import make_BoostedCosseratRod
-from cardillo.rods import (
+from cardillo.rods_new import (
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
     CircularCrossSection,
+    make_CosseratRod,
 )
 from cardillo.discrete import RigidBody, Frame
 from cardillo.constraints import RigidConnection, Prismatic
@@ -102,7 +102,7 @@ def motion_stage(l_x0, l_y0):
     nelement1 = 20
     nelement2a = 20
     nelement2b = 20
-    Cable = make_BoostedCosseratRod()
+    Cable = make_CosseratRod()
 
     t1 = 1.0
     dt = 0.001
@@ -161,8 +161,8 @@ def motion_stage(l_x0, l_y0):
 
     # cross section
     cross_section = RectangularCrossSection(width=8 * r_cable, height=2 * r_cable)
-    A = cross_section.area
-    Ix, Iy, Iz = np.diag(cross_section.second_moment)
+    A = cross_section.area(0.0)
+    Ix, Iy, Iz = np.diag(cross_section.second_moment(0.0))
 
     # TODO: get this into Simo
     Ei = np.array([E * A, G * A, G * A])
@@ -377,7 +377,7 @@ def motion_stage(l_x0, l_y0):
 
     # vtk-export
     dir_name = Path(__file__).parent
-    system.export(dir_name, "vtk_02", sol_dyn, fps=25)
+    system.export_blender(dir_name, "blender_02", sol_dyn, create_blend=True)
 
     # make nice visuals with multiple individual cables
     if False:
