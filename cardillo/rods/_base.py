@@ -1318,23 +1318,32 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
     ########################################
     # total complementary potential energies
     ########################################
-    # TODO: If there is a demand, add it to system.
-    # TODO: shall we also compute the potential energy by the E_pot = eps.T @ la_c - E_comp_pot?
-    def E_comp_pot(self, t, la_c):
-        E_comp_pot = 0.0
+    def E_pot_comp(self, t, q, la_c):
+        E_pot_comp = 0.0
         for el in range(self.nelement):
+            elDOF = self.elDOF[el]
             elDOF_la_c = self.elDOF_la_c[el]
-            E_comp_pot += self.E_pot_el(la_c[elDOF_la_c], el)
-        return E_comp_pot
+            E_pot_comp += self.E_pot_comp_el(q[elDOF], la_c[elDOF_la_c], el)
+        return E_pot_comp
 
-    def E_comp_pot_el(self, la_ce, el):
-        E_comp_pot_el = 0.0
+    def E_pot_comp_el(self, qe, la_ce, el):
+        E_pot_comp_el = 0.0
 
         for i in range(self.nquadrature):
             # extract reference state variables
             qpi = self.qp[el, i]
             qwi = self.qw[el, i]
             Ji = self.J[el, i]
+            B_Gamma0 = self.B_Gamma0[el, i]
+            B_Kappa0 = self.B_Kappa0[el, i]
+
+            # evaluate required quantities
+            _, _, B_Gamma_bar, B_Kappa_bar = self._eval(
+                qe, qpi, N=self.N_r[el, i], N_xi=self.N_r_xi[el, i]
+            )
+
+            eps_Ga = B_Gamma_bar / Ji - B_Gamma0
+            eps_Ka = B_Kappa_bar / Ji - B_Kappa0
 
             la_c = np.zeros(self.mesh_la_c.dim_q, dtype=la_ce.dtype)
             # interpolation of internal forces and moments
@@ -1348,11 +1357,14 @@ class CosseratRodMixed(CosseratRod_PetrovGalerkin):
             B_m[self.mixed_m] = la_c[self.nmixed_n :]
 
             # evaluate complementary strain energy function
-            E_comp_pot_el += (
-                self.material_model.complementary_potential(B_n, B_m) * Ji * qwi
+            E_pot_c_qp = (
+                eps_Ga @ B_n
+                + eps_Ka @ B_m
+                - self.material_model.complementary_potential(B_n, B_m)
             )
+            E_pot_comp_el += E_pot_c_qp * Ji * qwi
 
-        return E_comp_pot_el
+        return E_pot_comp_el
 
     #########################################
     # equations of motion

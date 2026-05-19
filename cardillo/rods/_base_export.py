@@ -443,6 +443,10 @@ class RodExportBase(ABC):
                 t = sol_i.t
                 la_c = sol_i.la_c
                 la_g = sol_i.la_g
+                if hasattr(self, "la_cDOF"):
+                    la_c = la_c[self.la_cDOF]
+                if hasattr(self, "la_gDOF"):
+                    la_g = la_g[self.la_gDOF]
                 for j in range(num_stresses):
                     B_ns[:, j], B_ms[:, j] = self.eval_stresses(
                         t, q, la_c, la_g, xis[j], el=None

@@ -139,7 +139,7 @@ def run(solver=Moreau, VTK_export=False):
         system,
         t1,
         dt,
-        options=SolverOptions(prox_scaling=0.4, continue_with_unconverged=True),
+        options=SolverOptions(prox_scaling=0.4, continue_with_unconverged=False),
     )  # create solver
     sol = solver.solve()  # simulate system
 
