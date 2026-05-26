@@ -24,6 +24,7 @@ class Newton:
         self,
         system,
         n_load_steps=1,
+        t1=1.0,
         verbose=True,
         updated=False,
         options=SolverOptions(),
@@ -32,7 +33,7 @@ class Newton:
         self.options = options
         self.verbose = verbose
         self.updated = updated
-        self.load_steps = np.linspace(0, 1, n_load_steps + 1)
+        self.load_steps = np.linspace(system.t0, t1, n_load_steps + 1)
         self.nt = len(self.load_steps)
 
         self.len_t = len(str(self.nt))
@@ -884,7 +885,9 @@ class Eigenmodes:
         # compute omegas
         omegas = np.zeros([len(las_ud_squared)])
         valids = np.ones_like(omegas, dtype=bool)
-        modes_dq = B @ T_right @ Vs_ud
+        # we get the right eigenvectors
+        Delta_z = T_right @ Vs_ud
+        modes_dq = B @ Delta_z
         for i, lai in enumerate(las_ud_squared):
             if np.abs(lai) <= self.la_sqared_tol:
                 omegas[i] = 0.0
@@ -902,6 +905,7 @@ class Eigenmodes:
             np.array([t]),
             np.array([q]),
             omegas=np.array([omegas]),
+            Delta_z=np.array([Delta_z]),
             modes_dq=np.array([modes_dq]),
             valids=np.array([valids]),
         )

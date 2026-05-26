@@ -25,7 +25,6 @@ from cardillo.solver import (
     DualStormerVerlet,
 )
 
-
 """https://link.springer.com/article/10.1007/s11044-025-10087-9"""
 
 

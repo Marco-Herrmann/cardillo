@@ -50,8 +50,8 @@ def glued_rods(
     G = E / (2 * (1 + mu))
     A = cross_section_rect.area
     Ip, Iy, Iz = np.diag(cross_section_rect.second_moment)
-    Ei = np.array([E*A, G*A, G*A])
-    Fi = np.array([G * Ip, E*Iy, E*Iz])
+    Ei = np.array([E * A, G * A, G * A])
+    Fi = np.array([G * Ip, E * Iy, E * Iz])
 
     material_model = constitutive_law(Ei, Fi)
 
@@ -65,12 +65,7 @@ def glued_rods(
     Q0_a = Rod.straight_configuration(nelements, length)
     # construct cantilever
     rod_a = Rod(
-        cross_section_rect,
-        material_model,
-        nelements,
-        Q=Q0_a,
-        q0=Q0_a,
-        name="rodA"
+        cross_section_rect, material_model, nelements, Q=Q0_a, q0=Q0_a, name="rodA"
     )
 
     ##########
@@ -114,17 +109,14 @@ def glued_rods(
     # rod b
     #######
     # compute straight initial configuration of cantilever
-    Q0_b = Rod.straight_configuration(nelements, length_tensioned, r_OP0=np.array([0.0, width, 0.0]))
+    Q0_b = Rod.straight_configuration(
+        nelements, length_tensioned, r_OP0=np.array([0.0, width, 0.0])
+    )
     # construct cantilever
     rod_b = Rod(
-        cross_section_rect,
-        material_model,
-        nelements,
-        Q=Q0_b,
-        q0=Q0_b,
-        name="rodB"
+        cross_section_rect, material_model, nelements, Q=Q0_b, q0=Q0_b, name="rodB"
     )
-    
+
     ################################
     # connect rods discrete at nodes
     ################################
@@ -134,7 +126,9 @@ def glued_rods(
     for node in range(nnodes):
         xi_node = xis_connect[node]
         constraints.append(
-            RigidConnection(rod_a, rod_b, xi1=xi_node, xi2=xi_node, name=f"rigid_connection_{node}")
+            RigidConnection(
+                rod_a, rod_b, xi1=xi_node, xi2=xi_node, name=f"rigid_connection_{node}"
+            )
         )
 
     ###############################
@@ -142,7 +136,6 @@ def glued_rods(
     ###############################
     # TODO: add external moment instead of force at the right side
     M = width * F
-
 
     ###############
     # update system
@@ -169,19 +162,18 @@ def glued_rods(
         # export only nodal quantities for fast export (circle)
         # rod_b._export_dict["level"] = "NodalVolume"
         rod_b._export_dict["stresses"] = True
-        
+
         rod_a._export_dict["stresses"] = True
 
         # export
         system.export(dir_name, f"vtk/{save_name}/sol_b", sol_b)
 
+
 if __name__ == "__main__":
     glued_rods(
         # Rod=make_CosseratRod(interpolation="SE3", mixed=True, constraints=[0, 1, 2]),
         # Rod=make_CosseratRod(interpolation="R12", mixed=True, constraints=[0, 1, 2]),
-        Rod=make_CosseratRod(
-            mixed=True, polynomial_degree=2
-        ),
+        Rod=make_CosseratRod(mixed=True, polynomial_degree=2),
         n_load_steps=10,
         nelements=10,
         VTK_export=True,

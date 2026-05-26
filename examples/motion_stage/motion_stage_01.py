@@ -276,7 +276,9 @@ def motion_stage():
         t=sol_dyn.t,
         q=q_mult,
     )
-    system_mult.export_blender(dir_name, "blender_01_multiple", sol_mult, create_blend=True)
+    system_mult.export_blender(
+        dir_name, "blender_01_multiple", sol_mult, create_blend=True
+    )
 
 
 if __name__ == "__main__":

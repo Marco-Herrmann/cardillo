@@ -2,7 +2,6 @@ import subprocess
 import pathlib
 import pytest
 
-
 example_base = pathlib.Path("examples")
 
 # Alle Beispielordner unter examples/

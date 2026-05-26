@@ -994,10 +994,13 @@ class System:
 
     def KN_gamma(self, t, q, la_gamma, format="coo"): ...
     def KN_N(self, t, q, la_N, format="coo"):
-        assert self.nla_N == 0
-        return CooMatrix((self.nu, self.nu)).asformat(format), CooMatrix(
-            (self.nu, self.nu)
-        ).asformat(format)
+        # assert self.nla_N == 0
+        if self.nla_N != 0:
+            warnings.warn("KN_N is not taken into account!")
+        return (
+            CooMatrix((self.nu, self.nu)).asformat(format),
+            CooMatrix((self.nu, self.nu)).asformat(format),
+        )
 
     def KN_F(self, t, q, la_F, format="coo"): ...
 

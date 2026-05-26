@@ -10,7 +10,7 @@ from scipy.sparse import (
 from scipy.sparse.linalg import spsolve
 from warnings import warn
 
-from cardillo.math.algebra import norm, cross3, ax2skew
+from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.math.rotations import (
     Log_SO3_quat,
@@ -556,6 +556,28 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         return np.einsum("ijk, jl -> ilk", self.A_IB_q(t, qi, xi), B_J_CP)
 
     def J2_P(self, t, qi, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        if B_r_CP @ B_r_CP == 0.0:
+            return point_dict["zero_3_nui_nui"]
+
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
+        N = point_dict["N"]
+
+        A_IB = self._A_IB(N @ qnodes[:, 3:])
+        B_J2_R_phi = -0.5 * ax2skew_a()
+        B_r_CP_tilde = ax2skew(B_r_CP)
+
+        # TODO: implement for xi at an really arbitrary point
+        nnodes = point_dict["nnodes"]
+        assert nnodes == 1
+
+        # only operations on relevant DOFs and using B_J_R = [zero, eye]
+        J2_P = np.zeros((3, 6, 6), dtype=qi.dtype)
+        J2_P[:, 3:, 3:] = np.einsum(
+            "jl, lki -> ijk", B_r_CP_tilde, ax2skew_a() @ A_IB.T
+        ) - np.einsum("il, ljk -> ijk", A_IB @ B_r_CP_tilde, B_J2_R_phi)
+        return J2_P
+
         # TODO: implement for B_r_CP != 0.0
         assert np.linalg.norm(B_r_CP) == 0.0
         point_dict = self.get_interaction_point(xi)
@@ -651,8 +673,14 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
     def B_J2_R(self, t, qi, xi):
         point_dict = self.get_interaction_point(xi)
-        N = point_dict["N"]
-        qnodes = qi.reshape(point_dict["nnodes"], -1)
+        # N = point_dict["N"]
+        # qnodes = qi.reshape(point_dict["nnodes"], -1)
+
+        assert point_dict["nnodes"] == 1
+
+        B_J2_R = np.zeros((3, 6, 6), dtype=qi.dtype)
+        B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
+        return B_J2_R
 
         z = point_dict["zero_3_nui_nui"]
         warn("B_J2_R not implemented yet")
@@ -878,11 +906,12 @@ class CosseratRod_PetrovGalerkin(RodInterface):
 
         # TODO: np.cross
         r_xi__phi = -np.einsum("ijk,ikl->ijl", A_IB, ax2skew(sigma_qp[:, :3]))
-        phi_xi__phi = 0.5 * ax2skew(sigma_qp[:, 3:])
+        phi_xi__phi = -0.5 * ax2skew(sigma_qp[:, 3:])
 
         phi__phi = np.einsum(
             "ijk,ikl->ijl", ax2skew(B_gamma_bar), ax2skew(sigma_qp[:, :3])
         ) + np.einsum("ijk,ikl->ijl", ax2skew(B_kappa_bar), ax2skew(sigma_qp[:, 3:]))
+        phi__phi = 0.5 * (phi__phi + phi__phi.transpose(0, 2, 1))
 
         # TODO: make sparse?
         # K_qp[N/N_xi, qpi, uDOF, qDOF]
@@ -896,7 +925,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
         K_qp[1, :, 3:, 3:] = -phi_xi__phi
 
         # to be multiplied with N <-> N
-        K_qp[0, :, 3:, 3:] = 0.5 * (phi__phi + phi__phi.transpose(0, 2, 1))
+        K_qp[0, :, 3:, 3:] = phi__phi
         return self.K_sigma_SAB.add_blocks(K_qp)
 
     def f_pot(self, t, q, u):

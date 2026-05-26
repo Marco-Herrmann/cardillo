@@ -29,6 +29,7 @@ from cardillo.solver import (
     BackwardEuler,
     SolverOptions,
     Solution,
+    Eigenmodes,
 )
 
 # sources:

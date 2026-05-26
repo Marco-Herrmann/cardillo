@@ -44,3 +44,6 @@ class ActuatedConstraint:
     def Wla_g_q(self, t, q, la_g):
         return self.subsystem.Wla_l_q(t, q, la_g)
         # return np.einsum("ijk,j->ik", self.subsystem.W_l_q(t, q), la_g)
+
+    def KN_g(self, t, q, la_g):
+        return self.subsystem.KN_l(t, q, la_g)

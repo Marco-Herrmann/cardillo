@@ -304,3 +304,34 @@ class Prismatic(ProjectedPositionOrientationBase):
             "i,ijk->jk", la_l * A_IJ1[:, self.axis], J_J2_q2
         )
         return Wla_l_q
+
+    def KN_l(self, t, q, la_l):
+        # see ProjectedPositionOrientationBase.KN_g
+        nu1 = self._nu1
+        K = np.zeros((self._nu, self._nu), dtype=q.dtype)
+        N = np.zeros((self._nu, self._nu), dtype=q.dtype)
+
+        A_IJ1 = self.A_IJ1(t, q)
+        J_R1 = self.J_R1(t, q)
+        J2_R1 = self.J2_R1(t, q)
+        r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
+        J_J1 = self.J_J1(t, q)
+        J_J2 = self.J_J2(t, q)
+        J2_J1 = self.J2_J1(t, q)
+        J2_J2 = self.J2_J2(t, q)
+        ax = self.axis
+        axis_tilde = ax2skew(A_IJ1[:, ax]) * la_l
+        n = cross3(A_IJ1[:, ax], r_J1J2) * la_l
+        off_diag_term = J_R1.T @ axis_tilde @ J_J2
+        K[:nu1, :nu1] -= (
+            -np.einsum("i,ijk->jk", la_l * A_IJ1[:, ax], J2_J1)
+            + J_J1.T @ axis_tilde @ J_R1
+            - J_R1.T @ axis_tilde @ J_J1
+            - np.einsum("i,ijk->jk", n, J2_R1)
+            + J_R1.T @ axis_tilde @ ax2skew(r_J1J2) @ J_R1
+        )
+        K[:nu1, nu1:] -= off_diag_term
+        K[nu1:, :nu1] -= off_diag_term.T
+        K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_l * A_IJ1[:, ax], J2_J2)
+
+        return K, N

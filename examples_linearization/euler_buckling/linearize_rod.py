@@ -10,13 +10,13 @@ from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.forces import Force
 from cardillo.math import A_IB_basic, cross3, smoothstep2, Exp_SO3_quat, e3
 from cardillo.solver import BackwardEuler, Newton, Eigenmodes
-from cardillo.rods import (
+from cardillo.rods_new import (
     CircularCrossSection,
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
+    make_CosseratRod,
 )
-from cardillo.rods.cosseratRod import make_CosseratRod
 
 
 def cantilever(Rod, nel, case=1):
@@ -31,8 +31,8 @@ def cantilever(Rod, nel, case=1):
     density = 8.0e3  # [kg / m^3]
     cross_section = RectangularCrossSection(width, height)
     cross_section_inertias = CrossSectionInertias(density, cross_section)
-    A = cross_section.area  # [m^2]
-    Ip, Iy, Iz = np.diagonal(cross_section.second_moment)  # [m^4]
+    A = cross_section.area(0.0)  # [m^2]
+    Ip, Iy, Iz = np.diagonal(cross_section.second_moment(0.0))  # [m^4]
 
     # material properties
     E = 260.0e9  # [N / m^2]
@@ -115,49 +115,60 @@ def cantilever(Rod, nel, case=1):
 
     nom = 1
     omega_s = np.zeros((n_steps + 1, nom))
+    omegas_reg = np.zeros((n_steps + 1, nom))
+    omegas_che = np.zeros((n_steps + 1, nom))
     for i in range(n_steps + 1):
         print(f"step: {i: >3}, load factor: {load_factor * i / n_steps:3f}")
 
         omegas, modes_dq, sol_modes = solver.solve(i)
         # print(f"     {omegas[0]:.5f}")
         omega_s[i] = omegas[:nom]
+        omegas_reg[i] = omegas[:nom]
+
+        omegas_c, _, _ = solver.solve_cheap(i)
+        omegas_che[i] = omegas_c[:nom]
+
     # print(omegas)
     # print(len(omegas))
     # omegas, modes_dq, sol_modes = solver.solve(-1)
 
     fig, ax = plt.subplots(1, 1, squeeze=False)
-    [
-        ax[0, 0].plot(np.linspace(0, load_factor, n_steps + 1), omega_s[:, i], "-")
-        for i in range(nom)
-    ]
+    # t = np.linspace(0, load_factor, n_steps + 1)
+    t = sol.t * load_factor
+    for i in range(nom):
+        ax[0, 0].plot(t, omega_s[:, i], "-", label=f"iets {i}")
+
+    ax[0, 0].plot(t, omegas_reg, ".-", label="My method")
+    ax[0, 0].plot(t, omegas_che, "x--", label="Cheap method")
     ax[0, 0].grid()
+    ax[0, 0].legend()
     plt.show()
 
     # vtk-export
-    rod._export_dict["level"] = "NodalVolume"
     dir_name = Path(__file__).parent
-    system.export(dir_name, f"vtk", sol, fps=25)
-    system.export(dir_name, f"vtk_modes", sol_modes, fps=25)
+    system.export_blender(dir_name, f"blender", sol, create_blend=True)
+    system.export_blender(dir_name, f"blender_modes", sol_modes, create_blend=True)
 
 
 if __name__ == "__main__":
     nel = 8
     pDeg = 3
     rod = "T"
-    # rod = "EB"
-    # rod = "IEB"
+    rod = "IT"
+    rod = "EB"
+    rod = "IEB"
 
     if rod == "T":
         constraints = [1, 3, 5]
+    elif rod == "IT":
+        constraints = [0, 1, 3, 5]
     elif rod == "EB":
         constraints = [1, 2, 3, 5]
     elif rod == "IEB":
         constraints = [0, 1, 2, 3, 5]
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
         polynomial_degree=pDeg,
-        constraints=constraints,
+        idx_constraints=constraints,
     )
 
-    cantilever(Rod, nel, 3)
+    cantilever(Rod, nel, 1)
