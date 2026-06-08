@@ -346,3 +346,13 @@ class Sphere2Plane:
             point_data["P_F"] = np.array([P_F, P_F])
 
         return points, cells, point_data, cell_data
+
+    def export_blender(self, path, solution):
+        from warnings import warn
+
+        warn("Sphere2Plane.export_blender not implemented")
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("Sphere2Plane.export_blender_modes not implemented")

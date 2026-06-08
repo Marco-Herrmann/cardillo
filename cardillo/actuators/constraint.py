@@ -7,6 +7,8 @@ class ActuatedConstraint:
         self.subsystem = subsystem
         self.update_actuation(tau)
         self.nla_g = 1
+        self.nin = 1
+        self.W_in = self.W_g
 
         # TODO: mark this as an input somehow to use in FRF
         # TODO: allow for velocity constraint as well

@@ -233,3 +233,78 @@ def make_glTF_modes(
 
     gltf.set_binary_blob(buf.data)
     gltf.save_binary(filename)
+
+
+def make_glTF_arrow(path, name, t, r_OP, vec):
+    # TODO: get rid of os
+    filename = os.path.join(path, f"{name}.glb")
+
+    buf = BufferBuilder()
+    nodes = []
+    # create an empty
+    if True:
+        nodes.append(Node(name=f"{name}_obj__invisible"))
+        mesh_gltf = []
+
+    t_acc = buf.add(t.astype(np.float32), 5126, "SCALAR")
+
+    # translation
+    trans = cardillo_to_gltf_trans(r_OP)
+    trans_acc = buf.add(trans, 5126, "VEC3")
+    samplers = [
+        AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR"),
+    ]
+    channels = [
+        AnimationChannel(
+            sampler=0,
+            target=AnimationChannelTarget(node=0, path="translation"),
+        ),
+    ]
+
+    if True:
+        nodes.append(Node(name=f"{name}_vec"))
+        nodes[0].children.append(len(nodes) - 1)
+
+        # find the quaternion that rotates the +z of the node to the direction of vec
+        # TODO: vectorize
+        P = np.array([smallest_rotation_quaternion(veci, i=2)[0] for veci in vec])
+        P_rot = cardillo_to_gltf_rot(P)
+        P_acc = buf.add(P_rot, 5126, "VEC4")
+
+        samplers.append(
+            AnimationSampler(input=t_acc, output=P_acc, interpolation="LINEAR")
+        )
+        channels.append(
+            AnimationChannel(
+                sampler=len(samplers) - 1,
+                target=AnimationChannelTarget(node=len(nodes) - 1, path="rotation"),
+            )
+        )
+
+        # set the scale of the node to the magnitude of vec
+        vec_mag = np.linalg.norm(vec, axis=1).astype(np.float32)
+        vec_acc = buf.add(np.stack([vec_mag] * 3, axis=1), 5126, "VEC3")
+        samplers.append(
+            AnimationSampler(input=t_acc, output=vec_acc, interpolation="LINEAR")
+        )
+        channels.append(
+            AnimationChannel(
+                sampler=len(samplers) - 1,
+                target=AnimationChannelTarget(node=len(nodes) - 1, path="scale"),
+            )
+        )
+
+    anim = Animation(samplers=samplers, channels=channels, name=f"{name}_anim")
+    gltf = GLTF2(
+        buffers=[Buffer(byteLength=len(buf.data))],
+        bufferViews=buf.views,
+        accessors=buf.accessors,
+        nodes=nodes,
+        animations=[anim],
+        scenes=[Scene(nodes=[0])],
+        scene=0,
+        meshes=mesh_gltf,
+    )
+
+    gltf.set_binary_blob(buf.data)
+    gltf.save_binary(filename)

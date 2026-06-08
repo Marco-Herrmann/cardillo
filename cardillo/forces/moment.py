@@ -59,6 +59,16 @@ class B_Moment:
         cell_data = dict(M=[I_M])
         return points, cells, None, cell_data
 
+    def export_blender(self, path, solution):
+        from warnings import warn
+
+        warn("B_Moment.export_blender not implemented")
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("B_Moment.export_blender_modes not implemented")
+
 
 class Moment:
     r"""Moment represented w.r.t. I-basis
@@ -109,3 +119,13 @@ class Moment:
         cells = [(VTK_VERTEX, [0])]
         cell_data = dict(M=[I_M])
         return points, cells, None, cell_data
+
+    def export_blender(self, path, solution):
+        from warnings import warn
+
+        warn("Moment.export_blender not implemented")
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("Moment.export_blender_modes not implemented")

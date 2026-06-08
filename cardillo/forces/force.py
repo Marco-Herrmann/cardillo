@@ -1,7 +1,9 @@
+import numpy as np
 from numpy import einsum, zeros
 from vtk import VTK_VERTEX
 
 from cardillo.math import ax2skew
+from cardillo.discrete.discrete_export_base import make_glTF_arrow
 
 
 class Force:
@@ -28,6 +30,7 @@ class Force:
         self.subsystem = subsystem
         self.xi = xi
         self.name = name
+        self.nin = 3
 
         self.r_OP = lambda t, q: subsystem.r_OP(t, q, xi, B_r_CP)
         self.J_P = lambda t, q: subsystem.J_P(t, q, xi, B_r_CP)
@@ -52,12 +55,27 @@ class Force:
             (len(self.uDOF), len(self.uDOF))
         )
 
+    def W_in(self, t, q):
+        return self.J_P(t, q).T
+
     def export(self, sol_i, **kwargs):
         # TODO: point data for warp by vector!
         points = [self.r_OP(sol_i.t, sol_i.q[self.qDOF])]
         cells = [(VTK_VERTEX, [0])]
         cell_data = dict(F=[self.force(sol_i.t)])
         return points, cells, None, cell_data
+
+    def export_blender(self, path, solution):
+        r_OP = np.array(
+            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+        )
+        arrow = np.array([self.force(ti) for ti in solution.t])
+        make_glTF_arrow(path, self.name, solution.t, r_OP, arrow)
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("Force.export_blender_modes not implemented")
 
 
 class B_Force:
@@ -127,3 +145,13 @@ class B_Force:
         cells = [(VTK_VERTEX, [0])]
         cell_data = dict(F=[I_F])
         return points, cells, None, cell_data
+
+    def export_blender(self, path, solution):
+        from warnings import warn
+
+        warn("B_Force.export_blender not implemented")
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("B_Force.export_blender_modes not implemented")

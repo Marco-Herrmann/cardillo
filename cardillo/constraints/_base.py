@@ -447,8 +447,6 @@ class PositionOrientationBase:
         K[:nu1, :nu1] -= np.einsum("i,ijk->jk", -la_g[:3], self.J2_J1(t, q))
         K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[:3], self.J2_J2(t, q))
 
-        test_sign = -1
-
         if self.constrain_orientation:
             A_IJ1 = self.A_IJ1(t, q)
             A_IJ2 = self.A_IJ2(t, q)
@@ -464,13 +462,13 @@ class PositionOrientationBase:
                 n = cross3(e_a, e_b)
                 double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[3 + i]
                 off_diag_term = J_R1.T @ double_tilde @ J_R2
-                K[:nu1, :nu1] += test_sign * (
+                K[:nu1, :nu1] += (
                     np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R1)
                     + J_R1.T @ double_tilde @ J_R1
                 )
-                K[:nu1, nu1:] -= test_sign * off_diag_term
-                K[nu1:, :nu1] -= test_sign * off_diag_term.T
-                K[nu1:, nu1:] += test_sign * (
+                K[:nu1, nu1:] -= off_diag_term
+                K[nu1:, :nu1] -= off_diag_term.T
+                K[nu1:, nu1:] += (
                     -np.einsum("i,ijk->jk", la_g[3 + i] * n, J2_R2)
                     + J_R2.T @ double_tilde.T @ J_R2
                 )

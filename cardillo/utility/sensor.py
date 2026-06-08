@@ -24,6 +24,8 @@ class Sensor:
         self.xi = xi
         self.name = name
 
+        self.nout = 6
+
         self.functions = {
             SensorRecords.r_OP: self._r_OP,
             SensorRecords.ex_B: self._ex_B,
@@ -39,6 +41,13 @@ class Sensor:
 
         local_uDOF = self.subsystem.local_uDOF_P(self.xi)
         self.uDOF = self.subsystem.uDOF[local_uDOF]
+        self._nu = len(self.uDOF)
+
+    def C_out(self, t, q):
+        C_out = np.zeros((self.nout, self._nu), dtype=q.dtype)
+        C_out[:3] = self.subsystem.J_P(t, q, self.xi, B_r_CP=self.B_r_PQ)
+        C_out[3:] = self._A_IB(t, q) @ self.subsystem.B_J_R(t, q, self.xi)
+        return C_out
 
     def _r_OP(self, t, q):
         return self.subsystem.r_OP(t, q, self.xi, B_r_CP=self.B_r_PQ)

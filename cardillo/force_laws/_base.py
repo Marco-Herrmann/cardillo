@@ -12,6 +12,9 @@ class ScalarForceLawBase(ABC):
         self.l_dot_u = self.subsystem.l_dot_u
         self.force = self.la_c  # TODO: Do we keep this?
 
+        self.export_blender = self.subsystem.export_blender
+        self.export_blender_modes = self.subsystem.export_blender_modes
+
     def assembler_callback(self):
         self.subsystem.assembler_callback()
         self.qDOF = self.subsystem.qDOF

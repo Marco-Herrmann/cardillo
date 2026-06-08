@@ -405,7 +405,10 @@ class RodInterface(RodExportBase):
 
         nodes = [Node(name=f"bone_{i}_obj") for i in range(len(xis))]
         mesh_node = Node(
-            name=f"{self.name}_obj", mesh=0, skin=0, children=list(range(len(xis)))
+            name=f"{self.name}_obj__invisible",
+            mesh=0,
+            skin=0,
+            children=list(range(len(xis))),
         )
         nodes.append(mesh_node)
 

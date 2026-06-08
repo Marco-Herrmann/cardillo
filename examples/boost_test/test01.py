@@ -184,6 +184,9 @@ def test_implementation(n_test=1_000):
         ["E_kin", ("t", "q", "u"), (), False],
         ["linear_momentum", ("t", "q", "u"), (), False],
         ["angular_momentum", ("t", "q", "u"), (), False],
+        # linearlization
+        ["KN_g", ("t", "q", "la_g"), (perm_c2n_u[:, None], perm_c2n_u), True],
+        ["KN_c", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_u), True],
     ]
     interactions = [
         ["r_OP", ("t", "q", "B_r_CP")],
@@ -246,6 +249,8 @@ def test_implementation(n_test=1_000):
                 args_i = [arguments_dict[name] for name in argument_names]
                 result = getattr(system, function_name)(*args_i)
                 if sparse:
+                    if isinstance(result, tuple):
+                        result = result[0]
                     results.append(result.toarray())
                 else:
                     results.append(result)

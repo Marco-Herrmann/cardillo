@@ -58,6 +58,7 @@ class RigidBody:
         self.nq = 7
         self.nu = 6
         self.nla_S = 1
+        self.nout = 6
 
         self.q0 = (
             np.array([0, 0, 0, 1, 0, 0, 0], dtype=float)
@@ -152,7 +153,7 @@ class RigidBody:
         # TODO: Can we split this up earlier? OR just do it simple
         G1 = self.h_u(t, np.zeros(self.nq), u)
         G2 = self.__M @ np.hstack(
-            [np.zeros((3, 6)), np.vstack([np.zeros(3, 3), ax2skew(u[3:])])]
+            [np.zeros((6, 3)), np.vstack([np.zeros((3, 3)), ax2skew(u[3:])])]
         )
         G = G1 + G2
         return np.zeros((self.nu, self.nu)), 0.5 * (G - G.T)
@@ -323,6 +324,12 @@ class RigidBody:
         B_J2_R = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
         B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
         return B_J2_R
+
+    def C_out(self, t, q):
+        C_out = np.zeros((self.nout, self.nu), dtype=q.dtype)
+        C_out[:3, :3] = np.eye(3)
+        C_out[3:, 3:] = self.A_IB(t, q)
+        return C_out
 
     ########
     # export

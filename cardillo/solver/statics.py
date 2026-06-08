@@ -1,6 +1,6 @@
 import numpy as np
 import warnings
-from scipy.sparse import lil_array, bmat, csc_array
+from scipy.sparse import lil_array, bmat, csc_array, eye_array
 from scipy.sparse.linalg import inv as sparse_inv
 from scipy.linalg import eigh, null_space, eig
 from tqdm import tqdm
@@ -911,3 +911,163 @@ class Eigenmodes:
         )
 
         return omegas, modes_dq, sol
+
+
+class FrequencyResponseFunction:
+    def __init__(self, system, sol):
+        self.system = system
+        self.sol = sol
+
+        self.la_sqared_tol = 1e-5
+
+        self.u = np.zeros(system.nu, dtype=float)
+
+        # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
+        C = system.c_la_c("csc")
+        if system.nla_c > 1:
+            self.C_inv = sparse_inv(C)
+        else:
+            self.C_inv = CooMatrix((system.nla_c, system.nla_c))
+            if system.nla_c == 1:
+                self.C_inv[0, 0] = 1 / C[0, 0]
+            self.C_inv = self.C_inv.asformat("csr")
+
+        # system dimensions
+        seps = np.cumsum(
+            np.array(
+                [0, system.nu, system.nu, system.nla_g, system.nla_c],
+                dtype=int,
+            )
+        )
+
+        self.slices = [slice(seps[i], seps[i + 1]) for i in range(len(seps) - 1)]
+        assert (
+            self.system.nla_N == self.system.nla_F == 0
+        ), "No (frictional) contacts allowed!"
+        assert self.system.nla_gamma == 0, "No velocity level constraints allowed!"
+        self.nx = seps[-1]
+        self.nin = self.system.nin
+        self.nout = self.system.nout
+        nu = self.nu = self.system.nu
+
+        # create coo matrices of linear system
+        self.E_coo = CooMatrix((self.nx, self.nx))
+        self.A_coo = CooMatrix((self.nx, self.nx))
+        self.B_coo = CooMatrix((self.nx, self.nin))
+        self.C_coo = CooMatrix((self.nout, self.nx))
+        self.D_coo = CooMatrix((self.nout, self.nin))
+
+        # kinematic equation
+        eye_nu = eye_array(self.system.nu)
+        self.E_coo["eye_kin", self.slices[0], self.slices[0]] = eye_nu
+        self.A_coo["eye_kin", self.slices[0], self.slices[1]] = eye_nu
+
+        # compliance
+        self.A_coo["C", self.slices[3], self.slices[3]] = self.C_inv
+
+        # prepare for coo matrices of nonlinear system
+        self.KN_h_coo = None
+        self.KN_c_coo = None
+        self.KN_g_coo = None
+        self.KN_N_coo = None
+
+        self.DG_h_coo = None
+        self.DG_c_coo = None
+
+        self.W_c_coo = None
+        self.W_g_coo = None
+
+    def solve(self, index=-1, s_val=None):
+        # TODO: check for static equilibrium
+
+        # extract values
+        t = self.sol.t[index]
+        q = self.sol.q[index]
+        la_c = self.sol.la_c[index] if self.sol.la_c is not None else None
+        la_g = self.sol.la_g[index] if self.sol.la_g is not None else None
+        la_N = self.sol.la_N[index] if self.sol.la_N is not None else None
+
+        ##################
+        # stiffness matrix
+        ##################
+        # Using h, c, g, N contributions for stiffness
+        self.KN_h_coo = self.system.KN_h(t, q, self.u, format="Coo", coo=self.KN_h_coo)
+        self.KN_c_coo = self.system.KN_c(t, q, la_c, format="Coo", coo=self.KN_c_coo)
+        self.KN_g_coo = self.system.KN_g(t, q, la_g, format="Coo", coo=self.KN_g_coo)
+        self.KN_N_coo = self.system.KN_N(t, q, la_N, format="Coo", coo=self.KN_N_coo)
+
+        ################
+        # damping matrix
+        ################
+        # Using h, c contributions for damping
+        self.DG_h_coo = self.system.DG_h(t, q, self.u, format="Coo", coo=self.DG_h_coo)
+        self.DG_c_coo = self.system.DG_c(t, q, la_c, format="Coo", coo=self.DG_c_coo)
+
+        #############
+        # mass matrix
+        #############
+        # TODO: constant mass matrix: invert in init
+        M0 = self.system.M(t, q)
+
+        ##############################
+        # generalized force directions
+        ##############################
+        self.W_g_coo = self.system.W_g(t, q, format="Coo", coo=self.W_g_coo)
+        self.W_c_coo = self.system.W_c(t, q, format="Coo", coo=self.W_c_coo)
+        # TODO: W_N
+
+        #####################
+        # assemble matrices #
+        #####################
+        # force equilibrium
+        self.E_coo["M", self.slices[1], self.slices[1]] = M0
+        self.A_coo["K_h", self.slices[1], self.slices[0]] = -self.KN_h_coo[0]
+        self.A_coo["K_c", self.slices[1], self.slices[0]] = -self.KN_c_coo[0]
+        self.A_coo["K_g", self.slices[1], self.slices[0]] = -self.KN_g_coo[0]
+        self.A_coo["K_N", self.slices[1], self.slices[0]] = -self.KN_N_coo[0]
+        self.A_coo["N_h", self.slices[1], self.slices[0]] = -self.KN_h_coo[1]
+        self.A_coo["N_c", self.slices[1], self.slices[0]] = -self.KN_c_coo[1]
+        self.A_coo["N_g", self.slices[1], self.slices[0]] = -self.KN_g_coo[1]
+        self.A_coo["N_N", self.slices[1], self.slices[0]] = -self.KN_N_coo[1]
+
+        self.A_coo["D_h", self.slices[1], self.slices[1]] = -self.DG_h_coo[0]
+        self.A_coo["D_c", self.slices[1], self.slices[1]] = -self.DG_c_coo[0]
+        self.A_coo["G_h", self.slices[1], self.slices[1]] = -self.DG_h_coo[1]
+        self.A_coo["G_c", self.slices[1], self.slices[1]] = -self.DG_c_coo[1]
+
+        self.A_coo["W_g", self.slices[1], self.slices[2]] = self.W_g_coo
+        self.A_coo["W_c", self.slices[1], self.slices[3]] = self.W_c_coo
+
+        # constraint
+        self.A_coo["W_gT", self.slices[2], self.slices[0]] = self.W_g_coo.T
+
+        # compliance
+        self.A_coo["WcT", self.slices[3], self.slices[0]] = self.W_c_coo.T
+
+        # input matrix
+        self.B_coo["W_in", self.slices[0], :] = self.system.W_in(t, q)
+
+        # output matrix
+        # TODO: put to init
+        slice_out = slice(self.slices[0].start, self.slices[1].stop)
+        # C_coo["C_out", slice_out, :] = self.system.C_out(t, q)
+        # C_coo["C_out", :, self.slices[0]] = self.system.C_out(t, q)
+        # TODO: pos and vel?
+        self.C_coo[:, self.slices[0]] = self.system.C_out(t, q)
+
+        # throuput matrix
+        # self.D_coo[...] = ...
+
+        # TODO: use coo?
+        # too sparse
+        E = self.E_coo.asformat("csc")
+        A = self.A_coo.asformat("csc")
+        B = self.B_coo.asformat("csc")
+        C = self.C_coo.asformat("csc")
+        D = self.D_coo.asformat("csc")
+
+        H = lambda s: C @ sparse_inv(E * s - A) @ B + D
+        if s_val is None:
+            return H
+
+        return np.array([H(si).todense() for si in s_val])

@@ -182,3 +182,13 @@ class nPointInteraction:
         #     cell_data["E_pot"] = [[E_pot, E_pot, E_pot]]
 
         return points, cells, point_data, cell_data
+
+    def export_blender(self, path, solution):
+        from warnings import warn
+
+        warn("nPointInteraction.export_blender not implemented")
+
+    def export_blender_modes(self, path, solution):
+        from warnings import warn
+
+        warn("nPointInteraction.export_blender_modes not implemented")

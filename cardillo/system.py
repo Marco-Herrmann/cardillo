@@ -36,6 +36,8 @@ properties.extend(["tau"])
 properties.extend(["g_N"])
 properties.extend(["gamma_F", "gamma_F_q"])
 
+properties.extend(["W_in", "C_out"])
+
 properties.extend(["assembler_callback", "step_callback"])
 
 
@@ -83,6 +85,8 @@ class System:
         self.nla_S = 0
         self.nla_N = 0
         self.nla_F = 0
+        self.nin = 0
+        self.nout = 0
 
         self.contributions = []
         self.contributions_map = {}
@@ -239,6 +243,8 @@ class System:
         self.nla_S = 0
         self.nla_N = 0
         self.nla_F = 0
+        self.nin = 0
+        self.nout = 0
         q0 = []
         u0 = []
         e_N = []
@@ -319,6 +325,17 @@ class System:
                 for i_N, i_F, force_law in contr.friction_laws:
                     if len(i_N) == 0:
                         self.constant_force_reservoir = True
+
+            # if contribution has input
+            # TODO: add also W_taus here
+            if hasattr(contr, "nin"):
+                contr.inDOF = np.arange(0, contr.nin) + self.nin
+                self.nin += contr.nin
+
+            # if contribution has output
+            if hasattr(contr, "nout"):
+                contr.outDOF = np.arange(0, contr.nout) + self.nout
+                self.nout += contr.nout
 
         self.e_N = np.array(e_N)
         self.e_F = np.array(e_F)
@@ -476,13 +493,17 @@ class System:
             coo[i, contr.uDOF, contr.qDOF] = contr.Mu_q(t, q[contr.qDOF], u[contr.uDOF])
         return coo.asformat(format)
 
-    def KN_M(self, t, q, u, u_dot, format="coo"):
-        coo_K = CooMatrix((self.nu, self.nu))
-        coo_N = CooMatrix((self.nu, self.nu))
-        for contr in self.__M_contr:
+    def KN_M(self, t, q, u, u_dot, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+
+        for i, contr in enumerate(self.__M_contr):
             K, N = contr.KN_M(t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF])
-            coo_K[contr.uDOF, contr.uDOF] = K
-            coo_N[contr.uDOF, contr.uDOF] = N
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
     def h(self, t, q, u):
@@ -505,22 +526,30 @@ class System:
             coo[i, contr.uDOF, contr.uDOF] = contr.h_u(t, q[contr.qDOF], u[contr.uDOF])
         return coo.asformat(format)
 
-    def KN_h(self, t, q, u, format="coo"):
-        coo_K = CooMatrix((self.nu, self.nu))
-        coo_N = CooMatrix((self.nu, self.nu))
-        for contr in self.__h_q_contr:
+    def KN_h(self, t, q, u, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+
+        for i, contr in enumerate(self.__h_q_contr):
             K, N = contr.KN_h(t, q[contr.qDOF], u[contr.uDOF])
-            coo_K[contr.uDOF, contr.uDOF] = K
-            coo_N[contr.uDOF, contr.uDOF] = N
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
-    def DG_h(self, t, q, u, format="coo"):
-        coo_D = CooMatrix((self.nu, self.nu))
-        coo_G = CooMatrix((self.nu, self.nu))
-        for contr in self.__h_q_contr:
+    def DG_h(self, t, q, u, format="coo", coo=None):
+        if coo is None:
+            coo_D = CooMatrix((self.nu, self.nu))
+            coo_G = CooMatrix((self.nu, self.nu))
+        else:
+            coo_D, coo_G = coo
+
+        for i, contr in enumerate(self.__h_u_contr):
             D, G = contr.DG_h(t, q[contr.qDOF], u[contr.uDOF])
-            coo_D[contr.uDOF, contr.uDOF] = D
-            coo_G[contr.uDOF, contr.uDOF] = G
+            coo_D[i, contr.uDOF, contr.uDOF] = D
+            coo_G[i, contr.uDOF, contr.uDOF] = G
         return coo_D.asformat(format), coo_G.asformat(format)
 
     ############
@@ -577,13 +606,16 @@ class System:
             )
         return coo.asformat(format)
 
-    def KN_c(self, t, q, la_c, format="coo"):
-        coo_K = CooMatrix((self.nu, self.nu))
-        coo_N = CooMatrix((self.nu, self.nu))
-        for contr in self.__c_contr:
+    def KN_c(self, t, q, la_c, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+        for i, contr in enumerate(self.__c_contr):
             K, N = contr.KN_c(t, q[contr.qDOF], la_c[contr.la_cDOF])
-            coo_K[contr.uDOF, contr.uDOF] = K
-            coo_N[contr.uDOF, contr.uDOF] = N
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
     ###########
@@ -685,13 +717,16 @@ class System:
             )
         return coo.asformat(format)
 
-    def KN_g(self, t, q, la_g, format="coo"):
-        coo_K = CooMatrix((self.nu, self.nu))
-        coo_N = CooMatrix((self.nu, self.nu))
-        for contr in self.__g_contr:
+    def KN_g(self, t, q, la_g, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+        for i, contr in enumerate(self.__g_contr):
             K, N = contr.KN_g(t, q[contr.qDOF], la_g[contr.la_gDOF])
-            coo_K[contr.uDOF, contr.uDOF] = K
-            coo_N[contr.uDOF, contr.uDOF] = N
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
     def g_dot(self, t, q, u):
@@ -987,23 +1022,53 @@ class System:
             )
         return coo.asformat(format)
 
+    ################
+    # input output #
+    ################
+    def W_in(self, t, q, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nu, self.nin))
+        for i, contr in enumerate(self.__W_in_contr):
+            coo[i, contr.uDOF, contr.inDOF] = contr.W_in(t, q[contr.qDOF])
+        return coo.asformat(format)
+
+    def C_out(self, t, q, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nout, self.nu))
+        for i, contr in enumerate(self.__C_out_contr):
+            coo[i, contr.outDOF, contr.uDOF] = contr.C_out(t, q[contr.qDOF])
+        return coo.asformat(format)
+
     #########################
     # general linearization #
     #########################
     def KN_tau(self, t, q, u, format="coo"): ...
 
     def KN_gamma(self, t, q, la_gamma, format="coo"): ...
-    def KN_N(self, t, q, la_N, format="coo"):
+    def KN_N(self, t, q, la_N, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+
         # assert self.nla_N == 0
         if self.nla_N != 0:
             warnings.warn("KN_N is not taken into account!")
-        return (
-            CooMatrix((self.nu, self.nu)).asformat(format),
-            CooMatrix((self.nu, self.nu)).asformat(format),
-        )
+        return coo_K.asformat(format), coo_N.asformat(format)
 
     def KN_F(self, t, q, la_F, format="coo"): ...
 
-    def DG_c(self, t, q, u, format="coo"): ...
+    def DG_c(self, t, q, u, format="coo", coo=None):
+        if coo is None:
+            coo_D = CooMatrix((self.nu, self.nu))
+            coo_G = CooMatrix((self.nu, self.nu))
+        else:
+            coo_D, coo_G = coo
+
+        # assert self.nla_c == 0
+        if self.nla_c != 0:
+            warnings.warn("KN_c is not taken into account!")
+        return coo_D.asformat(format), coo_G.asformat(format)
 
     def DG_tau(self, t, q, u, format="coo"): ...
