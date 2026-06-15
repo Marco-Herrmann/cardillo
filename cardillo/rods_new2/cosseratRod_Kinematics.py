@@ -1,0 +1,163 @@
+from abc import ABC, abstractmethod
+import numpy as np
+from cachetools import cachedmethod, LRUCache
+from cachetools.keys import hashkey
+from scipy.sparse import (
+    block_diag,
+    bsr_array,
+    csr_array,
+    eye_array,
+)
+from scipy.sparse.linalg import spsolve
+from warnings import warn
+
+from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
+from cardillo.math.approx_fprime import approx_fprime
+from cardillo.math.rotations import (
+    Log_SO3_quat,
+    Exp_SO3_quat,
+    Exp_SO3_quat_P,
+    T_SO3_quat,
+    T_SO3_quat_P,
+    T_SO3_inv_quat,
+    T_SO3_inv_quat_P,
+    Log_SO3_R9,
+    Exp_SO3_R9,
+    Exp_SO3_R9_R9,
+    T_SO3_R9,
+    T_SO3_R9_R9,
+    T_SO3_inv_R9,
+    T_SO3_inv_R9_R9,
+)
+from cardillo.utility.coo_matrix import CooMatrix
+from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
+
+zeros3 = np.zeros(3, dtype=float)
+eye3 = np.eye(3, dtype=float)
+
+
+class Rod_Kinematics(ABC):
+    def r_OP(self, t, qi, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        _eval = self.kinematics._eval(point_dict, qi, 0)
+        if B_r_CP @ B_r_CP == 0.0:
+            return _eval[0]
+
+        return _eval[0] + _eval[1] @ B_r_CP
+
+    def r_OP_q(self, t, qi, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        _eval, _deval = self.kinematics._eval(point_dict, qi, 1)
+        if B_r_CP @ B_r_CP == 0.0:
+            return _deval[0]
+
+        r_CP_q = np.einsum("ijk,j->ik", _deval[1], B_r_CP)
+        return _deval[0] + r_CP_q
+
+    def A_IB(self, t, qi, xi):
+        point_dict = self.get_interaction_point(xi)
+        _eval = self.kinematics._eval(point_dict, qi, 0)
+        return _eval[1]
+
+    def A_IB_q(self, t, qi, xi):
+        point_dict = self.get_interaction_point(xi)
+        _eval, _deval = self.kinematics._eval(point_dict, qi, 1)
+        return _deval[1]
+
+    # TODO: this belongs to CosseratRod_Kinematics
+    @classmethod
+    def straight_configuration(cls, nelement, L, r_OP0=zeros3, A_IB0=eye3):
+        if cls._parametrization == "Quaternion":
+            P = Log_SO3_quat(A_IB0)
+            nq_node = 7
+        else:
+            P = Log_SO3_R9(A_IB0)
+            nq_node = 9
+
+        mesh = cls._mesh_kin(None, nelement)
+        nnodes = mesh.nnodes
+
+        r_OP = np.zeros((3, nnodes))
+        r_OP[0] = np.linspace(0, L, num=nnodes)
+        rP = np.zeros((nnodes, nq_node), dtype=float)
+        for i in range(nnodes):
+            rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
+            rP[i, 3:] = P
+
+        if cls._IGA:
+            A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+            rP = spsolve(A, rP)
+        return rP.reshape(-1)
+
+
+class CosseratRod_Kinematics(ABC):
+    def __init__(self, parent, mesh):
+        self.parent = parent
+        self.mesh = mesh
+
+    @abstractmethod
+    def _eval(point_dict, q, deval=False):
+        """if deval==0: returns (r_OP, A_IB),
+        if deval==1: returns (r_OP, A_IB), (r_OP_q, A_IB_q),
+        if deval==2: returns (r_OP, A_IB), (r_OP_q, A_IB_q), (r_OP_qq, A_IB_qq)"""
+        ...
+
+
+class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
+    def __init__(self, parent, mesh, parametrization):
+        super().__init__(parent, mesh)
+        self.parametrization = parametrization
+
+        assert parametrization in ["Quaternion", "R12"]
+        if parametrization == "Quaternion":
+            self.nq_node = 7
+
+            self._A_IB = Exp_SO3_quat
+            self._A_IB_P = Exp_SO3_quat_P
+            self._T_IB = T_SO3_quat
+            self._T_IB_P = T_SO3_quat_P
+
+        else:
+            self.nq_node = 12
+
+            self._A_IB = Exp_SO3_R9
+            self._A_IB_P = Exp_SO3_R9_R9
+
+    def _eval(self, point_dict, qi, deval=0):
+        N = point_dict["N"]
+        qnodes = qi.reshape(point_dict["nnodes"], -1)
+        rP = N @ qnodes
+        _eval = (rP[:3], self._A_IB(rP[3:]))
+        if deval == 0:
+            return _eval
+
+        A_IB_P = self._A_IB_P(rP[3:])
+        A_IB_q = np.einsum("ijk,kl->ijl", A_IB_P, point_dict["Nq"][3:])
+
+        _deval = (point_dict["Nq"][:3], A_IB_q)
+        return _eval, _deval
+
+    def _eval_vec(self, N, q):
+        qnodes = q.reshape(self.parent.nnodes, -1)
+        rP = N @ qnodes
+        return rP[:, :3], self._A_IB(rP[:, 3:])
+
+    def _eval_internal_vec(self, N, N_xi, q, deval=0):
+        qbar_nodes = q.reshape(self.parent.nnodes, -1)
+        P_IB = N @ qbar_nodes[:, 3:]
+        qbar_xi = N_xi @ qbar_nodes
+
+        A_IB = self._A_IB(P_IB)
+        T = self._T_IB(P_IB)
+
+        B_gamma_bar = np.einsum("ijk,ij->ik", A_IB, qbar_xi[:, :3])
+        B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
+        if deval == 0:
+            return A_IB, B_gamma_bar, B_kappa_bar
+
+        # using my magic property
+        B_gamma_bar_P = np.cross(B_gamma_bar[:, :, None], T, axisa=1, axisb=1, axisc=1)
+
+        T_IB_P = self._T_IB_P(P_IB)
+        B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
+        return (A_IB, B_gamma_bar, B_kappa_bar), (T, B_gamma_bar_P, B_kappa_bar_P)
