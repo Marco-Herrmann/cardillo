@@ -72,7 +72,7 @@ class Rod_Kinematics(ABC):
             nq_node = 7
         else:
             P = Log_SO3_R9(A_IB0)
-            nq_node = 9
+            nq_node = 12
 
         mesh = cls._mesh_kin(None, nelement)
         nnodes = mesh.nnodes
@@ -83,6 +83,40 @@ class Rod_Kinematics(ABC):
         for i in range(nnodes):
             rP[i, :3] = r_OP0 + A_IB0 @ r_OP[:, i]
             rP[i, 3:] = P
+
+        if cls._IGA:
+            A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+            rP = spsolve(A, rP)
+        return rP.reshape(-1)
+
+    @classmethod
+    def pose_configuration(cls, nelement, r_OP, A_IB, xi1=1, r_OP0=zeros3, A_IB0=eye3):
+        assert callable(r_OP), "r_OP must be callable!"
+        assert callable(A_IB), "A_IB must be callable!"
+
+        if cls._parametrization == "Quaternion":
+            Log_fct = Log_SO3_quat
+            nq_node = 7
+        else:
+            Log_fct = Log_SO3_R9
+            nq_node = 12
+
+        mesh = cls._mesh_kin(None, nelement)
+        nnodes = mesh.nnodes
+        xis = np.linspace(0, xi1, nnodes)
+
+        # nodal positions and unit quaternions
+        rP = np.zeros((nnodes, nq_node))
+        for i, xii in enumerate(xis):
+            rP[i, :3] = r_OP0 + A_IB0 @ r_OP(xii)
+            A_IBi = A_IB0 @ A_IB(xii)
+            rP[i, 3:] = Log_fct(A_IBi)
+
+        # check for the right quaternion hemisphere
+        for i in range(nnodes - 1):
+            inner = rP[i, 3:] @ rP[i + 1, 3:]
+            if inner < 0:
+                rP[i + 1, 3:] *= -1
 
         if cls._IGA:
             A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
@@ -122,6 +156,14 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
 
             self._A_IB = Exp_SO3_R9
             self._A_IB_P = Exp_SO3_R9_R9
+            self._T_IB = T_SO3_R9
+            self._T_IB_P = T_SO3_R9_R9
+
+        # export and visualization
+        self.parent.nodes = self.nodes
+        self.parent.nodalFrames = self.nodalFrames
+        self.parent.centerline = self.centerline
+        self.parent.frames = self.frames
 
     def _eval(self, point_dict, qi, deval=0):
         N = point_dict["N"]
@@ -161,3 +203,42 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         T_IB_P = self._T_IB_P(P_IB)
         B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
         return (A_IB, B_gamma_bar, B_kappa_bar), (T, B_gamma_bar_P, B_kappa_bar_P)
+
+    # TODO: which class/where to generalize?
+    ############################
+    # export of centerline nodes
+    ############################
+    def nodes(self, qsystem):
+        """Returns nodal position coordinates"""
+        qbody = qsystem[self.parent.qDOF]
+        qnodesT = qbody.reshape(-1, self.parent.nnodes, order="F")
+        return qnodesT[:3]
+
+    def nodalFrames(self, qsystem, elementwise=False):
+        """Returns nodal positions and nodal directors.
+        If elementwise==True : returned arrays are each of shape [nnodes, 3]
+        If elementwise==False : returned arrays are each of shape [nelements, nnodes_per_element, 3]
+        """
+        qbody = qsystem[self.qDOF]
+        if elementwise:
+            raise NotImplementedError
+        else:
+            qnodes = qbody.reshape(self.nnodes, -1)
+            A_IB = self._A_IB(qnodes[:, 3:])
+            return qnodes[:, :3], A_IB[:, :, 0], A_IB[:, :, 1], A_IB[:, :, 2]
+
+    def centerline(self, q, num=100):
+        xis = np.linspace(0, 1, num)
+        els = self.parent.element_number(xis)
+        N = self.parent.N(xis, els)[0]
+        q_body = q[self.parent.qDOF]
+        q_nodes = q_body.reshape(self.parent.nnodes, -1)
+        r_OC = N @ q_nodes[:, :3]
+        return r_OC.T
+
+    def frames(self, q, num=10):
+        xis = np.linspace(0, 1, num)
+        els = self.parent.element_number(xis)
+        N = self.parent.N(xis, els)[0]
+        r, A_IB = self._eval_vec(N, q[self.parent.qDOF])
+        return r.T, A_IB[:, :, 0].T, A_IB[:, :, 1].T, A_IB[:, :, 2].T

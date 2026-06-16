@@ -26,7 +26,7 @@ from cardillo.rods_new2.cosseratRod_Kinematics import (
     Rod_Kinematics,
     CosseratRod_Quaternion_R12,
 )
-from cardillo.rods_new2.cosseratRod_Velocity import Rod_Velocity, CosseratRod_PG_IB
+from cardillo.rods_new2.cosseratRod_Velocity import CosseratRod_PG_IB
 from cardillo.rods_new2.cosseratRod_Interaction import CosseratRod_Interaction
 from cardillo.rods_new2.cosseratRod_q_dot import (
     CosseratRod_rP_dot_from_vO_IB,
@@ -482,6 +482,9 @@ def make_CosseratRod(
     assert (
         inter_g_DB.size == 0
     ), f"the index {inter_g_DB} is both constrained and displacement based"
+    idx_compliance = np.setdiff1d(
+        np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
+    )
 
     # quadrature
     if quadrature_int == None:
@@ -571,9 +574,7 @@ def make_CosseratRod(
 
         idx_g = idx_constraints
         idx_db = idx_displacement_based
-        idx_c = np.setdiff1d(
-            np.arange(6), np.union1d(idx_constraints, idx_displacement_based)
-        )
+        idx_c = idx_compliance
 
     return _CosseratRod
 

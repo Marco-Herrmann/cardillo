@@ -65,7 +65,42 @@ class CosseratRod_kin_constraints(ABC):
             self._T_IB_inv = T_SO3_inv_R9
             self._T_IB_inv_P = T_SO3_inv_R9_R9(None)  # evaluate as it is constant
 
-            # TODO: implement these constraints
+            # rows/cols for g_q
+            rows = []
+            cols = []
+
+            for inode in range(self.nnodes):
+                DOF0 = 12 * inode
+                d1DOF = DOF0 + np.arange(3) + 3
+                d2DOF = DOF0 + np.arange(3) + 6
+                d3DOF = DOF0 + np.arange(3) + 9
+                # g0 = d1@ d1 - 1
+                rows.extend([6 * inode + 0] * 3)
+                cols.extend(d1DOF)
+
+                # g1 = d2@d2 - 1
+                rows.extend([6 * inode + 1] * 3)
+                cols.extend(d2DOF)
+
+                # g2 = d3@d3 - 1
+                rows.extend([6 * inode + 2] * 3)
+                cols.extend(d3DOF)
+
+                # g3 = d1@d2
+                rows.extend([6 * inode + 3] * 6)
+                cols.extend([*d1DOF, *d2DOF])
+
+                # g4 = d2@d3
+                rows.extend([6 * inode + 4] * 6)
+                cols.extend([*d2DOF, *d3DOF])
+
+                # g5 = d3@d1
+                rows.extend([6 * inode + 5] * 6)
+                cols.extend([*d1DOF, *d3DOF])
+
+            self._g_S_q_row = np.asarray(rows)
+            self._g_S_q_col = np.asarray(cols)
+
             self.g = self.g_R9
             self.g_q = self.g_q_R9
 
@@ -89,8 +124,56 @@ class CosseratRod_kin_constraints(ABC):
         coo.col = self._g_S_q_col
         return coo
 
-    def g_R9(self, t, q): ...
-    def g_q_R9(self, t, q): ...
+    def g_R9(self, t, q):
+        qnodes = q.reshape(self.nnodes, -1)
+        d1 = qnodes[:, 3:6]
+        d2 = qnodes[:, 6:9]
+        d3 = qnodes[:, 9:12]
+
+        gnodes = np.column_stack(
+            [
+                np.sum(d1 * d1, axis=1) - 1.0,
+                np.sum(d2 * d2, axis=1) - 1.0,
+                np.sum(d3 * d3, axis=1) - 1.0,
+                np.sum(d1 * d2, axis=1),
+                np.sum(d2 * d3, axis=1),
+                np.sum(d3 * d1, axis=1),
+            ]
+        )
+
+        g = gnodes.reshape(-1)
+        return g
+
+    def g_q_R9(self, t, q):
+        qnodes = q.reshape(self.nnodes, -1)
+        d1 = qnodes[:, 3:6]
+        d2 = qnodes[:, 6:9]
+        d3 = qnodes[:, 9:12]
+        data = np.concatenate(
+            [
+                2 * d1,
+                2 * d2,
+                2 * d3,
+                np.concatenate([d2, d1], axis=1),
+                np.concatenate([d3, d2], axis=1),
+                np.concatenate([d3, d1], axis=1),
+            ],
+            axis=1,
+        )
+
+        coo = CooMatrix((self.parent.nla_S, self.parent.nq))
+        coo.data = data.ravel()
+
+        coo.row = self._g_S_q_row
+        coo.col = self._g_S_q_col
+        return coo
+
+        from cardillo.math.approx_fprime import approx_fprime
+
+        g_q_num = approx_fprime(q.copy(), lambda q_: self.g_R9(t, q_))
+        diff = coo.toarray() - g_q_num
+        print(np.max(np.abs(diff)))
+        return g_q_num
 
 
 class CosseratRod_kin_trivial(CosseratRod_kin_constraints):
