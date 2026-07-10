@@ -86,6 +86,10 @@ class CosseratRod_Internal:
         self._nDB = len(self.idx_db)
         self.include_f_pot = self._nDB > 0
 
+        # eval functions
+        self.parent.eval_stresses = self.eval_stresses
+        self.parent.eval_strains = self.eval_strains
+
     def set_material_model(self, material_model):
         self.material_model = material_model
         self.material_model_qp = self.material_model.prepare(self.qp_int_vec)
@@ -163,6 +167,19 @@ class CosseratRod_Internal:
         sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
         return _eval, sigma_qp
 
+    def assembler_callback(self):
+        if self._nla_c > 0:
+            self._c_la_c_coo()
+
+    def _c_la_c_coo(self):
+        C_qp = self.material_model.C_inv(self.material_model_qp)
+        c_la_c = self.c_la_c_SAB.add_blocks(
+            C_qp[None, :, self.idx_c[:, None], self.idx_c]
+        )
+
+        self.c_la_c = c_la_c
+        self.c_la_c_inv = spsolve(c_la_c.tocsc(), eye_array(self._nla_c, format="csc"))
+
     ############################
     # total energies and momenta
     ############################
@@ -223,8 +240,7 @@ class CosseratRod_Internal:
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
 
-
-class CosseratRod_internal_PG_IB(CosseratRod_Internal):
+    # compliance length (dual to compliance force)
     def l_sigma(self, q):
         _, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q
@@ -243,7 +259,7 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
     def l_sigma_q(self, q):
         # compute l_sigma_q
         _eval, _deval = self.parent.kinematics._eval_internal_vec(
-            self.N_int, self.N_xi_int, q, deval=True
+            self.N_int, self.N_xi_int, q, deval=1
         )
         A_IB = _eval[0]
         T, B_gamma_bar_P, B_kappa_bar_P = _deval
@@ -266,6 +282,100 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
 
         return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
+    ########################
+    # evaluation functions #
+    ########################
+    def _eval_logic(self, n_per_element, n_ges):
+        assert (n_per_element is not None) != (
+            n_ges is not None
+        ), "Either n_per_element or n_ges must be specified (not both)"
+
+        if n_ges is not None:
+            xis = np.linspace(0, 1, n_ges)
+            els = self.parent.element_number(xis)
+
+        else:
+            xis = []
+            els = []
+            for el in range(self.parent.nelement):
+                xi0, xi1 = self.parent.element_interval[el]
+                xis.append(np.linspace(xi0, xi1, n_per_element))
+                els.append(np.tile(el, n_per_element))
+            xis = np.concatenate(xis)
+            els = np.concatenate(els)
+
+        return xis, els
+
+    def eval_stresses(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
+
+        # TODO: are there problems, if everything is DB?
+        # stresses due to compliance and constraints
+        Nc = self.parent.Nc(xis, els)
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if self._nla_c > 0:
+            la_sigma_nodes[:, self.idx_c] = la_c[self.parent.la_cDOF].reshape(
+                self.nnodes_sigma, -1
+            )
+        if self._nla_g > 0:
+            la_sigma_nodes[:, self.idx_g] = la_g[self.parent.la_gDOF].reshape(
+                self.nnodes_sigma, -1
+            )
+        sigma = Nc @ la_sigma_nodes
+
+        # stresses due to displacement based
+        if self._nDB > 0:
+            N, N_xi = self.parent.N(xis, els)
+            # reference strains
+            _, B_gamma0_bar, B_kappa0_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, self.parent.Q
+            )
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            # current strains
+            _, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, q[self.parent.qDOF]
+            )
+
+            epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
+            epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
+            prepare = self.material_model.prepare(xis)
+            sigma_db = self.material_model.sigma(epsilon, epsilon0, prepare)
+            sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
+
+        return xis, sigma[:, :3], sigma[:, 3:]
+
+    def eval_strains(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
+
+        epsilon = np.zeros((len(xis), 6))
+        if self._nDB > 0:
+            N, N_xi = self.N(xis, els)
+            # reference strains
+            _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            # current strains
+            _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
+
+            epsilon[:, :3] = (B_gamma_bar - B_gamma0_bar) / J[:, None]
+            epsilon[:, 3:] = (B_kappa_bar - B_kappa0_bar) / J[:, None]
+
+        # strains from compliance
+        if self._nla_c > 0:
+            Nc = self.Nc(xis, els)
+            la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
+            la_sigma = Nc @ la_c_nodes
+
+            prepare = self.material_model.prepare(xis)
+            C_inv = self.material_model.C_inv(prepare)
+            epsilon[:, self.idx_c] = np.einsum("ijk,ik->ij", C_inv, la_sigma)
+
+        # strains from constraints are always 0
+        epsilon[:, self.idx_g] = 0.0
+
+        return xis, epsilon[:, :3], epsilon[:, 3:]
+
+
+class CosseratRod_internal_PG_IB(CosseratRod_Internal):
     def W_sigma(self, q):
         # compute W_sigma
         A_IB, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
@@ -367,19 +477,6 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         # to be multiplied with N <-> N
         K_qp[0, :, 3:, 3:] = phi__phi
         return self.K_sigma_SAB.add_blocks(K_qp)
-
-    def assembler_callback(self):
-        if self._nla_c > 0:
-            self._c_la_c_coo()
-
-    def _c_la_c_coo(self):
-        C_qp = self.material_model.C_inv(self.material_model_qp)
-        c_la_c = self.c_la_c_SAB.add_blocks(
-            C_qp[None, :, self.idx_c[:, None], self.idx_c]
-        )
-
-        self.c_la_c = c_la_c
-        self.c_la_c_inv = spsolve(c_la_c.tocsc(), eye_array(self._nla_c, format="csc"))
 
     def f_pot(self, t, q, u):
         _eval, sigma_qp = self.sigma_qp_db(t, q, u)
@@ -493,3 +590,57 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         ) + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
 
         return self.h_pot_q_SAB.add_blocks(f_pot_qp_qbar)
+
+
+class CosseratRod_internal_BG(CosseratRod_Internal):
+    def W_sigma(self, q):
+        W_c, W_g = self.l_sigma_q(q)
+        return (None if W_c is None else -W_c.T, None if W_g is None else -W_g.T)
+
+    def Wla_sigma_q(self, q, la_c, la_g):
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        if la_c is not None:
+            la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
+        if la_g is not None:
+            la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
+        sigma_qp = self.Nc_int @ la_sigma_nodes
+
+        _eval, _deval = self.parent.kinematics._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=True
+        )
+        A_IB = _eval[0]
+        T, B_gamma_bar_P, B_kappa_bar_P = _deval
+        I_n_P = np.einsum(
+            "ijk,ikl->ijl",
+            A_IB,
+            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
+        )
+
+        # TODO: make sparse?
+        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
+        Wla_sigma_qp_qbar = np.zeros(
+            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
+        )
+        # to be multiplied with N_xi <-> N
+        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
+
+        # to be multiplied with N <-> N_xi
+        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
+            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
+        )  # A_IB.T in gamma -> axisb=2
+        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
+            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
+        )
+
+        # to be multiplied with N <-> N
+        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
+            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
+            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
+        )
+        return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
+
+    def K_sigma(self, q, la_c, la_g): ...
+
+    def f_pot(self, t, q, u): ...
+
+    def f_pot_q(self, t, q, u): ...

@@ -12,6 +12,7 @@ from cardillo.rods_new import (
     CrossSectionInertias as CrossSectionInertias_new,
     make_CosseratRod as make_CosseratRod_new,
 )
+from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 from cardillo import System
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.math.rotations import Exp_SO3_quat
@@ -67,8 +68,8 @@ def test_implementation(n_test=1_000):
     nelement = 4
     polynomial_degree = 2
     constraints = [0, 1, 5]
-    constraints = [0, 1]
-    constraints = []
+    # constraints = [0, 1]
+    # constraints = []
 
     nquadrature_dyn = int(np.ceil((polynomial_degree + 1) ** 2 / 2))
 
@@ -185,8 +186,8 @@ def test_implementation(n_test=1_000):
         ["linear_momentum", ("t", "q", "u"), (), False],
         ["angular_momentum", ("t", "q", "u"), (), False],
         # linearlization
-        ["KN_g", ("t", "q", "la_g"), (perm_c2n_u[:, None], perm_c2n_u), True],
-        ["KN_c", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_u), True],
+        # ["KN_g", ("t", "q", "la_g"), (perm_c2n_u[:, None], perm_c2n_u), True], # wrong implementation in old rod
+        # ["KN_c", ("t", "q", "la_c"), (perm_c2n_u[:, None], perm_c2n_u), True], # wrong implementation in old rod
     ]
     interactions = [
         ["r_OP", ("t", "q", "B_r_CP")],
@@ -365,6 +366,9 @@ def compare_performance(n_test=1_000):
 
     mixed = False
     constraints = [0, 1, 5]
+    # constraints = [0, 1, 2, 3, 4,5]
+    # constraints = []
+    # constraints = None
     Rod_old = make_CosseratRod(
         interpolation="Quaternion",
         mixed=mixed,

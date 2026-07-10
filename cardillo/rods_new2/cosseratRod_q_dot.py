@@ -45,6 +45,7 @@ class CosseratRod_kin_constraints(ABC):
         assert parametrization in ["Quaternion", "R12"]
         if parametrization == "Quaternion":
             self.nq_node = 7
+            self.nla_g = self.nnodes
 
             self._T_IB_inv = T_SO3_inv_quat
             self._T_IB_inv_P = T_SO3_inv_quat_P(None)  # evaluate as it is constant
@@ -61,6 +62,7 @@ class CosseratRod_kin_constraints(ABC):
 
         else:
             self.nq_node = 12
+            self.nla_g = self.nnodes * 6
 
             self._T_IB_inv = T_SO3_inv_R9
             self._T_IB_inv_P = T_SO3_inv_R9_R9(None)  # evaluate as it is constant
@@ -118,7 +120,7 @@ class CosseratRod_kin_constraints(ABC):
 
     def g_q_quat(self, t, q):
         qnodes = q.reshape(self.nnodes, -1)
-        coo = CooMatrix((self.parent.nla_S, self.parent.nq))
+        coo = CooMatrix((self.nla_g, self.parent.nq))
         coo.data = 2 * qnodes[:, 3:].reshape(-1)
         coo.row = self._g_S_q_row
         coo.col = self._g_S_q_col
@@ -161,19 +163,27 @@ class CosseratRod_kin_constraints(ABC):
             axis=1,
         )
 
-        coo = CooMatrix((self.parent.nla_S, self.parent.nq))
+        coo = CooMatrix((self.nla_g, self.parent.nq))
         coo.data = data.ravel()
 
         coo.row = self._g_S_q_row
         coo.col = self._g_S_q_col
         return coo
 
+    def W_g(self, t, q):
+        return self.g_q(t, q).T
+
+    def Wla_g_q(self, t, q, la_g):
+        # TODO: constant!
         from cardillo.math.approx_fprime import approx_fprime
 
-        g_q_num = approx_fprime(q.copy(), lambda q_: self.g_R9(t, q_))
-        diff = coo.toarray() - g_q_num
-        print(np.max(np.abs(diff)))
-        return g_q_num
+        Wla_g_q_num = approx_fprime(q, lambda q_: self.W_g(t, q_).tocsr() @ la_g)
+        return Wla_g_q_num
+
+    def g_dot(self, t, q, u): ...
+    def g_dot_q(self, t, q, u): ...
+    def g_dot_u(self, t, q): ...
+    def g_ddot(self, t, q, u, u_dot): ...
 
 
 class CosseratRod_kin_trivial(CosseratRod_kin_constraints):

@@ -22,22 +22,29 @@ from cardillo.rods._base_export import RodExportBase
 
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
+from cardillo.rods_new2.cosseratRod_Blender import RodBlenderExport
 from cardillo.rods_new2.cosseratRod_Kinematics import (
     Rod_Kinematics,
     CosseratRod_Quaternion_R12,
 )
-from cardillo.rods_new2.cosseratRod_Velocity import CosseratRod_PG_IB
+from cardillo.rods_new2.cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG
 from cardillo.rods_new2.cosseratRod_Interaction import CosseratRod_Interaction
 from cardillo.rods_new2.cosseratRod_q_dot import (
     CosseratRod_rP_dot_from_vO_IB,
     CosseratRod_kin_trivial,
 )
 
-from cardillo.rods_new2.cosseratRod_Internal import CosseratRod_internal_PG_IB
-from cardillo.rods_new2.cosseratRod_Dynamics import CosseratRod_dynamics_PG_IB
+from cardillo.rods_new2.cosseratRod_Internal import (
+    CosseratRod_internal_PG_IB,
+    CosseratRod_internal_BG,
+)
+from cardillo.rods_new2.cosseratRod_Dynamics import (
+    CosseratRod_dynamics_PG_IB,
+    CosseratRod_dynamics_BG,
+)
 
 
-class CosseratRod:
+class CosseratRod(RodBlenderExport):
     def __init__(
         self,
         cross_section,
@@ -403,6 +410,7 @@ def make_CosseratRod(
     quadrature_dyn=None,
     quadrature_ext=None,
     parametrization=None,
+    projection=None,
 ):
     """Factory for Petrov-Galerkin Cosserat rod classes.
 
@@ -432,6 +440,12 @@ def make_CosseratRod(
 
     parametrization : str
         Choice of parametrization and interpolation
+
+    projection : str
+        Choice of projection:
+            "PG"  Petrov-Galerkin,
+            "BG"  Bubnov-Galerkin,
+            "BGD" Bubnov-Galerkin Discrete Nullspace Projection
 
 
     Strain component mapping
@@ -546,16 +560,38 @@ def make_CosseratRod(
             nelement, polynomial_degree - 1, np.max(continuity - 1, -1), 0
         )
 
-    # TODO: select these properly!
+    # classes for virtual work contributions
+    projection = "PG" if projection is None else projection
     Kinematics = CosseratRod_Quaternion_R12
-    Velocity = CosseratRod_PG_IB
-    Kin_eq = CosseratRod_rP_dot_from_vO_IB
-    Internal = CosseratRod_internal_PG_IB
-    Dynamics = CosseratRod_dynamics_PG_IB
+    assert projection in [
+        "PG",
+        "BG",
+        "BGD",
+    ], f"projection {projection} is not supported!"
+    if projection == "PG":
+        Velocity = CosseratRod_PG_IB
+        Kin_eq = CosseratRod_rP_dot_from_vO_IB
+        Internal = CosseratRod_internal_PG_IB
+        Dynamics = CosseratRod_dynamics_PG_IB
+        projection_flag = True
 
-    class _CosseratRod(
-        CosseratRod, Rod_Kinematics, Rod_Velocity, CosseratRod_Interaction
-    ):
+    elif projection == "BG":
+        # TODO: they get very different if not Quaternion/R12 interpolation is used
+        Velocity = CosseratRod_BG
+        Kin_eq = CosseratRod_kin_trivial
+        Internal = CosseratRod_internal_BG
+        Dynamics = CosseratRod_dynamics_BG
+        projection_flag = False
+
+    elif projection == "DBG":
+        # TODO: they get very different if not Quaternion/R12 interpolation is used
+        Velocity = CosseratRod_DBG
+        Kin_eq = CosseratRod_rP_dot_from_vO_IB
+        Internal = CosseratRod_internal_DBG
+        Dynamics = CosseratRod_dynamics_DBG
+        projection_flag = True
+
+    class _CosseratRod(CosseratRod, Rod_Kinematics, CosseratRod_Interaction):
         _polynomial_degree = polynomial_degree
         _mesh_kin = mesh_kin
         _mesh_cg = mesh_cg
@@ -565,7 +601,7 @@ def make_CosseratRod(
         _Internal = Internal
         _Dynamics = Dynamics
         _parametrization = parametrization
-        _projection = True
+        _projection = projection_flag
         _IGA = not (continuity is None)
 
         _quadrature_int = quadrature_int

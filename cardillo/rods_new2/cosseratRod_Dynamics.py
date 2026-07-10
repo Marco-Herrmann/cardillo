@@ -166,3 +166,6 @@ class CosseratRod_dynamics_PG_IB(CosseratRod_Inertia):
         ) + ax2skew(B_L_qp)
 
         return self.M_h_u_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
+
+
+class CosseratRod_dynamics_BG(CosseratRod_Inertia): ...

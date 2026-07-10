@@ -29,6 +29,7 @@ from cardillo.math.rotations import (
     T_SO3_inv_R9,
     T_SO3_inv_R9_R9,
 )
+from cardillo.utility.check_time_derivatives import check_time_derivatives
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
@@ -123,6 +124,34 @@ class Rod_Kinematics(ABC):
             rP = spsolve(A, rP)
         return rP.reshape(-1)
 
+    @classmethod
+    def serret_frenet_configuration(
+        cls,
+        nelement,
+        r_OP,
+        r_OP_xi,
+        r_OP_xixi,
+        xi1,
+        alpha=0.0,
+        r_OP0=zeros3,
+        A_IB0=eye3,
+    ):
+        """Compute generalized position coordinates for a pre-curved rod along curve r_OP. The cross-section orientations are based on the Serret-Frenet equations and afterwards rotated by alpha."""
+        r_OP, r_OP_xi, r_OP_xixi = check_time_derivatives(r_OP, r_OP_xi, r_OP_xixi)
+        alpha, _, _ = check_time_derivatives(alpha, None, None)
+
+        def A_IB(xi):
+            r_xi = r_OP_xi(xi)
+            r_xixi = r_OP_xixi(xi)
+            ex = r_xi / np.linalg.norm(r_xi)
+            ey = r_xixi - ex * (ex @ r_xixi)
+            ey = ey / np.linalg.norm(ey)
+            return np.vstack([ex, ey, np.cross(ex, ey)]).T
+
+        return cls.pose_configuration(
+            nelement, r_OP, A_IB, xi1, r_OP0=r_OP0, A_IB0=A_IB0
+        )
+
 
 class CosseratRod_Kinematics(ABC):
     def __init__(self, parent, mesh):
@@ -194,15 +223,22 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
 
         B_gamma_bar = np.einsum("ijk,ij->ik", A_IB, qbar_xi[:, :3])
         B_kappa_bar = np.einsum("ijk,ik->ij", T, qbar_xi[:, 3:])
+        _eval = (A_IB, B_gamma_bar, B_kappa_bar)
         if deval == 0:
-            return A_IB, B_gamma_bar, B_kappa_bar
+            return _eval
 
         # using my magic property
         B_gamma_bar_P = np.cross(B_gamma_bar[:, :, None], T, axisa=1, axisb=1, axisc=1)
 
         T_IB_P = self._T_IB_P(P_IB)
         B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
-        return (A_IB, B_gamma_bar, B_kappa_bar), (T, B_gamma_bar_P, B_kappa_bar_P)
+        _deval = (T, B_gamma_bar_P, B_kappa_bar_P)
+        if deval == 1:
+            return _eval, _deval
+
+        B_gamma_bar_rP = ...
+        _ddeval = (B_gamma_bar_rP, B_gamma_bar_PP, B_kappa_bar_PP)
+        return _eval, _deval, _ddeval
 
     # TODO: which class/where to generalize?
     ############################
@@ -242,3 +278,22 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         N = self.parent.N(xis, els)[0]
         r, A_IB = self._eval_vec(N, q[self.parent.qDOF])
         return r.T, A_IB[:, :, 0].T, A_IB[:, :, 1].T, A_IB[:, :, 2].T
+
+    def _export_nodes(self, solution):
+        # TODO: allow for higher resolution than self.nnodes
+        num_bones = self.parent.nnodes
+        data = np.empty((len(solution.t), num_bones, 7), dtype=float)
+        for i in range(len(solution.t)):
+            data[i] = solution.q[i, self.parent.qDOF].reshape(self.parent.nnodes, -1)
+
+        return np.linspace(0, 1, num_bones), data
+
+    def _export_nodes_modes(self, solution):
+        # TODO: allow for higher resolution than self.nnodes
+        num_bones = self.parent.nnodes
+        data = solution.q[self.parent.qDOF].reshape(self.parent.nnodes, -1)
+        delta = solution.Delta_z[self.parent.uDOF].reshape(
+            self.parent.nnodes, -1, len(solution.omegas)
+        )
+
+        return np.linspace(0, 1, num_bones), data, delta
