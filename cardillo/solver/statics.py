@@ -2,7 +2,8 @@ import numpy as np
 import warnings
 from scipy.sparse import lil_array, bmat, csc_array, eye_array
 from scipy.sparse.linalg import inv as sparse_inv
-from scipy.linalg import eigh, null_space, eig
+from scipy.sparse.linalg import eigsh
+from scipy.linalg import eigh, null_space, eig, qr, solve
 from tqdm import tqdm
 
 from cardillo.math.fsolve import fsolve
@@ -642,6 +643,41 @@ class Riks:
         )
 
 
+def null_space_qr(G, tol=1e-12):
+    # TODO: handle m=0 case
+    m, n = G.shape
+
+    # QR with column pivoting
+    Q, R, piv = qr(G, mode="economic", pivoting=True)
+
+    # get rank
+    diag = np.abs(np.diag(R))
+    rank = np.sum(diag > tol * diag[0])
+
+    if rank != m:
+        # raise ValueError("G does not have full rank, there are redundant constraints!")
+        print("G does not have full rank, there are redundant constraints!")
+    # assert rank == m, "G does not have full rank, there are redundant constraints!"
+
+    dep = piv[:rank]
+    free = piv[rank:]
+
+    # G = [G_dep G_free]
+    G_dep = G[:, dep]
+    G_free = G[:, free]
+
+    # get dependent variables
+    X = -solve(G_dep, G_free)
+
+    # build null space
+    Z = np.zeros((n, n - rank))
+
+    Z[dep, :] = X
+    Z[free, :] = np.eye(n - rank)
+
+    return Z
+
+
 class Eigenmodes:
     def __init__(self, system, sol):
         self.system = system
@@ -661,7 +697,7 @@ class Eigenmodes:
                 self.C_inv[0, 0] = 1 / C[0, 0]
             self.C_inv = self.C_inv.asformat("csr")
 
-    def solve(self, index=-1):
+    def solve(self, index=-1, *, n_eig=-1, compute_dense=True, verbose=False):
         # TODO: check for static equilibrium
 
         # extract values
@@ -674,6 +710,7 @@ class Eigenmodes:
         ##################
         # stiffness matrix
         ##################
+        # TODO: use coo?
         # Using h, c, g, N contributions for stiffness
         K_h = self.system.KN_h(t, q, self.u)[0]
         K_c = self.system.KN_c(t, q, la_c)[0]
@@ -753,67 +790,163 @@ class Eigenmodes:
         #     scipy.linalg.null_space(W_g_non_internalT @ T_int)
         # )
 
-        W_g = self.system.W_g(t, q, format="csr")
-        T = csc_array(null_space(W_g.T.toarray()))
+        # TODO: add also other constraint like things
+        if self.system.nla_g == 0:
+            T = eye_array(self.system.nu)
+            M = M0
+            K = K0
 
-        # T = T_int @ T_bil
-        B = self.system.q_dot_u(t, q, format="csc")
-        K = T.T @ K0 @ T
-        M = T.T @ M0 @ T
+        else:
+            W_g = self.system.W_g(t, q, format="csr")
+
+            # eliminate constraints
+            T_svd = csc_array(null_space(W_g.T.toarray()))  # uses SVD
+            T_qr = csc_array(null_space_qr(W_g.T.toarray()))  # uses qr decomposition
+            # TODO: get sparseqer working, but the package is not working with native windows
+
+            # projection
+            M_svd = T_svd.T @ M0 @ T_svd
+            K_svd = T_svd.T @ K0 @ T_svd
+
+            M_qr = T_qr.T @ M0 @ T_qr
+            K_qr = T_qr.T @ K0 @ T_qr
+
+            T = T_svd
+            M = M_svd
+            K = K_svd
+
+            # T = T_qr
+            # M = M_qr
+            # K = K_qr
+
+            # T_m bestimmen
+            # TODO: get non-massive DOFs from contributions, and perform steps from here on only when necessary
+            massive_idx = np.arange(self.system.nu)[M0.sum(axis=0) != 0]
+            if len(massive_idx) != self.system.nu:
+                Tm = T[massive_idx, :]
+
+                # Nullspace of T_m: reduced directions w/o kin. energy
+                # TODO: can we use null_space_qr and reuse Q later?
+                N = null_space(Tm.toarray())
+
+                k = N.shape[1]
+
+                if k != 0:
+                    print("Performing static condensation")
+                    # qr decomposition
+                    # TODO: understand what we actually do here
+                    # TODO: "sparsify" everything here
+                    Q, _ = qr(N, mode="full")
+
+                    Zd = Q[:, k:]  # dynamic coordinates
+                    Zs = Q[:, :k]  # static coordinates to be condensed
+                    nd = Zd.shape[1]
+
+                    Z = np.hstack((Zd, Zs))
+
+                    # transform
+                    # M_eff = (Z.T @ M @ Z)[:nd, :nd]
+                    M_eff = Zd.T @ M @ Zd
+                    Khat = Z.T @ K @ Z
+
+                    Kdd = Khat[:nd, :nd]
+                    Kds = Khat[:nd, nd:]
+                    Ksd = Khat[nd:, :nd]
+                    Kss = Khat[nd:, nd:]
+
+                    # reduction of DOFs
+                    # q = [qd qs], qs = -Kss^{-1} Ksd qd
+                    # TODO: this shouldn't be too many DOFs (nd: << :nd), so maybe inverting and multiplying is faster
+                    X = np.linalg.solve(Kss, Ksd)
+                    C = np.vstack((np.eye(nd), -X))
+
+                    K_eff = Kdd - Kds @ X
+                    T_eff = T @ Z @ C
+
+                    # make sparse
+                    M = csc_array(M_eff)
+                    K = csc_array(K_eff)
+                    T = csc_array(T_eff)
+
+            if verbose:
+                print(f"""
+                    shapes: M0: {M0.shape}, nmassive: {len(massive_idx)}, M_NS: {M_qr.shape}, M: {M.shape}
+                    nnz               W_g: {  W_g.nnz:>5}, K0: {   K0.nnz:>5}, M0: {M0.nnz:>5}
+                    nnz Null_space_svd: T: {T_svd.nnz:>5},  K: {K_svd.nnz:>5},  M: {M_svd.nnz:>5}
+                    nnz Null_space_qr : T: { T_qr.nnz:>5},  K: { K_qr.nnz:>5},  M: { M_qr.nnz:>5}
+                    nnz         Final : T: {    T.nnz:>5},  K: {    K.nnz:>5},  M: {    M.nnz:>5}
+                """)
 
         ####################
         # compute eigenmodes
         ####################
         # squared eigenvalues
-        res = list(eigh(-K.toarray(), M.toarray()))
+
+        if n_eig == -1:
+            n_eig = M.shape[0]
+
+        assert (
+            0 < n_eig <= M.shape[0]
+        ), "n_eig must be between 1 and the maximum number of degrees of freedom of the constrained system after static condensation."
+
+        if compute_dense or n_eig == M.shape[0]:
+            res = list(eigh(K.toarray(), M.toarray()))
+        else:
+            # we want to comp
+            # TODO: check which is faster
+            res = list(eigsh(K.toarray(), k=n_eig, M=M.toarray(), which="SA"))
+            res = list(eigsh(K.toarray(), k=n_eig, M=M.toarray(), which="SM"))
 
         # make everything real
-        for i, v in enumerate(res):
-            imag_norm = np.linalg.norm(np.imag(v))
-            total_norm = np.linalg.norm(v)
-            if total_norm > 0.0:
-                ratio = imag_norm / total_norm
-                if ratio >= 1e-2:
-                    print(
-                        f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
-                    )
-            res[i] = np.real(v)
+        # TODO: remove?
+        if np.iscomplexobj(res[0]) or np.iscomplexobj(res[1]):
+            for i, v in enumerate(res):
+                imag_norm = np.linalg.norm(np.imag(v))
+                total_norm = np.linalg.norm(v)
+                if total_norm > 0.0:
+                    ratio = imag_norm / total_norm
+                    if ratio >= 1e-2:
+                        print(
+                            f"arg(a+bi) = {ratio:.2e}. This imaginary part will be discarded!"
+                        )
+                res[i] = np.real(v)
 
-        las_ud_squared, Vs_ud = res
+        omegas_squared, Vs_ud = res
 
         # sort eigenvalues such that rigid body modes are first
-        sort_idx = np.argsort(-las_ud_squared)
-        las_ud_squared = las_ud_squared[sort_idx]
+        sort_idx = np.argsort(omegas_squared)
+        omegas_squared = omegas_squared[sort_idx]
         Vs_ud = Vs_ud[:, sort_idx]
 
         # compute omegas
-        omegas = np.zeros([len(las_ud_squared)])
+        omegas = np.zeros([n_eig])
         valids = np.ones_like(omegas, dtype=bool)
-        Delta_z = T @ Vs_ud
-        modes_dq = B @ Delta_z
-        for i, lai in enumerate(las_ud_squared):
-            if np.abs(lai) <= self.la_sqared_tol:
+        Delta_z = T @ Vs_ud[:, :n_eig]
+
+        for i in range(n_eig):
+            omegai2 = omegas_squared[i]
+            if np.abs(omegai2) <= self.la_sqared_tol:
                 omegas[i] = 0.0
-            elif lai > 0:
-                msg = f"Warning: An eigenvalue is larger than 0: lambda = {lai:.3e} --> omega = {np.sqrt(lai):.3e}. This should not happen."
+            elif omegai2 < 0:
+                om_neg = -np.sqrt(-omegai2)
+                msg = f"Warning: omega^2 was negative:{omegai2:.3e}, and will be returned as -sqrt(-omega^2) = {om_neg:.3e}."
                 warnings.warn(msg)
                 valids[i] = False
-                omegas[i] = np.sqrt(lai)
+                omegas[i] = om_neg
             else:
-                omegas[i] = np.sqrt(-lai)
+                omegas[i] = np.sqrt(omegai2)
 
         # compose solution object with omegas and modes
         sol = Solution(
             self.system,
-            np.array([t]),
-            np.array([q]),
-            omegas=np.array([omegas]),
-            Delta_z=np.array([Delta_z]),
-            modes_dq=np.array([modes_dq]),
-            valids=np.array([valids]),
+            t,
+            q,
+            omegas=omegas,
+            Delta_z=Delta_z,
+            valids=valids,
         )
 
-        return omegas, modes_dq, sol
+        return sol
 
     def solve_cheap(self, index=-1):
 
@@ -902,15 +1035,15 @@ class Eigenmodes:
         # compose solution object with omegas and modes
         sol = Solution(
             self.system,
-            np.array([t]),
-            np.array([q]),
-            omegas=np.array([omegas]),
-            Delta_z=np.array([Delta_z]),
-            modes_dq=np.array([modes_dq]),
-            valids=np.array([valids]),
+            t,
+            q,
+            omegas=omegas,
+            Delta_z=Delta_z,
+            modes_dq=modes_dq,
+            valids=valids,
         )
 
-        return omegas, modes_dq, sol
+        return sol
 
 
 class FrequencyResponseFunction:

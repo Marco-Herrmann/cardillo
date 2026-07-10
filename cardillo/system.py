@@ -185,11 +185,16 @@ class System:
         return e
 
     def export_blender(
-        self, path, folder_name, solution, create_blend=False, blenderPath="blender"
+        self,
+        path,
+        folder_name,
+        solution,
+        create_blend=False,
+        blenderPath="blender",
+        verbose=False,
     ):
-        # TODO: go from modes_dq to Delta_z and maybe use simpler flag instead
-        if hasattr(solution, "omegas") and hasattr(solution, "modes_dq"):
-            assert len(solution.t) == 1
+        # TODO: use simple flag instead to decide
+        if hasattr(solution, "omegas") and hasattr(solution, "Delta_z"):
             export_str = "export_blender_modes"
         else:
             export_str = "export_blender"
@@ -212,7 +217,8 @@ class System:
         gltf_files = glob.glob(os.path.join(path, "*.glb"))
         build_blend = Path(Path(__file__).parent, "visualization", "build_blend.py")
         subprocess.run(
-            [blenderPath, "-b", "-P", build_blend, "--", output_file, *gltf_files]
+            [blenderPath, "-b", "-P", build_blend, "--", output_file, *gltf_files],
+            stdout=subprocess.DEVNULL if not verbose else None,
         )
 
     def get_contribution_list(self, contr):
@@ -1068,7 +1074,7 @@ class System:
 
         # assert self.nla_c == 0
         if self.nla_c != 0:
-            warnings.warn("KN_c is not taken into account!")
+            warnings.warn("DG_c is not taken into account!")
         return coo_D.asformat(format), coo_G.asformat(format)
 
     def DG_tau(self, t, q, u, format="coo"): ...

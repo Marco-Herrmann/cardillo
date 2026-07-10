@@ -6,67 +6,42 @@ from cardillo import System
 from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.math import A_IB_basic
 from cardillo.solver import SolverOptions, load_solution, Eigenmodes
-from cardillo.rods import (
+from cardillo.rods_new import (
     CircularCrossSection,
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
 )
-from cardillo.rods.cosseratRod import make_CosseratRod
+from cardillo.rods_new2 import make_CosseratRod
 
 ##########################
 # make Sakman parameters #
 ##########################
 length = 1.0
 rho = 8.0e3
+r = 0.001
 r = 0.01
 
-# from here nothing to change
-cross_section = CircularCrossSection(r)
-A = cross_section.area
-I = cross_section.second_moment[1, 1]
-E = rho * A / I
 nu = 0.3
+
+# Sakman has the relation r / 2 * sqrt(E / rho) = 1 (see eigenfrequencies for straight rod, all bc's)
+A = np.pi * r**2
+I = np.pi * r**4 / 4
+E = rho * A / I
 G = E / (2 * (1 + nu))
 
-# estimate with circular beam fixed-fixed
-om_ff_c = 59.16
-R = 1 / (2 * np.pi)
-mass = length * A * rho
-theta_steiner = mass * R**2
-theta_torus = mass / 8 * (4 * R**2 + 5 * r**2)
-G = om_ff_c**2 * (theta_steiner + theta_torus) / (2 * I)
+# G = E / 2
+
+cross_section = CircularCrossSection(r)
 ma_mo = Simo1986(np.array([E * A, G * A, G * A]), np.array([2 * G * I, E * I, E * I]))
 
 PARAMS_SAKMAN = {
     "length": length,
     "material_model": ma_mo,
+    "cross_section": cross_section,
     "cross_section_inertias": CrossSectionInertias(rho, cross_section),
+    # "cross_section_inertias": CrossSectionInertias(A_rho0=A * rho, B_I_rho0=np.diag([2 * I * rho, 0.0, 0.0])),
 }
-
-####################
-# other parameters #
-####################
-cross_section = RectangularCrossSection(0.1, 0.1)
-rho = 8.0e3
-E = 260.0e9
-G = 100.0e9
-shear_corr = 5 / 6
-
-A = cross_section.area
-Ip, Iy, Iz = np.diag(cross_section.second_moment)
-cross_section_inertias = CrossSectionInertias(rho, cross_section)
-
-Ei = np.array([E * A, shear_corr * G * A, shear_corr * G * A])
-Fi = np.array([G * Ip, E * Iy, E * Iz])
-material_model = Simo1986(Ei, Fi)
-
-PARAMS = {
-    "L": 2,
-    "material_model": material_model,
-    "cross_section_inertias": cross_section_inertias,
-}
-
 
 ##########################
 # define constraint rods #
@@ -78,45 +53,64 @@ constraint_idx = {
 }
 
 
-def create_clamped(sys, rod, xi):
+def is_the_critical(all_constraints, xi, configuration):
+    if not "IEB" in all_constraints:
+        return False
+    if "free" in all_constraints:
+        return False
+    if xi == 0:
+        return False
+    if not configuration == "straight":
+        return False
+
+    print("We are critical!")
+    return True
+
+
+def create_clamped(sys, rod, xi, all_constraints, configuration):
     g_pos = [0, 1, 2]
     g_rot = [(1, 2), (2, 0), (0, 1)]
+    if is_the_critical(all_constraints, xi, configuration):
+        g_pos = [1, 2]
     return ProjectedPositionOrientationBase(rod, sys.origin, g_pos, g_rot, xi1=xi)
 
 
-def create_supported(sys, rod, xi):
+def create_supported(sys, rod, xi, all_constraints, configuration):
     g_pos = [0, 1, 2]
     g_rot = []
+    if is_the_critical(all_constraints, xi, configuration):
+        g_pos = [1, 2]
     return ProjectedPositionOrientationBase(rod, sys.origin, g_pos, g_rot, xi1=xi)
 
 
-def create_simply_supported(sys, rod, xi):
+def create_simply_supported(sys, rod, xi, all_constraints, configuration):
     g_pos = [0, 1, 2]
     g_rot = [(1, 2)]
-    A_IJ0 = rod.A_IB(0.0, rod.q0[rod.elDOF_P(xi)], xi)
+    if is_the_critical(all_constraints, xi, configuration):
+        g_pos = [1, 2]
+    A_IJ0 = rod.A_IB(0.0, rod.q0[rod.local_qDOF_P(xi)], xi)
     return ProjectedPositionOrientationBase(
         rod, sys.origin, g_pos, g_rot, xi1=xi, A_IJ0=A_IJ0
     )
 
 
-def create_guided(sys, rod, xi):
+def create_guided(sys, rod, xi, all_constraints, configuration):
     g_pos = []
     g_rot = [(1, 2), (2, 0), (0, 1)]
     return ProjectedPositionOrientationBase(rod, sys.origin, g_pos, g_rot, xi1=xi)
 
 
-def make_constraints(sys, rod, constraints):
+def make_constraints(sys, rod, constraints, configuration):
     c = []
-    # TODO: change this for "IEB"
     for i, cs in enumerate(constraints[:2]):
         if cs == "clamped":
-            c.append(create_clamped(sys, rod, i))
+            c.append(create_clamped(sys, rod, i, constraints, configuration))
         elif cs == "supported":
-            c.append(create_supported(sys, rod, i))
+            c.append(create_supported(sys, rod, i, constraints, configuration))
         elif cs == "SS":
-            c.append(create_simply_supported(sys, rod, i))
+            c.append(create_simply_supported(sys, rod, i, constraints, configuration))
         elif cs == "guided":
-            c.append(create_guided(sys, rod, i))
+            c.append(create_guided(sys, rod, i, constraints, configuration))
 
     return c
 
@@ -125,10 +119,9 @@ def cantilever(
     Rod,
     nel,
     constraints,
-    export_vtk=False,
+    export_blend=False,
     configuration="bent45",
-    params=PARAMS,
-    lump_mass=False,
+    params=PARAMS_SAKMAN,
     save_solution=False,
     name=None,
     save_folder="None",
@@ -140,6 +133,7 @@ def cantilever(
 
     length = params["length"]
     material_model = params["material_model"]
+    cross_section = params["cross_section"]
     cross_section_inertias = params["cross_section_inertias"]
 
     match configuration:
@@ -155,12 +149,17 @@ def cantilever(
             Q_rod = Rod.pose_configuration(nel, r_OC, A_IB, xi1=xi1)
 
         case "circular":
-            R = length / (2 * np.pi)
+            alpha_circ = 2 * np.pi
+            # alpha_circ = 3 * np.pi / 2
+            # alpha_circ = np.pi # erste in-plane: 43.27
+            alpha_circ = 2 * np.pi / 3  # erste in-plane:
+
+            R = length / alpha_circ
+            # R = length
+
             r_OC = lambda alpha: R * np.array([np.cos(alpha), np.sin(alpha), 0.0])
             A_IB = lambda alpha: A_IB_basic(alpha + np.pi / 2).z
-            xi1 = 2 * np.pi
-
-            Q_rod = Rod.pose_configuration(nel, r_OC, A_IB, xi1=xi1)
+            Q_rod = Rod.pose_configuration(nel, r_OC, A_IB, xi1=alpha_circ)
 
         case "helicoidal":
             R = length
@@ -217,7 +216,7 @@ def cantilever(
         name="Beam",
     )
     system.add(rod)
-    system.add(*make_constraints(system, rod, constraints))
+    system.add(*make_constraints(system, rod, constraints, configuration))
 
     system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
@@ -225,7 +224,7 @@ def cantilever(
     # compute eigenmodes #
     ######################
     solver = Eigenmodes(system, system.sol0)
-    omegas, modes_dq, sol_modes = solver.solve(-1)
+    sol_modes = solver.solve(-1, verbose=False)
 
     if save_solution:
         dir_name = Path(__file__).parent
@@ -233,22 +232,22 @@ def cantilever(
         save_path.mkdir(parents=True, exist_ok=True)
         sol_modes.save(Path(save_path, f"{name}.pkl"))
 
-    if export_vtk:
-        rod._export_dict["level"] = "NodalVolume"
+    if export_blend:
         dir_name = Path(__file__).parent
-        system.export(dir_name, f"vtk_modes/{name}", sol_modes, fps=25)
+        system.export_blender(
+            dir_name, f"blender_modes/{name}", sol_modes, create_blend=True
+        )
 
-    return omegas
+    return sol_modes.omegas
 
 
-def test_all(p=2, nel=8, save_solution=False, save_folder="all", export_vtk=False):
-    for rod in ["T", "EB", "IEB"]:
+def test_all(p=2, nel=8, save_solution=False, save_folder="all", export_blend=False):
+    rods = ["T", "EB", "IEB"]
+    for rod in rods:
         # define rod for numerical solution
         Rod = make_CosseratRod(
-            interpolation="Quaternion",
-            mixed=True,
             polynomial_degree=p,
-            constraints=constraint_idx[rod],
+            idx_constraints=constraint_idx[rod],
         )
 
         cs = ["clamped", "free", "supported", "SS", "guided"]
@@ -263,9 +262,8 @@ def test_all(p=2, nel=8, save_solution=False, save_folder="all", export_vtk=Fals
                         Rod,
                         nel,
                         constraints,
-                        export_vtk,
+                        export_blend,
                         config,
-                        lump_mass=False,
                         params=PARAMS_SAKMAN,
                         save_solution=save_solution,
                         name=name,
@@ -273,22 +271,24 @@ def test_all(p=2, nel=8, save_solution=False, save_folder="all", export_vtk=Fals
                     )
 
 
-def make_reference(nel=170, export_vtk=False):
+def make_reference(nel=170, export_blend=False):
     test_all(
-        p=3, nel=nel, save_solution=True, save_folder="reference", export_vtk=export_vtk
+        p=3,
+        nel=nel,
+        save_solution=True,
+        save_folder="reference",
+        export_blend=export_blend,
     )
 
 
 def simulate_Sakman(
-    p=2, nel=8, save_solution=False, save_folder="sakman", export_vtk=False
+    p=2, nel=8, save_solution=False, save_folder="sakman", export_blend=False
 ):
     rod = "IEB"
     # define rod for numerical solution
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        mixed=True,
         polynomial_degree=p,
-        constraints=constraint_idx[rod],
+        idx_constraints=constraint_idx[rod],
     )
 
     constraints = [
@@ -313,9 +313,8 @@ def simulate_Sakman(
                 Rod,
                 nel,
                 constraints,
-                export_vtk,
+                export_blend,
                 configuration,
-                lump_mass=False,
                 params=PARAMS_SAKMAN,
                 save_solution=save_solution,
                 name=name,
@@ -350,37 +349,37 @@ def compare_with_Sakman():
 
             # compute scale
             rod_ = sol_ref.system.contributions[1]
-            EI = rod_.material_model.C_m[1, 1]
-            Arho0 = rod_.cross_section_inertias.A_rho0
-            L = np.sum(rod_.qw_dyn * rod_.J_dyn)
+            EI = rod_.internal.material_model.Fi(0.0)[1]
+            Arho0 = rod_.dynamics.cross_section_inertias.A_rho0(0.0)
+            L = np.sum(rod_.dynamics.qw_dyn_vec * rod_.dynamics.J_dyn_vec)
+
             scl = np.sqrt(Arho0 * L**4 / EI)
 
-            print(scl)
+            # print(f"The length: {L}")
+            # print(f"The scale: {scl}")
 
             # extract relevant omegas
-            omegas_ref = sol_ref.omegas[0]
+            omegas_ref = sol_ref.omegas
             nRB = np.count_nonzero(omegas_ref == 0)
             omegas = omegas_ref[nRB : nRB + 22]
             print(f"Table {i+1}: {configuration}")
-            print(omegas * scl)
+            print(np.vstack([omegas * scl, omegas]))
 
-            if (
-                left == "supported"
-                and right == "supported"
-                and configuration == "straight"
-            ):
+            if left == "SS" and right == "SS" and configuration == "straight":
                 pi_vals = np.arange(1, 10) ** 2 * np.pi**2
                 print(pi_vals)
 
 
 if __name__ == "__main__":
-    # make_reference(nel=16, export_vtk=True)
-    # simulate_Sakman(save_solution=True)
+    # make_reference(nel=16, export_blend=True)
+    simulate_Sakman(p=2, nel=16, save_solution=True, export_blend=True)
     compare_with_Sakman()
     exit()
+
+    # test_all(export_blend=True)
     # exit()
-    # test_all(export_vtk=True)
-    # exit()
+
+    # TODO: rerun reference with more elements to do beter comparison
 
     # rod = "IEB"
     # rod = "EB"
@@ -400,11 +399,8 @@ if __name__ == "__main__":
     # define rod for numerical solution
     pDeg = 3
     Rod = make_CosseratRod(
-        interpolation="Quaternion",
-        # interpolation="SE3",
-        mixed=True,
         polynomial_degree=pDeg,
-        constraints=constraint_idx[rod],
+        idx_constraints=constraint_idx[rod],
     )
 
     cantilever(Rod, 5, [left, right, rod], True, configuration, name="running")
@@ -415,8 +411,8 @@ if __name__ == "__main__":
     ref_path = Path(Path(__file__).parent, f"solutions/reference/", ref_name)
     sol_ref = load_solution(ref_path)
 
-    omegas_ref = sol_ref.omegas[0]
-    nRB = np.count_nonzero(omegas_ref == 0)
+    omegas_ref = sol_ref.omegas
+    nRB = np.count_nonzero(omegas_ref <= 0)
 
     # analyze convergence by increasing nel
     N0 = 3
@@ -424,7 +420,7 @@ if __name__ == "__main__":
 
     n_compare = 50
     n_compare = int(4 * (pDeg * 2**N0) / 2)  # number of non-shear felxible DOFs / 2
-    nels = [2**i for i in range(N0, N0 + N)]
+    nels = [2**i + 1 for i in range(N0, N0 + N)]
     nnodes = np.zeros(N, dtype=int)
     omegas = np.empty((N, n_compare - nRB), dtype=float)
     omegas[:] = np.nan

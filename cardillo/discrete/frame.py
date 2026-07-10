@@ -176,8 +176,8 @@ class Frame:
         return r_OP, v_P, P_IB, B_Omega
 
     def _export_nodes_modes(self, solution):
-        r_OP = self.r_OP(solution.t[0])
-        P_IB = Log_SO3_quat(self.A_IB(solution.t[0]))
+        r_OP = self.r_OP(solution.t)
+        P_IB = Log_SO3_quat(self.A_IB(solution.t))
         return r_OP, None, P_IB, None
 
     def export_blender(self, path, solution):
@@ -187,5 +187,5 @@ class Frame:
     def export_blender_modes(self, path, solution):
         r_OP, Delta_r, P_IB, B_Delta_phi = self._export_nodes_modes(solution)
         make_glTF_modes(
-            path, self.name, solution.omegas[0], r_OP, Delta_r, P_IB, B_Delta_phi
+            path, self.name, solution.omegas, r_OP, Delta_r, P_IB, B_Delta_phi
         )

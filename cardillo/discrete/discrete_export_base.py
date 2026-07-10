@@ -198,7 +198,7 @@ def make_glTF_modes(
 
     # equilibrium position and orientation
     if P_IB is None:
-        P_IB = np.array([[1.0, 0.0, 0.0, 0.0]])
+        P_IB = np.array([1.0, 0.0, 0.0, 0.0])
 
     nom = len(omegas)
     if Delta_r is None:
@@ -215,7 +215,7 @@ def make_glTF_modes(
                 "r_OP0": r_OP.tolist(),
                 "P_IB0": P_IB.tolist(),
                 "omegas": omegas.tolist(),
-                "Delta_r": Delta_r.tolist(),
+                "Delta_r": Delta_r.astype(np.float32).tolist(),
                 "B_Delta_phi": B_Delta_phi.tolist(),
             },
         )

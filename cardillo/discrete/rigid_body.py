@@ -356,12 +356,12 @@ class RigidBody:
         return r_OP, v_P, P_IB, B_Omega
 
     def _export_nodes_modes(self, solution):
-        t0 = solution.t[0]
-        q0 = solution.q[0, self.qDOF]
+        t0 = solution.t
+        q0 = solution.q[self.qDOF]
         r_OP = q0[:3]
         P_IB = q0[3:]
 
-        Delta_z = solution.Delta_z[0, self.uDOF]
+        Delta_z = solution.Delta_z[self.uDOF]
         Delta_r = self.J_P(t0, q0) @ Delta_z
         B_Delta_phi = self.B_J_R(t0, q0) @ Delta_z
         return r_OP, Delta_r.T, P_IB, B_Delta_phi.T
@@ -373,5 +373,5 @@ class RigidBody:
     def export_blender_modes(self, path, solution):
         r_OP, Delta_r, P_IB, B_Delta_phi = self._export_nodes_modes(solution)
         make_glTF_modes(
-            path, self.name, solution.omegas[0], r_OP, Delta_r, P_IB, B_Delta_phi
+            path, self.name, solution.omegas, r_OP, Delta_r, P_IB, B_Delta_phi
         )

@@ -173,7 +173,7 @@ def Meshed(Base):
             make_glTF_modes(
                 path,
                 self.name,
-                solution.omegas[0],
+                solution.omegas,
                 r_OP,
                 Delta_r,
                 P_IB,
