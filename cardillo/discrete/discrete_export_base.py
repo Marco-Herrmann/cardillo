@@ -235,7 +235,7 @@ def make_glTF_modes(
     gltf.save_binary(filename)
 
 
-def make_glTF_arrow(path, name, t, r_OP, vec):
+def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
     # TODO: get rid of os
     filename = os.path.join(path, f"{name}.glb")
 
@@ -249,7 +249,7 @@ def make_glTF_arrow(path, name, t, r_OP, vec):
     t_acc = buf.add(t.astype(np.float32), 5126, "SCALAR")
 
     # translation
-    trans = cardillo_to_gltf_trans(r_OP)
+    trans = cardillo_to_gltf_trans(r_OP + (vec/2 if block else 0.0))
     trans_acc = buf.add(trans, 5126, "VEC3")
     samplers = [
         AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR"),
@@ -262,7 +262,8 @@ def make_glTF_arrow(path, name, t, r_OP, vec):
     ]
 
     if True:
-        nodes.append(Node(name=f"{name}_vec"))
+        the_name = f"{name}_block" if block else f"{name}_vec"
+        nodes.append(Node(name=the_name))
         nodes[0].children.append(len(nodes) - 1)
 
         # find the quaternion that rotates the +z of the node to the direction of vec
@@ -283,7 +284,12 @@ def make_glTF_arrow(path, name, t, r_OP, vec):
 
         # set the scale of the node to the magnitude of vec
         vec_mag = np.linalg.norm(vec, axis=1).astype(np.float32)
-        vec_acc = buf.add(np.stack([vec_mag] * 3, axis=1), 5126, "VEC3")
+        if block:
+            vec_mag /= 2
+            scale = np.vstack([vec_mag / 100, vec_mag, vec_mag / 100]).T
+        else:
+            scale = np.stack([vec_mag] * 3, axis=1)
+        vec_acc = buf.add(scale, 5126, "VEC3")
         samplers.append(
             AnimationSampler(input=t_acc, output=vec_acc, interpolation="LINEAR")
         )
