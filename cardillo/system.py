@@ -396,15 +396,15 @@ class System:
 
         self.sol0 = Solution(
             self,
-            [self.t0],
-            [self.q0],
-            [self.u0],
-            [self.u_dot0],
-            [self.la_g0],
-            [self.la_gamma0],
-            [self.la_c0],
-            [self.la_N0],
-            [self.la_F0],
+            np.array([self.t0]),
+            np.array([self.q0]),
+            np.array([self.u0]),
+            np.array([self.u_dot0]),
+            np.array([self.la_g0]),
+            np.array([self.la_gamma0]),
+            np.array([self.la_c0]),
+            np.array([self.la_N0]),
+            np.array([self.la_F0]),
         )
 
     def assembler_callback(self):

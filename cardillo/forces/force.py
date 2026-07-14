@@ -3,7 +3,10 @@ from numpy import einsum, zeros
 from vtk import VTK_VERTEX
 
 from cardillo.math import ax2skew
-from cardillo.discrete.discrete_export_base import make_glTF_arrow
+from cardillo.discrete.discrete_export_base import (
+    make_glTF_arrow,
+    make_glTF_arrow_modes,
+)
 
 
 class Force:
@@ -73,9 +76,17 @@ class Force:
         make_glTF_arrow(path, self.name, solution.t, r_OP, arrow)
 
     def export_blender_modes(self, path, solution):
-        from warnings import warn
+        t = solution.t
+        q = solution.q[self.qDOF]
+        r_OP1 = self.r_OP(t, q)
+        r_OP2 = r_OP1 + self.force(t)
 
-        warn("Force.export_blender_modes not implemented")
+        Delta_z = solution.Delta_z[self.uDOF]
+        Delta_r_P1 = self.J_P(t, q) @ Delta_z
+
+        make_glTF_arrow_modes(
+            path, self.name, solution.omegas, r_OP1, r_OP2, Delta_r_P1.T, Delta_r_P1.T
+        )
 
 
 class B_Force:

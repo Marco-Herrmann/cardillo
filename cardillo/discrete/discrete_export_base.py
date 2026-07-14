@@ -246,7 +246,7 @@ def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
     node = Node(name=f"{name}_block" if block else f"{name}_vec")
 
     # translation
-    trans = cardillo_to_gltf_trans(r_OP + (vec/2 if block else 0.0))
+    trans = cardillo_to_gltf_trans(r_OP + (vec / 2 if block else 0.0))
     trans_acc = buf.add(trans, 5126, "VEC3")
     samplers = [
         AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR"),
@@ -264,9 +264,7 @@ def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
     P_rot = cardillo_to_gltf_rot(P)
     P_acc = buf.add(P_rot, 5126, "VEC4")
 
-    samplers.append(
-        AnimationSampler(input=t_acc, output=P_acc, interpolation="LINEAR")
-    )
+    samplers.append(AnimationSampler(input=t_acc, output=P_acc, interpolation="LINEAR"))
     channels.append(
         AnimationChannel(
             sampler=len(samplers) - 1,
@@ -301,6 +299,56 @@ def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
         nodes=[node],
         animations=[anim],
         scenes=[Scene(nodes=[0])],
+        scene=0,
+    )
+
+    gltf.set_binary_blob(buf.data)
+    gltf.save_binary(filename)
+
+
+def make_glTF_arrow_modes(
+    path, name, omegas, r_OP0, r_OP1, Delta_r_P0=None, Delta_r_P1=None, block=False
+):
+    # TODO: get rid of os
+    filename = os.path.join(path, f"{name}.glb")
+    buf = BufferBuilder()
+    nodes = []
+
+    # create node
+    nodes.append(Node(name=f"{name}_block" if block else f"{name}_vec"))
+
+    nom = len(omegas)
+    if Delta_r_P0 is None:
+        Delta_r_P0 = np.zeros((nom, 3), dtype=np.float32)
+
+    if Delta_r_P1 is None:
+        Delta_r_P1 = np.zeros((nom, 3), dtype=np.float32)
+
+    if block:
+        r_OP0 = (r_OP0 + r_OP1) / 2
+        Delta_r_P0 = (Delta_r_P0 + Delta_r_P1) / 2
+
+    nodes.append(
+        Node(
+            name=f"{name}_root",
+            children=[0],
+            extras={
+                "r_OP0": r_OP0.tolist(),
+                "r_OP1": r_OP1.tolist(),
+                "omegas": omegas.tolist(),
+                "Delta_r_P0": Delta_r_P0.astype(np.float32).tolist(),
+                "Delta_r_P1": Delta_r_P1.astype(np.float32).tolist(),
+                "scale_perp": 1 / 100 if block else 1.0,
+            },
+        )
+    )
+
+    gltf = GLTF2(
+        buffers=[Buffer(byteLength=len(buf.data))],
+        bufferViews=buf.views,
+        accessors=buf.accessors,
+        nodes=nodes,
+        scenes=[Scene(nodes=[1])],
         scene=0,
     )
 

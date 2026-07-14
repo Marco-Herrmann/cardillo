@@ -92,6 +92,12 @@ class ScalarForceLawBase(ABC):
     def export(self, sol_i, **kwargs):
         return self.subsystem.export(sol_i, **kwargs)
 
+    def export_blender(self, *args, **kwargs):
+        return self.subsystem.export_blender(*args, **kwargs)
+
+    def export_blender_modes(self, *args, **kwargs):
+        return self.subsystem.export_blender_modes(*args, **kwargs)
+
 
 class ScalarForceLaw(ScalarForceLawBase):
     def __init__(self, subsystem):

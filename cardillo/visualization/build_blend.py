@@ -31,6 +31,9 @@ for obj in bpy.context.scene.objects:
         # obj.hide_render = True
         obj.name = obj.name.replace("__invisible", "")
 
+    if obj.name.endswith("_root"):
+        obj.hide_viewport = True
+
     if obj.type == "EMPTY":
         if obj.name.endswith("_obj"):
             obj.empty_display_type = "ARROWS"
@@ -40,6 +43,8 @@ for obj in bpy.context.scene.objects:
             obj.empty_display_type = "SINGLE_ARROW"
         elif obj.name.endswith("_vec"):
             obj.empty_display_type = "SINGLE_ARROW"
+        elif obj.name.endswith("_block"):
+            obj.empty_display_type = "CUBE"
         obj.empty_display_size = 1
 
 # adjust animation frames

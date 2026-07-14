@@ -3,7 +3,10 @@ from vtk import VTK_LINE
 
 from cardillo.math import norm
 from cardillo.definitions import IS_CLOSE_ATOL
-from cardillo.discrete.discrete_export_base import make_glTF_arrow
+from cardillo.discrete.discrete_export_base import (
+    make_glTF_arrow,
+    make_glTF_arrow_modes,
+)
 
 
 class TwoPointInteraction:
@@ -249,9 +252,25 @@ class TwoPointInteraction:
             [self.r_OP2(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
         )
         arrow = r_OP2 - r_OP1
-        make_glTF_arrow(path, self.name, solution.t, r_OP1, arrow)
+        make_glTF_arrow(path, self.name, solution.t, r_OP1, arrow, block=True)
 
     def export_blender_modes(self, path, solution):
-        from warnings import warn
+        t = solution.t
+        q = solution.q[self.qDOF]
+        r_OP1 = self.r_OP1(t, q)
+        r_OP2 = self.r_OP2(t, q)
 
-        warn("TwoPointInteraction.export_blender_modes not implemented")
+        Delta_z = solution.Delta_z[self.uDOF]
+        Delta_r_P1 = self.J_P1(t, q) @ Delta_z[: self._nu1]
+        Delta_r_P2 = self.J_P2(t, q) @ Delta_z[self._nu1 :]
+
+        make_glTF_arrow_modes(
+            path,
+            self.name,
+            solution.omegas,
+            r_OP1,
+            r_OP2,
+            Delta_r_P1.T,
+            Delta_r_P2.T,
+            block=True,
+        )
