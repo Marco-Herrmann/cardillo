@@ -1,5 +1,11 @@
+import numpy as np
 from numpy import einsum, zeros
 from vtk import VTK_VERTEX
+
+from cardillo.discrete.discrete_export_base import (
+    make_glTF_arrow,
+    make_glTF_arrow_modes,
+)
 
 
 class B_Moment:
@@ -42,8 +48,6 @@ class B_Moment:
     def KN_h(self, t, q, u):
         KN = einsum("i, ijk -> jk", self.moment(t), self.B_J2_R(t, q))
         # TODO: figure out if it is always skew-symmetric
-        import numpy as np
-
         isskew = np.linalg.norm(KN + KN.T) < 1e-12
         if not isskew:
             print(f"B_moment {self.name}: N of KN_h is not skew-symmetric!")
@@ -60,9 +64,16 @@ class B_Moment:
         return points, cells, None, cell_data
 
     def export_blender(self, path, solution):
-        from warnings import warn
-
-        warn("B_Moment.export_blender not implemented")
+        r_OP = np.array(
+            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+        )
+        arrow = np.array(
+            [
+                self.A_IB(ti, qi[self.qDOF]) @ self.moment(ti)
+                for ti, qi in zip(solution.t, solution.q)
+            ]
+        )
+        make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
 
     def export_blender_modes(self, path, solution):
         from warnings import warn
@@ -121,9 +132,11 @@ class Moment:
         return points, cells, None, cell_data
 
     def export_blender(self, path, solution):
-        from warnings import warn
-
-        warn("Moment.export_blender not implemented")
+        r_OP = np.array(
+            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+        )
+        arrow = np.array([self.moment(ti) for ti in solution.t])
+        make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
 
     def export_blender_modes(self, path, solution):
         from warnings import warn

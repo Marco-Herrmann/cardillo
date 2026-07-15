@@ -235,7 +235,7 @@ def make_glTF_modes(
     gltf.save_binary(filename)
 
 
-def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
+def make_glTF_arrow(path, name, t, r_OP0, r_OP1, block=False):
     # TODO: get rid of os
     filename = os.path.join(path, f"{name}.glb")
 
@@ -245,8 +245,18 @@ def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
     # create node
     node = Node(name=f"{name}_block" if block else f"{name}_vec")
 
+    vec = r_OP1 - r_OP0
+    vec_mag = np.linalg.norm(vec, axis=1).astype(np.float32)
+    if block:
+        r_OP0 = (r_OP0 + r_OP1) / 2
+        vec_mag /= 2
+        # TODO: make this via cardillo_to_glTF_scale or so, such that we can here have [1/100, 1, 1/100]
+        scale = np.vstack([vec_mag / 100, vec_mag, vec_mag / 100]).T
+    else:
+        scale = np.stack([vec_mag] * 3, axis=1)
+
     # translation
-    trans = cardillo_to_gltf_trans(r_OP + (vec / 2 if block else 0.0))
+    trans = cardillo_to_gltf_trans(r_OP0)
     trans_acc = buf.add(trans, 5126, "VEC3")
     samplers = [
         AnimationSampler(input=t_acc, output=trans_acc, interpolation="LINEAR"),
@@ -273,13 +283,6 @@ def make_glTF_arrow(path, name, t, r_OP, vec, block=False):
     )
 
     # set the scale of the node to the magnitude of vec
-    vec_mag = np.linalg.norm(vec, axis=1).astype(np.float32)
-    if block:
-        # TODO: make this via cardillo_to_glTF_scale or so, such that we can here have [1/100, 1, 1/100]
-        vec_mag /= 2
-        scale = np.vstack([vec_mag / 100, vec_mag, vec_mag / 100]).T
-    else:
-        scale = np.stack([vec_mag] * 3, axis=1)
     vec_acc = buf.add(scale, 5126, "VEC3")
     samplers.append(
         AnimationSampler(input=t_acc, output=vec_acc, interpolation="LINEAR")

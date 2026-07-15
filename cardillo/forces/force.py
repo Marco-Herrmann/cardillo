@@ -73,7 +73,7 @@ class Force:
             [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
         )
         arrow = np.array([self.force(ti) for ti in solution.t])
-        make_glTF_arrow(path, self.name, solution.t, r_OP, arrow)
+        make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
 
     def export_blender_modes(self, path, solution):
         t = solution.t
@@ -158,9 +158,16 @@ class B_Force:
         return points, cells, None, cell_data
 
     def export_blender(self, path, solution):
-        from warnings import warn
-
-        warn("B_Force.export_blender not implemented")
+        r_OP = np.array(
+            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+        )
+        arrow = np.array(
+            [
+                self.A_IB(ti, qi[self.qDOF]) @ self.force(ti)
+                for ti, qi in zip(solution.t, solution.q)
+            ]
+        )
+        make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
 
     def export_blender_modes(self, path, solution):
         from warnings import warn

@@ -251,8 +251,7 @@ class TwoPointInteraction:
         r_OP2 = np.array(
             [self.r_OP2(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
         )
-        arrow = r_OP2 - r_OP1
-        make_glTF_arrow(path, self.name, solution.t, r_OP1, arrow, block=True)
+        make_glTF_arrow(path, self.name, solution.t, r_OP1, r_OP2, block=True)
 
     def export_blender_modes(self, path, solution):
         t = solution.t
