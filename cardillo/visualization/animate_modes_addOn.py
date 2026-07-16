@@ -47,28 +47,48 @@ def omega_items(self, context):
 ####################
 # create animation #
 ####################
-def get_q_align(v):
-    v_norm = np.linalg.norm(v)
-    if v_norm < 1e-12:
-        return Quaternion((1, 0, 0, 0)), 0
+def decomposition(P_IB0, B_Delta_phi):
+    """find P_IJ, P_JB, s such that
+        A_IJ @ S0 @ A_JB = A_IB0 @ (I + scale * ax2skew(B_Delta_phi))
+    , with S = diag(s) and A_IB0 = A(P_IB0), A_IJ = A(P_IJ), A_JB = A(P_JB) in SO(3)"""
 
-    u = v / v_norm
-    dots = [u.dot(e) for e in np.eye(3)]
-    idx = int(np.argmax([abs(d) for d in dots]))
+    Delta_phi = np.linalg.norm(B_Delta_phi)
+    if Delta_phi < 1e-12:
+        s = np.ones(3)
 
-    e_best = np.zeros(3, dtype=float)
-    e_best[idx] = 1.0
-    sign = np.sign(dots[idx])
-    e_target = sign * e_best
+        def fun(scale):
+            q_scalar = 1 - Delta_phi**2 * scale**2 / 8
+            q_vec = scale / 2 * B_Delta_phi
+            return Quaternion([q_scalar, *q_vec]), s
 
-    # TODO: we have to take the one where the cross product is largest
-    axis = np.cross(e_target, u)
-    angle = np.acos(u @ e_target)
+        P_IJ = P_IB0
 
-    axis = axis / np.linalg.norm(axis)
+    else:
+        i = np.argmin(np.abs(B_Delta_phi))
+        B_target = np.zeros(3, dtype=float)
+        B_target[i] = 1.0
 
-    #    print(dots, axis, angle, idx)
-    return Quaternion(axis, angle), idx
+        B_n = B_Delta_phi / Delta_phi
+
+        B_axis = np.cross(B_target, B_n)
+        B_axis /= np.linalg.norm(B_axis)
+        angle = np.arccos(np.clip(B_n @ B_target, -1.0, 1.0))
+
+        P_B0J = Quaternion(B_axis, angle)
+        P_IJ = P_IB0 @ P_B0J
+
+        s0 = np.ones(3)
+
+        def fun(scale):
+            s = s0 * np.sqrt(1 + scale**2 * Delta_phi**2)
+            s[i] = 1.0
+
+            angle_ = np.arctan(scale * Delta_phi)
+            P_JB = P_B0J.inverted() @ Quaternion(B_n, angle_)
+
+            return P_JB, s
+
+    return P_IJ, fun
 
 
 def smallest_rotation_quaternion(v, i=None):
@@ -205,8 +225,11 @@ def bake_animation(idx, amplitude, play_time):
         root.animation_data_clear()
         child.animation_data_clear()
 
-        # update for scale
-        q_align, align_idx = get_q_align(B_Delta_phi)
+        # update for rotation and scale
+        P_IJ, fun = decomposition(P_IB0, B_Delta_phi)
+
+        # root rotation is constant per mode
+        root.rotation_quaternion = P_IJ
 
         # go trhough frames
         for frame in range(frame_start, frame_end + 1):
@@ -217,27 +240,13 @@ def bake_animation(idx, amplitude, play_time):
             root.location = Vector(r_OP0 + d_r)
             root.keyframe_insert(data_path="location", frame=frame)
 
-            # rotation
-            dphi_vec = A_t * B_Delta_phi
-            dphi = np.linalg.norm(dphi_vec)
+            # root scale and child rotation
+            P_JB, s = fun(A_t)
 
-            if dphi < 1e-12:
-                dq = Quaternion((1, 0, 0, 0))
-            else:
-                axis = Vector(dphi_vec / dphi)
-                angle = np.arctan(dphi)
-                dq = Quaternion(axis, angle)
-
-            root.rotation_quaternion = P_IB0 @ q_align
-            root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
-
-            s = np.sqrt(1 + dphi**2) * np.ones(3)
-            s[align_idx] = 1.0
             root.scale = s
             root.keyframe_insert(data_path="scale", frame=frame)
 
-            # child rotation
-            child.rotation_quaternion = q_align.inverted() @ dq
+            child.rotation_quaternion = P_JB
             child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
     # armatures
@@ -278,7 +287,10 @@ def bake_animation(idx, amplitude, play_time):
             B_Delta_phi = np.array(root["B_Delta_phi"][idx], dtype=float)
 
             # update for scale
-            q_align, align_idx = get_q_align(B_Delta_phi)
+            P_IJ, fun = decomposition(P_IB0, B_Delta_phi)
+
+            # root rotation is constant per mode
+            root.rotation_quaternion = P_IJ
 
             # go trhough frames
             for frame in range(frame_start, frame_end + 1):
@@ -289,27 +301,13 @@ def bake_animation(idx, amplitude, play_time):
                 root.location = Vector(r_OP0 + d_r)
                 root.keyframe_insert(data_path="location", frame=frame)
 
-                # rotation
-                dphi_vec = A_t * B_Delta_phi
-                dphi = np.linalg.norm(dphi_vec)
+                # root scale and child rotation
+                P_JB, s = fun(A_t)
 
-                if dphi < 1e-12:
-                    dq = Quaternion((1, 0, 0, 0))
-                else:
-                    axis = Vector(dphi_vec / dphi)
-                    angle = np.arctan(dphi)
-                    dq = Quaternion(axis, angle)
-
-                root.rotation_quaternion = P_IB0 @ q_align
-                root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
-
-                s = np.sqrt(1 + dphi**2) * np.ones(3)
-                s[align_idx] = 1.0
                 root.scale = s
                 root.keyframe_insert(data_path="scale", frame=frame)
 
-                # child rotation
-                child.rotation_quaternion = q_align.inverted() @ dq
+                child.rotation_quaternion = P_JB
                 child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
 
 
