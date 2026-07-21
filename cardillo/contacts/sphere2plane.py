@@ -111,7 +111,9 @@ class Sphere2Plane:
         self.J_P_q = lambda t, q: self.subsystem.J_P_q(
             t, q, xi=self.xi, B_r_CP=self.B_r_CP
         )
-        self.J2_P = lambda t, q: self.subsystem.J2_P(t, q, xi=self.xi, B_r_CP=self.B_r_CP)
+        self.J2_P = lambda t, q: self.subsystem.J2_P(
+            t, q, xi=self.xi, B_r_CP=self.B_r_CP
+        )
         self.a_P = lambda t, q, u, a: self.subsystem.a_P(
             t, q, u, a, xi=self.xi, B_r_CP=self.B_r_CP
         )
@@ -213,9 +215,9 @@ class Sphere2Plane:
 
     def Wla_N_q(self, t, q, la_N):
         return la_N[0] * np.einsum("i,ijk->jk", self.n(t), self.J_P_q(t, q))
-    
+
     def KN_N(self, t, q, la_N):
-        K = - la_N[0] * np.einsum("i,ijk->jk", self.n(t), self.J2_P(t, q))
+        K = -la_N[0] * np.einsum("i,ijk->jk", self.n(t), self.J2_P(t, q))
         N = np.zeros_like(K)
         return K, N
 
