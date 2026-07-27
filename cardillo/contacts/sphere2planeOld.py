@@ -231,6 +231,16 @@ class Sphere2PlaneOld:
         v_F = self.v_Q(t) + self.Omega_F_tilde(t) @ r_QS
         return self.A.T @ self.t1t2(t) @ (v_S - v_F)
 
+        # P: Center of sphere,   S: closest point on sphere, B: sphere frame
+        # Q: reference on plane, F: closest point on plane,  Q: plane frame
+        # Omega_F_tilde is actually not Omega of the frame Q, but A_IQ_dot
+        #    Q_Omega_IQ_tilde = A_IQ.T @ A_IQ_dot
+        #  --> Omega_IQ_tilde = A_IQ @ Q_Omega_IQ_tilde @ A_IQ.T
+        #                     = A_IQ_dot @ A_IQ.T
+        #                     = self.Omega_F_tilde @ self.frame.A_IB.T
+        v_F = self.v_Q(t) + self.Omega_F_tilde(t) @ self.frame.A_IB(t).T @ r_QS
+        return self.A.T @ self.t1t2(t) @ (v_S - v_F)
+
     def __gamma_F_q(self, t, q, u):
         # return approx_fprime(q, lambda q: self.gamma_F(t, q, u))
         v_S_q = self.v_P_q(t, q, u) + self.r * ax2skew(self.n(t)) @ self.Omega_q(
@@ -255,35 +265,6 @@ class Sphere2PlaneOld:
             self.a_Q(t) + self.Psi_F_tilde(t) @ r_QS + self.Omega_F_tilde(t) @ r_QS_dot
         )
         return self.A.T @ (self.t1t2(t) @ (a_S - a_F) + self.t1t2_dot(t) @ (v_S - v_F))
-
-    def gamma_F_dot_q(self, t, q, u, u_dot):
-        # return approx_fprime(q, lambda q: self.gamma_F_dot(t, q, u, u_dot))
-        r_PS_tilde = ax2skew(-self.r * self.n(t))
-        r_PS_dot_tilde = ax2skew(-self.r * self.n_dot(t))
-        v_S_q = self.v_P_q(t, q, u) - r_PS_tilde @ self.Omega_q(t, q, u)
-        a_S_q = (
-            self.a_P_q(t, q, u, u_dot)
-            - r_PS_tilde @ self.Psi_q(t, q, u, u_dot)
-            - r_PS_dot_tilde @ self.Omega_q(t, q, u)
-        )
-
-        v_F_q = self.Omega_F_tilde(t) @ self.r_OP_q(t, q)
-        a_F_q = self.Psi_F_tilde(t) @ self.r_OP_q(t, q) + self.Omega_F_tilde(
-            t
-        ) @ self.v_P_q(t, q, u)
-
-        return self.A.T @ (
-            self.t1t2(t) @ (a_S_q - a_F_q) + self.t1t2_dot(t) @ (v_S_q - v_F_q)
-        )
-
-    def gamma_F_dot_u(self, t, q, u, u_dot):
-        # return approx_fprime(u, lambda u: self.gamma_F_dot(t, q, u, u_dot))
-        r_PS_tilde = ax2skew(-self.r * self.n(t))
-        a_S_u = self.a_P_u(t, q, u, u_dot) - r_PS_tilde @ self.Psi_u(t, q, u, u_dot)
-        J_P = self.J_P(t, q)
-        a_F_u = self.Omega_F_tilde(t) @ J_P
-        J_S = self.J_P - r_PS_tilde @ self.J_R(t, q)
-        return self.A.T @ (self.t1t2(t) @ (a_S_u - a_F_u) + self.t1t2_dot(t) @ J_S)
 
     def gamma_F_u(self, t, q):
         # return approx_fprime(np.zeros(self.nu), lambda u: self.gamma_F(t, q, u))
