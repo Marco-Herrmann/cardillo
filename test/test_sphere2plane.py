@@ -96,7 +96,7 @@ def run(solver=Moreau, VTK_export=False):
     contact = Sphere2Plane(
         floor,
         ball,
-        mu=mu * 0.0,
+        mu=mu,
         radius=radius,
         e_N=e_N,
         e_F=e_F,
@@ -127,7 +127,7 @@ def run(solver=Moreau, VTK_export=False):
         contacti = Sphere2Plane(
             floor,
             tetrahedron,
-            mu=mu * 0.0,
+            mu=mu,
             radius=0,
             e_N=e_N,
             e_F=e_F,
@@ -155,6 +155,12 @@ def run(solver=Moreau, VTK_export=False):
         dir_name = Path(__file__).parent
         # system.export(dir_name, "vtk", sol)
         system.export_blender(dir_name, "blender", sol, create_blend=True)
+
+def test_with_Moreau():
+    run(Moreau)
+
+def test_with_BackwardEuler():
+    run(BackwardEuler)
 
 
 @pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
@@ -447,36 +453,40 @@ def test_new_old():
     assert np.all(np.isclose(*Wla_F_q)), f"Wla_F_q: {Wla_F_q[0]} != {Wla_F_q[1]}"
 
 
-def test_rotating_plate_kin():
+def test_rotating_plate_kin(show_plot=False):
     A_rig = Exp_SO3(np.random.rand(3))
     r_rig = np.random.rand(3)
 
     sol, gamma, gamma_theo = rotating_plate(np.eye(3), np.zeros(3))
     sol_rig, gamma_rig, gamma_theo_rig = rotating_plate(A_rig, r_rig)
-    A_rig = np.eye(3)
 
-    # plot relative velocities
-    fig, ax = plt.subplots(1, 2, squeeze=False)
-    ax[0, 0].plot(sol.t, gamma[:, 0], label="gamma_1")
-    ax[0, 1].plot(sol.t, gamma[:, 1], label="gamma_2")
-    ax[0, 0].plot(sol.t, gamma_theo[:, 0], "--", label="theo_1")
-    ax[0, 1].plot(sol.t, gamma_theo[:, 1], "--", label="theo_2")
+    if show_plot:    
+        # plot relative velocities
+        fig, ax = plt.subplots(1, 2, squeeze=False)
+        ax[0, 0].plot(sol.t, gamma[:, 0], label="gamma_1")
+        ax[0, 1].plot(sol.t, gamma[:, 1], label="gamma_2")
+        ax[0, 0].plot(sol.t, gamma_theo[:, 0], "--", label="theo_1")
+        ax[0, 1].plot(sol.t, gamma_theo[:, 1], "--", label="theo_2")
 
-    ax[0, 0].plot(sol_rig.t, gamma_rig[:, 0], "-.", label="gamma_1 rig")
-    ax[0, 1].plot(sol_rig.t, gamma_rig[:, 1], "-.", label="gamma_2 rig")
-    ax[0, 0].plot(sol_rig.t, gamma_theo_rig[:, 0], ":", label="theo_1 rig")
-    ax[0, 1].plot(sol_rig.t, gamma_theo_rig[:, 1], ":", label="theo_2 rig")
+        ax[0, 0].plot(sol_rig.t, gamma_rig[:, 0], "-.", label="gamma_1 rig")
+        ax[0, 1].plot(sol_rig.t, gamma_rig[:, 1], "-.", label="gamma_2 rig")
+        ax[0, 0].plot(sol_rig.t, gamma_theo_rig[:, 0], ":", label="theo_1 rig")
+        ax[0, 1].plot(sol_rig.t, gamma_theo_rig[:, 1], ":", label="theo_2 rig")
 
-    ax[0, 0].legend()
-    ax[0, 1].legend()
-    ax[0, 0].grid()
-    ax[0, 1].grid()
-    ax[0, 0].set_title("gamma_1")
-    ax[0, 1].set_title("gamma_2")
-    plt.show()
+        ax[0, 0].legend()
+        ax[0, 1].legend()
+        ax[0, 0].grid()
+        ax[0, 1].grid()
+        ax[0, 0].set_title("gamma_1")
+        ax[0, 1].set_title("gamma_2")
+        plt.show()
+
+    assert np.all(np.isclose(gamma, gamma_theo, atol=1e-6))
+    assert np.all(np.isclose(gamma, gamma_rig, atol=1e-6))
+    assert np.all(np.isclose(gamma_rig, gamma_theo_rig, atol=1e-6))
 
 
-def test_rotating_plate_dyn():
+def test_rotating_plate_dyn(show_plot=False):
     sol, _, _ = rotating_plate(
         np.eye(3), np.zeros(3), constrained=False, blender_export=False
     )
@@ -489,29 +499,33 @@ def test_rotating_plate_dyn():
     r_OBall = sol.q[:, :3].T
     r_OBall_rig = A_rig.T @ (sol_rig.q[:, :3] - r_rig).T
 
-    fig, ax = plt.subplots(3, 1, squeeze=False)
-    ax[0, 0].plot(sol.t, r_OBall[0], label="ez^Plane up")
-    ax[1, 0].plot(sol.t, r_OBall[1], label="ez^Plane up")
-    ax[2, 0].plot(sol.t, r_OBall[2], label="ez^Plane up")
+    if show_plot:
+        fig, ax = plt.subplots(3, 1, squeeze=False)
+        ax[0, 0].plot(sol.t, r_OBall[0], label="ez^Plane up")
+        ax[1, 0].plot(sol.t, r_OBall[1], label="ez^Plane up")
+        ax[2, 0].plot(sol.t, r_OBall[2], label="ez^Plane up")
 
-    ax[0, 0].plot(sol_rig.t, r_OBall_rig[0], "--", label="rigidly transformed")
-    ax[1, 0].plot(sol_rig.t, r_OBall_rig[1], "--", label="rigidly transformed")
-    ax[2, 0].plot(sol_rig.t, r_OBall_rig[2], "--", label="rigidly transformed")
-    ax[0, 0].set_ylabel("Ball position x")
-    ax[1, 0].set_ylabel("Ball position y")
-    ax[2, 0].set_ylabel("Ball position z")
-    [(axi.legend(), axi.grid()) for axi in ax.flatten()]
-    plt.show()
+        ax[0, 0].plot(sol_rig.t, r_OBall_rig[0], "--", label="rigidly transformed")
+        ax[1, 0].plot(sol_rig.t, r_OBall_rig[1], "--", label="rigidly transformed")
+        ax[2, 0].plot(sol_rig.t, r_OBall_rig[2], "--", label="rigidly transformed")
+        ax[0, 0].set_ylabel("Ball position x")
+        ax[1, 0].set_ylabel("Ball position y")
+        ax[2, 0].set_ylabel("Ball position z")
+        [(axi.legend(), axi.grid()) for axi in ax.flatten()]
+        plt.show()
+
+    assert np.all(np.isclose(r_OBall, r_OBall_rig, atol=1e-6))
 
 
 def rotating_plate(A_rig, r_rig, constrained=True, blender_export=False):
     radius = 0.5
+    anisotropy = np.array([1.0, 0.8])
 
     omega = 2 * np.pi * 0.5
     vx_rel = 0.4
     vy_rel = 0.2
 
-    offset = lambda t: np.array([0.1 + vx_rel * t, 0.3 + vy_rel * t, radius + 0.2])
+    offset = lambda t: np.array([0.1 + vx_rel * t, 0.3 + vy_rel * t, radius + (0.0 if constrained else 0.2)])
     offset_dot = lambda t: np.array([vx_rel, vy_rel, 0.0])
 
     system = System()
@@ -547,7 +561,7 @@ def rotating_plate(A_rig, r_rig, constrained=True, blender_export=False):
     F_gravity = lambda t: A_rig @ np.array([0.0, 0.0, -9.81 * ball.mass])
     gravity = Force(F_gravity, ball)
 
-    contact = Sphere2Plane(floor, ball, mu=1.0, radius=radius)
+    contact = Sphere2Plane(floor, ball, mu=1.0, radius=radius, anisotropy=anisotropy)
     # contact = Sphere2PlaneOld(floor, ball, mu=1.0, r=radius)
 
     system.add(floor, frame_ball, ball, contact, gravity)
@@ -580,21 +594,15 @@ def rotating_plate(A_rig, r_rig, constrained=True, blender_export=False):
         Bi_Omega1 = np.array([0.0, 0.0, omega])
         Bi_r_OJ2_dot = A_IB(ti).T @ v_J2 - np.cross(Bi_Omega1, A_IB(ti).T @ r_OJ2)
 
-        gamma_theo[i] = Bi_r_OJ2_dot[:2]
+        gamma_theo[i] = anisotropy * Bi_r_OJ2_dot[:2]
 
     return sol, gamma, gamma_theo
 
 
-# def test_with_Moreau():
-#     run(Moreau)
-
-# def test_with_BackwardEuler():
-#     run(BackwardEuler)
-
 if __name__ == "__main__":
     test_implementation()
     test_new_old()
-    test_rotating_plate_kin()
-    test_rotating_plate_dyn()
+    test_rotating_plate_kin(show_plot=True)
+    test_rotating_plate_dyn(show_plot=True)
     run(Moreau)
     run(BackwardEuler)
