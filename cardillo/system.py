@@ -1,5 +1,4 @@
 from copy import deepcopy
-import glob
 import numpy as np
 import os
 from pathlib import Path
@@ -214,10 +213,9 @@ class System:
         self.name = self.name if hasattr(self, "name") else "System"
         output_file = f"{path}/{self.name}.blend"
 
-        gltf_files = glob.glob(os.path.join(path, "*.glb"))
         build_blend = Path(Path(__file__).parent, "visualization", "build_blend.py")
         subprocess.run(
-            [blenderPath, "-b", "-P", build_blend, "--", output_file, *gltf_files],
+            [blenderPath, "-b", "-P", build_blend, "--", output_file, path],
             stdout=subprocess.DEVNULL if not verbose else None,
         )
 
@@ -994,24 +992,6 @@ class System:
             coo[i, contr.la_FDOF, contr.uDOF] = contr.gamma_F_u(t, q[contr.qDOF])
         return coo.asformat(format)
 
-    def gamma_F_dot_q(self, t, q, u, u_dot, format="coo", coo=None):
-        if coo is None:
-            coo = CooMatrix((self.nla_F, self.nq))
-        for i, contr in enumerate(self.__gamma_F_contr):
-            coo[i, contr.la_FDOF, contr.qDOF] = contr.gamma_F_dot_q(
-                t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF]
-            )
-        return coo.asformat(format)
-
-    def gamma_F_dot_u(self, t, q, u, u_dot, format="coo", coo=None):
-        if coo is None:
-            coo = CooMatrix((self.nla_F, self.nu))
-        for i, contr in enumerate(self.__gamma_F_contr):
-            coo[i, contr.la_FDOF, contr.uDOF] = contr.gamma_F_dot_u(
-                t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF]
-            )
-        return coo.asformat(format)
-
     def W_F(self, t, q, format="coo", coo=None):
         if coo is None:
             coo = CooMatrix((self.nu, self.nla_F))
@@ -1058,9 +1038,10 @@ class System:
         else:
             coo_K, coo_N = coo
 
-        # assert self.nla_N == 0
-        if self.nla_N != 0:
-            warnings.warn("KN_N is not taken into account!")
+        for i, contr in enumerate(self.__g_N_contr):
+            K, N = contr.KN_N(t, q[contr.qDOF], la_N[contr.la_NDOF])
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
     def KN_F(self, t, q, la_F, format="coo"): ...

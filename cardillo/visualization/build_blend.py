@@ -1,4 +1,5 @@
 import bpy
+from pathlib import Path
 import sys
 import numpy as np
 
@@ -6,12 +7,12 @@ argv = sys.argv
 argv = argv[argv.index("--") + 1 :]
 
 output_path = argv[0]
-gltf_files = argv[1:]
+gltf_files = sorted(Path(argv[1]).glob("*.glb"))
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 for f in gltf_files:
-    bpy.ops.import_scene.gltf(filepath=f, bone_heuristic="TEMPERANCE")
+    bpy.ops.import_scene.gltf(filepath=str(f), bone_heuristic="TEMPERANCE")
 
 # auto smooth objects
 # TODO: it is not the best way to go via selection and active objects
