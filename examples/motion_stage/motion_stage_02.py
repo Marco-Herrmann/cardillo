@@ -9,8 +9,8 @@ from cardillo.rods_new import (
     CrossSectionInertias,
     Simo1986,
     CircularCrossSection,
-    make_CosseratRod,
 )
+from cardillo.rods_new2 import make_CosseratRod
 from cardillo.discrete import RigidBody, Frame
 from cardillo.constraints import RigidConnection, Prismatic
 from cardillo.forces import Force
@@ -37,6 +37,8 @@ from cardillo.solver import (
 # https://past.isma-isaac.be/downloads/isma2014/papers/isma2014_0509.pdf
 # https://www.youtube.com/watch?v=sgF-0xj2sD8
 # https://pure.tue.nl/admin/files/317778356/1722107-ThesisProjectReport.pdf
+
+eye3 = np.eye(3, dtype=float)
 
 
 def r_OP0_fun(xi, length, l_s, l_u, height):
@@ -68,14 +70,16 @@ def A_IB0_fun(xi, length, l_s, l_u, height):
 def motion_stage(l_x0, l_y0):
     assert -35.0 <= l_x0 <= 35.0, "Bounds for l_x0 (long stroke) are +- 35.0"
     assert -15.0 <= l_y0 <= 15.0, "Bounds for l_y0 (short stroke) are +- 20.0"
+    n_stat = 10
 
     # cable dimensions geometry
     r_cable = 0.375 / 2
 
+    # TODO: tune these parameters
     # cable material
     E = 5.0 * 1e7
     G = 2.5 * 1e7
-    density = 1.0
+    density = 1.0 * 1e-3
 
     # geometry
     r_OP1_lower = np.array([-42.0, 47.0, 24.3])
@@ -95,41 +99,49 @@ def motion_stage(l_x0, l_y0):
     actuation_frequency_short = 2.0  # [1/s = Hz]
 
     # masses of stages
-    mass_long = 1.0
-    mass_short = 1.0
+    mass_long = 1.0 * 1e4
+    mass_short = 1.0 * 1e4
 
     # discretization and model
     system = System()
     nelement1 = 20
     nelement2a = 20
     nelement2b = 20
-    Cable = make_CosseratRod()
+    Cable = make_CosseratRod(
+        idx_constraints=[3],
+    )
 
     t1 = 1.0
     dt = 0.001
 
     # Rigid bodies for table, long stroke and short stroke
     # TODO: spring-damper on table <--> system.origin do excite some dynamics
+    r_OP0_table = np.array([0.0, 0.0, -5.0])
+    A_IB0_table = eye3
     table = RigidBody(
         mass=1.0,
         B_Theta_C=np.diag([1.0, 1.0, 1.0]),
-        q0=RigidBody.pose2q(np.array([0.0, 0.0, -5.0]), np.eye(3)),
+        q0=RigidBody.pose2q(r_OP0_table, A_IB0_table),
         name="Table",
     )
 
     # TODO: B_Theta_C
+    r_OP0_long_stroke = np.array([0.0, 0.0, 32.5])
+    A_IB0_long_stroke = eye3
     long_stroke = RigidBody(
         mass=mass_long,
         B_Theta_C=np.diag([1.0, 1.0, 1.0]) * mass_long,
-        q0=RigidBody.pose2q(np.array([0.0, 0.0, 32.5]), np.eye(3)),
+        q0=RigidBody.pose2q(r_OP0_long_stroke, A_IB0_long_stroke),
         name="long_stroke",
     )
 
     # TODO: B_Theta_C
+    r_OP0_short_stroke = np.array([0.0, 0.0, 39.0])
+    A_IB0_short_stroke = eye3
     short_stroke = RigidBody(
         mass=mass_short,
         B_Theta_C=np.diag([1.0, 1.0, 1.0]) * mass_short,
-        q0=RigidBody.pose2q(np.array([0.0, 0.0, 39.0]), np.eye(3)),
+        q0=RigidBody.pose2q(r_OP0_short_stroke, A_IB0_short_stroke),
         name="short_stroke",
     )
 
@@ -151,6 +163,58 @@ def motion_stage(l_x0, l_y0):
     actuation_short_dyn = lambda t: actuation_amplitude_short * np.sin(
         2 * np.pi * actuation_frequency_short * t
     )
+
+    ####
+    # actuation static to go to 9 positions in the workspace
+    ####
+    #         ^ y
+    #         |
+    #   2-----3-----4
+    #   |           |
+    # - 1-----0 - - 5 - - > x
+    #               |
+    #   8-----7-----6
+
+    lx_min = 35.0
+    ly_min = 15.0
+
+    def actuation_long_stat(t):
+        if t < 1 / 9:
+            return -t * 9 * lx_min
+        elif t < 2 / 9:
+            return -lx_min
+        elif t < 4 / 9:
+            return (t - 3 / 9) * 9 * lx_min
+        elif t < 6 / 9:
+            return lx_min
+        elif t < 8 / 9:
+            return -(t - 7 / 9) * 9 * lx_min
+        else:
+            return -lx_min
+
+    def actuation_short_stat(t):
+        if t < 1 / 9:
+            return 0
+        elif t < 2 / 9:
+            return (t - 1 / 9) * 9 * ly_min
+        elif t < 4 / 9:
+            return ly_min
+        elif t < 6 / 9:
+            return -(t - 5 / 9) * 9 * ly_min
+        else:
+            return -ly_min
+
+    n_stat = 90
+
+    ts_test = np.linspace(0, 1, 91)
+    als = [actuation_long_stat(t) for t in ts_test]
+    ass = [actuation_short_stat(t) for t in ts_test]
+    fig, ax = plt.subplots(2, 2)
+    ax[0, 0].plot(ts_test, als)
+    ax[0, 1].plot(ts_test, ass)
+    ax[1, 0].plot(als, ass)
+    plt.show()
+
     actuation_long_stroke = ActuatedConstraint(
         long_stroke_constraint,
         actuation_long_stat,
@@ -175,14 +239,12 @@ def motion_stage(l_x0, l_y0):
 
     b = lambda t, xi: np.array([0.0, 0.0, -9.81 * A * density])
 
-    # frames for contact
-    # TODO: restrict plane where contact can happen
-    frame_contact_lower = Frame(r_OP1_lower, name="frame_contact_lower")
-    frame_contact_upper = Frame(
-        r_OP1_upper, A_IB=A_IB_basic(np.pi).y, name="frame_contact_upper"
-    )
-    frame_contact_lower_2b = Frame(r_OP2b_lower, name="frame_contact_lower_2b")
-    system.add(frame_contact_lower, frame_contact_upper, frame_contact_lower_2b)
+    # relative contact point of planes w.r.t. center of mass
+    B_r_CP1_lower = A_IB0_table.T @ (r_OP1_lower - r_OP0_table)
+    B_r_CP1_upper = A_IB0_long_stroke.T @ (r_OP1_upper - r_OP0_long_stroke)
+    B_r_CP2a_lower = A_IB0_table.T @ (r_OP2a_lower - r_OP0_table)
+    B_r_CP2a_upper = A_IB0_long_stroke.T @ (r_OP2a_upper - r_OP0_long_stroke)
+    B_r_CP2b_lower = A_IB0_long_stroke.T @ (r_OP2b_lower - r_OP0_long_stroke)
 
     properties = [
         # Cable 1: Long stroke
@@ -194,10 +256,12 @@ def motion_stage(l_x0, l_y0):
             r_OP_upper=r_OP1_upper,
             body_lower=table,
             body_upper=long_stroke,
-            frame_contact_lower=frame_contact_lower,
-            frame_contact_upper=frame_contact_upper,
+            B_r_CPlane_lower=B_r_CP1_lower,
+            A_BP_lower=eye3,
+            B_r_CPlane_upper=B_r_CP1_upper,
+            A_BP_upper=A_IB_basic(np.pi).y,
         ),
-        # Cable 2a: shirt stroke cable: Table to long stroke
+        # Cable 2a: short stroke cable: Table to long stroke
         dict(
             name="cable2a",
             nelement=nelement2a,
@@ -206,10 +270,12 @@ def motion_stage(l_x0, l_y0):
             r_OP_upper=r_OP2a_upper,
             body_lower=table,
             body_upper=long_stroke,
-            frame_contact_lower=frame_contact_lower,
-            frame_contact_upper=frame_contact_upper,
+            B_r_CPlane_lower=B_r_CP2a_lower,
+            A_BP_lower=eye3,
+            B_r_CPlane_upper=B_r_CP2a_upper,
+            A_BP_upper=A_IB_basic(np.pi).y,
         ),
-        # Cable 2b: shirt stroke cable: long stroke to short stroke
+        # Cable 2b: short stroke cable: long stroke to short stroke
         dict(
             name="cable2b",
             nelement=nelement2b,
@@ -218,8 +284,10 @@ def motion_stage(l_x0, l_y0):
             r_OP_upper=r_OP2b_upper,
             body_lower=long_stroke,
             body_upper=short_stroke,
-            frame_contact_lower=frame_contact_lower_2b,
-            frame_contact_upper=None,
+            B_r_CPlane_lower=B_r_CP2b_lower,
+            A_BP_lower=eye3,
+            B_r_CPlane_upper=None,
+            A_BP_upper=None,
         ),
     ]
 
@@ -227,6 +295,7 @@ def motion_stage(l_x0, l_y0):
     # Cables in the loop #
     ######################
     cables = []
+    # TODO: add planarizer for cable 2b
     for cable_properties in properties:
         nelement = cable_properties["nelement"]
         length = cable_properties["length"]
@@ -284,27 +353,33 @@ def motion_stage(l_x0, l_y0):
         # contacts
         for node in range(1, cable.nnodes - 1):
             contact_lower = Sphere2Plane(
-                cable_properties["frame_contact_lower"],
+                cable_properties["body_lower"],
                 cable,
-                mu=0.0,
-                r=0.0,
-                xi=node / (cable.nnodes - 1),
+                mu=1.0,
+                radius=0.0,
+                B_r_CP1=cable_properties["B_r_CPlane_lower"],
+                A_B1P=cable_properties["A_BP_lower"],
+                xi2=node / (cable.nnodes - 1),
                 name=f"contact_lower_{cable.name}_{node:0>2d}",
             )
             system.add(contact_lower)
-            if cable_properties["frame_contact_upper"] is not None:
+            if cable_properties["B_r_CPlane_upper"] is not None:
                 contact_upper = Sphere2Plane(
-                    cable_properties["frame_contact_upper"],
+                    cable_properties["body_upper"],
                     cable,
-                    mu=0.0,
-                    r=0.0,
-                    xi=node / (cable.nnodes - 1),
+                    mu=1.0,
+                    radius=0.0,
+                    B_r_CP1=cable_properties["B_r_CPlane_upper"],
+                    A_B1P=cable_properties["A_BP_upper"],
+                    xi2=node / (cable.nnodes - 1),
                     name=f"contact_upper_{cable.name}_{node:0>2d}",
                 )
                 system.add(contact_upper)
 
     # assemble system
     assemble_options = SolverOptions(compute_consistent_initial_conditions=False)
+    assemble_options_ccic = SolverOptions(compute_consistent_initial_conditions=True)
+    newton_options = SolverOptions(newton_atol=1e-8, newton_max_iter=50)
     system.add(table, long_stroke, short_stroke)
     system.add(
         table_constraint,
@@ -316,8 +391,17 @@ def motion_stage(l_x0, l_y0):
     system.assemble(options=assemble_options)
 
     # static solver
-    solver_stat = Newton(system, 10)
+    solver_stat = Newton(system, n_stat, options=newton_options)
+    solver_stat = Newton(
+        system, int(2 * n_stat / 10 + 1), t1=0.2, options=newton_options
+    )
+    # solver_stat = Newton(system, 1, t1=0.0, options=newton_options)
     sol_stat = solver_stat.solve()
+
+    # blender export
+    dir_name = Path(__file__).parent
+    sol_stat.t *= 10
+    # system.export_blender(dir_name, "blender_02_stat", sol_stat, create_blend=True)
 
     # visualize static result
     if len(cables) > 0:
@@ -329,21 +413,52 @@ def motion_stage(l_x0, l_y0):
             scale_di=length2a / 10,
         )
 
-    # prepare for dynamic simulation
+    # prepare for eigenmodes and dynamic simulation
     system.set_new_initial_state(
         sol_stat.q[-1], sol_stat.u[-1], t0=0.0, options=assemble_options
     )
 
-    actuation_long_stroke.update_actuation(actuation_long_dyn)
-    actuation_short_stroke.update_actuation(actuation_short_dyn)
+    # remove constraint but add constraint force as external one
+    actuation_long_stroke.update_actuation(
+        active=False, inactive_force=sol_stat.la_g[-1, actuation_long_stroke.la_gDOF]
+    )
+    actuation_short_stroke.update_actuation(
+        active=False, inactive_force=sol_stat.la_g[-1, actuation_short_stroke.la_gDOF]
+    )
 
-    # assemble here, when components are removed/added
-    # system.assemble(options=assemble_options)
+    # actuation_long_stroke.update_actuation(tau=actuation_long_stat(sol_stat.t[-1]), active=True)
+    # actuation_short_stroke.update_actuation(tau=actuation_short_stat(sol_stat.t[-1]), active=True)
+
+    # assemble
+    system.assemble(options=assemble_options_ccic)
+
+    # solve to make sure that the system is in static equilibrium
+    # TODO: is this necessary?
+    solver_stat2 = Newton(system, 1, t1=1.0)
+    sol_stat2 = solver_stat2.solve()
+
+    # eigenmodes
+    solver_eig = Eigenmodes(system, sol_stat2)
+    sol_eig = solver_eig.solve(-1)
+    dir_name = Path(__file__).parent
+    system.export_blender(dir_name, "blender_02_eig", sol_eig, create_blend=True)
+
+    print(np.argsort(-np.abs(sol_eig.Delta_z[short_stroke.uDOF[0]])))
+
+    exit()
+
+    # dynamic actuation
+    actuation_long_stroke.update_actuation(tau=actuation_long_dyn)
+    actuation_short_stroke.update_actuation(tau=actuation_short_dyn)
+
+    # assemble again
+    system.assemble(options=assemble_options)
 
     # dynamic solver
-    solver_dyn = BackwardEuler(system, t1=t1, dt=dt)
-    # solver_dyn = DualStormerVerlet(system, t1=t1, dt=dt)
+    # solver_dyn = BackwardEuler(system, t1=t1, dt=dt)
+    solver_dyn = DualStormerVerlet(system, t1=t1, dt=dt)
     # solver_dyn = Moreau(system, t1=t1, dt=dt)
+    # solver_dyn = Newton(system, t1=t1, n_load_steps=int((t1 - system.t0) / dt * 1e3))
     sol_dyn = solver_dyn.solve()
 
     # visualize dynamic result
@@ -357,6 +472,9 @@ def motion_stage(l_x0, l_y0):
         np.array([sol_dyn.q[i, short_stroke.qDOF[1]] for i in range(len(sol_dyn.t))])
         - l_y0
     )
+
+    if not hasattr(sol_dyn, "P_g"):
+        sol_dyn.P_g = sol_dyn.la_g
 
     fig, ax = plt.subplots(3, 2)
     ax[0, 0].plot(sol_dyn.t, [actuation_long_stroke.tau(ti) for ti in sol_dyn.t])
