@@ -252,7 +252,7 @@ class Sphere2Plane:
 
         return Wla
 
-    def _Wla_q(self, t, q, J1_F1):
+    def _Wla_q(self, t, q, J1_F):
         A_IJ1 = self.A_IJ1(t, q)
         n = A_IJ1[:, 2]
         r_OJ1 = self.r_OJ1(t, q)
@@ -296,8 +296,8 @@ class Sphere2Plane:
         J_C2_q2 = J_J2_q2 - np.einsum("ij,jkl->ikl", ax2skew(r_J2C2), J_R2_q2)
 
         # compute
-        F = A_IJ1 @ J1_F1
-        F_q1 = np.einsum("ijk,j->ik", A_IJ1_q1, J1_F1)
+        F = A_IJ1 @ J1_F
+        F_q1 = np.einsum("ijk,j->ik", A_IJ1_q1, J1_F)
 
         nu1 = self._nu1
         nq1 = self._nq1
@@ -313,7 +313,7 @@ class Sphere2Plane:
 
         return Wla_q
 
-    def _KN(self, t, q, J1_F1):
+    def _KN(self, t, q, J1_F):
         A_IJ1 = self.A_IJ1(t, q)
         n = A_IJ1[:, 2]
         r_OJ1 = self.r_OJ1(t, q)
@@ -351,20 +351,19 @@ class Sphere2Plane:
         DJ_J2 = self.J2_J2(t, q)
         DJ_R1 = self.J2_R1(t, q)
         DJ_R2 = self.J2_R2(t, q)
-        # TODO: why do the "+" signs below (the ones going with DJ_R2) work? Or is the idea behind / implementation of J2_R wrong?
-        DJ_J1C1_1 = -np.einsum("ijk,kl->jli", ax2skew(Dr_J1C1_1.T), J_R1) + np.einsum(
+        DJ_J1C1_1 = -np.einsum("ijk,kl->jli", ax2skew(Dr_J1C1_1.T), J_R1) - np.einsum(
             "ij,jkl->ikl", ax2skew(r_J1C1), DJ_R1
         )
         DJ_J1C1_2 = -np.einsum("ijk,kl->jli", ax2skew(Dr_J1C1_2.T), J_R1)
         DJ_J2C2_1 = -np.einsum("ijk,kl->jli", ax2skew(Dr_J2C2_1.T), J_R2)
-        DJ_J2C2_2 = +np.einsum("ij,jkl->ikl", ax2skew(r_J2C2), DJ_R2)
+        DJ_J2C2_2 = -np.einsum("ij,jkl->ikl", ax2skew(r_J2C2), DJ_R2)
         DJ_C1_1 = DJ_J1 + DJ_J1C1_1
         DJ_C1_2 = DJ_J1C1_2
         DJ_C2_1 = DJ_J2C2_1
         DJ_C2_2 = DJ_J2 + DJ_J2C2_2
 
         # compute
-        F = A_IJ1 @ J1_F1
+        F = A_IJ1 @ J1_F
         D_F = -ax2skew(F) @ J_R1
 
         nu1 = self._nu1
@@ -372,13 +371,13 @@ class Sphere2Plane:
         Wla[:nu1] = -J_C1.T @ F
         Wla[nu1:] = J_C2.T @ F
 
-        K = np.zeros((self._nu, self._nu), dtype=q.dtype)
-        K[:nu1, :nu1] = -np.einsum("i,ijk->jk", F, DJ_C1_1) - J_C1.T @ D_F
-        K[:nu1, nu1:] = -np.einsum("i,ijk->jk", F, DJ_C1_2)
-        K[nu1:, :nu1] = np.einsum("i,ijk->jk", F, DJ_C2_1) + J_C2.T @ D_F
-        K[nu1:, nu1:] = np.einsum("i,ijk->jk", F, DJ_C2_2)
+        DWla = np.zeros((self._nu, self._nu), dtype=q.dtype)
+        DWla[:nu1, :nu1] = -np.einsum("i,ijk->jk", F, DJ_C1_1) - J_C1.T @ D_F
+        DWla[:nu1, nu1:] = -np.einsum("i,ijk->jk", F, DJ_C1_2)
+        DWla[nu1:, :nu1] = np.einsum("i,ijk->jk", F, DJ_C2_1) + J_C2.T @ D_F
+        DWla[nu1:, nu1:] = np.einsum("i,ijk->jk", F, DJ_C2_2)
 
-        return K
+        return -DWla
 
     ################
     # normal contact
@@ -422,29 +421,15 @@ class Sphere2Plane:
         return self._gamma_dot(t, q, u, u_dot)[2:]
 
     def Wla_N_q(self, t, q, la_N):
-        J1_F1 = np.zeros(3)
-        J1_F1[2:] = la_N
-        return self._Wla_q(t, q, J1_F1)
+        J1_F = np.zeros(3)
+        J1_F[2:] = la_N
+        return self._Wla_q(t, q, J1_F)
 
     def KN_N(self, t, q, la_N):
-        # print("Changed la_N!")
-        # la_N[:] = 1.0
-        J1_F1 = np.zeros(3)
-        J1_F1[2:] = -la_N
-        KN_test = self._KN(t, q, J1_F1)
-        return KN_test, np.zeros_like(KN_test)
-
-        g_N_qq = approx_fprime(
-            q, lambda q_: approx_fprime(q_, lambda q__: self.g_N(t, q__))
-        )
-        B = np.block(
-            [
-                [self.subsystem1.q_dot_u(t, q[: self._nq1]), np.zeros((7, 6))],
-                [np.zeros((7, 6)), self.subsystem2.q_dot_u(t, q[self._nq1 :])],
-            ]
-        )
-        w02_num = B.T @ g_N_qq @ B
-        K_num = -la_N[0] * w02_num
+        J1_F = np.zeros(3)
+        J1_F[2:] = la_N
+        K = self._KN(t, q, J1_F)
+        return K, np.zeros_like(K)
 
     ##########
     # friction
@@ -453,16 +438,14 @@ class Sphere2Plane:
         return self.gamma_F_u(t, q).T
 
     def Wla_F_q(self, t, q, la_F):
-        J1_F1 = np.zeros(3)
-        J1_F1[:2] = self.A @ la_F
-        return self._Wla_q(t, q, J1_F1)
+        J1_F = np.zeros(3)
+        J1_F[:2] = self.A @ la_F
+        return self._Wla_q(t, q, J1_F)
 
     def KN_F(self, t, q, la_F):
-        # print("Changed la_F!")
-        # la_F[:] = 1.0
-        J1_F1 = np.zeros(3)
-        J1_F1[:2] = -self.A @ la_F
-        KN_test = self._KN(t, q, J1_F1)
+        J1_F = np.zeros(3)
+        J1_F[:2] = self.A @ la_F
+        KN_test = self._KN(t, q, J1_F)
         return (KN_test + KN_test.T) / 2, (KN_test - KN_test.T) / 2
 
     ############
