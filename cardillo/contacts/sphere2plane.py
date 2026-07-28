@@ -7,6 +7,7 @@ from cardillo.constraints._base import (
     concatenate_uDOF,
     auxiliary_functions,
 )
+from cardillo.discrete.discrete_export_base import make_glTF, make_glTF_arrow
 from cardillo.math.algebra import ax2skew, cross3
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.math.prox import Sphere
@@ -501,9 +502,47 @@ class Sphere2Plane:
         return points, cells, point_data, cell_data
 
     def export_blender(self, path, solution):
-        from warnings import warn
+        nt = len(solution.t)
+        r_OC1 = np.zeros((nt, 3))
+        r_OC2 = np.zeros((nt, 3))
+        v_C1 = np.zeros((nt, 3))
+        v_C2 = np.zeros((nt, 3))
+        for i in range(nt):
+            t = solution.t[i]
+            q = solution.q[i, self.qDOF]
+            u = solution.u[i, self.uDOF]
+            P_N = solution.P_N[i, self.la_NDOF]
 
-        warn("Sphere2Plane.export_blender not implemented")
+            # positions and orientation
+            A_IJ1 = self.A_IJ1(t, q)
+            t1, t2, n = A_IJ1.T
+            r_OJ1 = self.r_OJ1(t, q)
+            r_OJ2 = self.r_OJ2(t, q)
+            r_J1J2 = r_OJ2 - r_OJ1
+            r_J1C1 = r_J1J2 - n * (n @ r_J1J2)
+            r_J2C2 = -self.radius * n
+
+            # velocities
+            v_J1 = self.v_J1(t, q, u)
+            v_J2 = self.v_J2(t, q, u)
+            Omega1 = self.Omega1(t, q, u)
+            Omega2 = self.Omega2(t, q, u)
+            v_C1[i] = v_J1 + cross3(Omega1, r_J1C1)
+            v_C2[i] = v_J2 + cross3(Omega2, r_J2C2)
+
+            r_OC1[i] = r_OJ1 + r_J1C1
+            r_OC2[i] = r_OJ2 + r_J2C2
+
+            F2 = n * P_N
+            if hasattr(self, f"gamma_F"):
+                P_F = solution.P_F[i, self.la_FDOF]
+                F2 += t1 * P_F[0] + t2 * P_F[1]
+
+        make_glTF(path, f"{self.name}_C1", solution.t, r_OC1, v_C1)
+        make_glTF(path, f"{self.name}_C2", solution.t, r_OC2, v_C2)
+        make_glTF_arrow(path, f"{self.name}_F1", solution.t, r_OC1, r_OC1 - F2)
+        make_glTF_arrow(path, f"{self.name}_F2", solution.t, r_OC2, r_OC2 + F2)
+        make_glTF_arrow(path, f"{self.name}_g_N", solution.t, r_OC1, r_OC2)
 
     def export_blender_modes(self, path, solution):
         from warnings import warn

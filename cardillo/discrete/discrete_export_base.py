@@ -23,7 +23,18 @@ from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.SmallestRotation import smallest_rotation_quaternion
 
 
-def make_glTF(path, name, t, r_OP, v_P=None, P_IB=None, B_Omega=None, mesh=None):
+def make_glTF(
+    path,
+    name,
+    t,
+    r_OP,
+    v_P=None,
+    P_IB=None,
+    B_Omega=None,
+    Delta_r=None,
+    B_Delta_phi=None,
+    mesh=None,
+):
     # TODO: get rid of os
     filename = os.path.join(path, f"{name}.glb")
 
@@ -31,7 +42,7 @@ def make_glTF(path, name, t, r_OP, v_P=None, P_IB=None, B_Omega=None, mesh=None)
     nodes = []
     # create an empty
     if mesh is None:
-        nodes.append(Node(name=f"{name}_obj"))
+        nodes.append(Node(name=f"{name}_obj{'__invisible' if P_IB is None else ''}"))
         mesh_gltf = []
     else:
         # create a mesh node

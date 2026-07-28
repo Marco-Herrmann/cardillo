@@ -165,7 +165,7 @@ def Meshed(Base):
                 v_P,
                 P_IB,
                 B_Omega,
-                self.B_visual_mesh,
+                mesh=self.B_visual_mesh,
             )
 
         def export_blender_modes(self, path, solution):
