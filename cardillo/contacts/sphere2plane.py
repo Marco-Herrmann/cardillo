@@ -452,47 +452,50 @@ class Sphere2Plane:
     # vtk export
     ############
     def export(self, sol_i, **kwargs):
-        r_OP = self.r_OP(sol_i.t, sol_i.q[self.qDOF])
-        n = self.n(sol_i.t)
-        t1, t2 = self.t1t2(sol_i.t)
-        g_N = self.g_N(sol_i.t, sol_i.q[self.qDOF])
+        # extract from solution
+        t = sol_i.t
+        q = sol_i.q[self.qDOF]
+        u = sol_i.u[self.uDOF]
         P_N = sol_i.P_N[self.la_NDOF]
-        r_PC1 = -self.r * n
-        r_QC2 = r_OP - self.r_OQ(sol_i.t) - n * (g_N + self.r)
-        points = [r_OP + r_PC1, r_OP - n * (g_N + self.r)]
+
+        # positions and orientation
+        A_IJ1 = self.A_IJ1(t, q)
+        t1, t2, n = A_IJ1.T
+        r_OJ1 = self.r_OJ1(t, q)
+        r_OJ2 = self.r_OJ2(t, q)
+        r_J1J2 = r_OJ2 - r_OJ1
+        r_J1C1 = r_J1J2 - n * (n @ r_J1J2)
+        r_J2C2 = -self.radius * n
+        g_N = n @ r_J1J2 - self.radius
+
+        # velocities
+        v_J1 = self.v_J1(t, q, u)
+        v_J2 = self.v_J2(t, q, u)
+        Omega1 = self.Omega1(t, q, u)
+        Omega2 = self.Omega2(t, q, u)
+        v_C1 = v_J1 + cross3(Omega1, r_J1C1)
+        v_C2 = v_J2 + cross3(Omega2, r_J2C2)
+        _gamma = A_IJ1.T @ (v_C2 - v_C1)
+
+        # vtk
+        points = [r_OJ1 + r_J1C1, r_OJ2 + r_J2C2]
         cells = [(VTK_LINE, [0, 1])]
-        A_IB1 = self.A_IB(sol_i.t, sol_i.q[self.qDOF])
-        A_IB2 = self.frame.A_IB(sol_i.t)
         point_data = dict(
-            v_Ci=[
-                self.subsystem.v_P(
-                    sol_i.t,
-                    sol_i.q[self.qDOF],
-                    sol_i.u[self.uDOF],
-                    self.xi,
-                    A_IB1.T @ r_PC1,
-                ),
-                self.frame.v_P(sol_i.t, B_r_CP=A_IB2.T @ r_QC2),
-            ],
-            Omega=[
-                self.Omega(sol_i.t, sol_i.q[self.qDOF], sol_i.u[self.uDOF]),
-                A_IB2 @ self.frame.B_Omega(sol_i.t),
-            ],
-            n=[-n, n],
-            t1=[-t1, t1],
-            t2=[-t2, t2],
+            v_Ci=[v_C1, v_C2],
+            Omega=[Omega1, Omega2],
+            n=[n, -n],
+            t1=[t1, -t1],
+            t2=[t2, -t2],
             P_N=[P_N, P_N],
         )
         cell_data = dict(
-            g_N=[g_N],
-            g_N_dot=[self.g_N_dot(sol_i.t, sol_i.q[self.qDOF], sol_i.u[self.uDOF])],
+            g_N=[[g_N]],
+            g_N_dot=[[_gamma[2]]],
         )
 
         if hasattr(self, f"gamma_F"):
-            cell_data["gamma_F"] = [
-                self.gamma_F(sol_i.t, sol_i.q[self.qDOF], sol_i.u[self.uDOF])
-            ]
             P_F = sol_i.P_F[self.la_FDOF]
+            cell_data["gamma_F"] = [_gamma[:2]]
             point_data["P_F"] = np.array([P_F, P_F])
 
         return points, cells, point_data, cell_data

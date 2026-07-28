@@ -153,11 +153,13 @@ def run(solver=Moreau, VTK_export=False):
     # vtk-export
     if VTK_export:
         dir_name = Path(__file__).parent
-        # system.export(dir_name, "vtk", sol)
+        system.export(dir_name, "vtk", sol)
         system.export_blender(dir_name, "blender", sol, create_blend=True)
+
 
 def test_with_Moreau():
     run(Moreau)
+
 
 def test_with_BackwardEuler():
     run(BackwardEuler)
@@ -460,7 +462,7 @@ def test_rotating_plate_kin(show_plot=False):
     sol, gamma, gamma_theo = rotating_plate(np.eye(3), np.zeros(3))
     sol_rig, gamma_rig, gamma_theo_rig = rotating_plate(A_rig, r_rig)
 
-    if show_plot:    
+    if show_plot:
         # plot relative velocities
         fig, ax = plt.subplots(1, 2, squeeze=False)
         ax[0, 0].plot(sol.t, gamma[:, 0], label="gamma_1")
@@ -525,7 +527,9 @@ def rotating_plate(A_rig, r_rig, constrained=True, blender_export=False):
     vx_rel = 0.4
     vy_rel = 0.2
 
-    offset = lambda t: np.array([0.1 + vx_rel * t, 0.3 + vy_rel * t, radius + (0.0 if constrained else 0.2)])
+    z = radius + (0.0 if constrained else 0.2)
+
+    offset = lambda t: np.array([0.1 + vx_rel * t, 0.3 + vy_rel * t, z])
     offset_dot = lambda t: np.array([vx_rel, vy_rel, 0.0])
 
     system = System()
