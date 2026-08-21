@@ -69,7 +69,7 @@ class B_Moment:
         )
         arrow = np.array(
             [
-                self.A_IB(ti, qi[self.qDOF]) @ self.moment(ti)
+                self.subsystem.A_IB(ti, qi[self.qDOF], xi=self.xi) @ self.moment(ti)
                 for ti, qi in zip(solution.t, solution.q)
             ]
         )
