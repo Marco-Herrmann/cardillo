@@ -511,7 +511,7 @@ class Sphere2Plane:
             t = solution.t[i]
             q = solution.q[i, self.qDOF]
             u = solution.u[i, self.uDOF]
-            P_N = solution.P_N[i, self.la_NDOF]
+            P_N = solution.P_N[i, self.la_NDOF] if hasattr(solution, "P_N") else 0.0
 
             # positions and orientation
             A_IJ1 = self.A_IJ1(t, q)
@@ -534,7 +534,7 @@ class Sphere2Plane:
             r_OC2[i] = r_OJ2 + r_J2C2
 
             F2 = n * P_N
-            if hasattr(self, f"gamma_F"):
+            if hasattr(solution, f"P_F"):
                 P_F = solution.P_F[i, self.la_FDOF]
                 F2 += t1 * P_F[0] + t2 * P_F[1]
 
