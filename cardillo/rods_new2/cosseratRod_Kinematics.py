@@ -217,11 +217,33 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
             self._T_IB = T_SO3_R9
             self._T_IB_P = T_SO3_R9_R9
 
+        self.parent.step_callback = self.step_callback
+
         # export and visualization
         self.parent.nodes = self.nodes
         self.parent.nodalFrames = self.nodalFrames
         self.parent.centerline = self.centerline
         self.parent.frames = self.frames
+
+    def step_callback(self, t, q, u):
+        """Restore orthonormality of the nodal frame parametrization after
+        each time step (unit quaternion for "Quaternion", orthonormal
+        directors for "R12")."""
+        qnodes = q.reshape(self.parent.nnodes, -1)
+        if self.parametrization == "Quaternion":
+            qnodes[:, 3:] /= np.linalg.norm(qnodes[:, 3:], axis=1)[:, None]
+        else:
+            # nearest orthogonal matrix to [d1 | d2 | d3] in Frobenius norm
+            A_IB = np.stack(
+                [qnodes[:, 3:6], qnodes[:, 6:9], qnodes[:, 9:12]], axis=-1
+            )
+            U, _, Vt = np.linalg.svd(A_IB)
+            A_IB = U @ Vt
+            qnodes[:, 3:6] = A_IB[:, :, 0]
+            qnodes[:, 6:9] = A_IB[:, :, 1]
+            qnodes[:, 9:12] = A_IB[:, :, 2]
+
+        return qnodes.reshape(-1), u
 
     def _eval(self, point_dict, qi, deval=0):
         N = point_dict["N"]
