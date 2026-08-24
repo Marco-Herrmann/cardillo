@@ -11,10 +11,11 @@ from cardillo.math import e1, e2, e3, A_IB_basic
 
 from cardillo.rods_new import (
     Simo1986,
-    RectangularCrossSection
+    RectangularCrossSection,
+    CrossSectionInertias,
 )
 from cardillo.rods_new2 import make_CosseratRod
-from cardillo.solver import Newton, SolverOptions
+from cardillo.solver import Newton, SolverOptions, Eigenmodes
 from cardillo.utility.sensor import Sensor, SensorRecords
 
 
@@ -31,20 +32,30 @@ def fork_structure(
     # geometry
     L = 1.0
 
+    w = np.sqrt(12e-2)
+    print(w)
     cross_section = RectangularCrossSection(L / 10, L / 10)
+    # cross_section = RectangularCrossSection(w, w)
 
-    # centerline of the curved: 
-    #   semi circle with rod radius L, 
-    #   starting at (2L, L, 0) 
-    #   ending at (2L, -L, 0) 
+    rho = 1.0
+    cross_section_inertias = CrossSectionInertias(
+        A_rho0=rho, B_I_rho0=np.diag([2, 1, 1]) * rho
+    )
+
+    # centerline of the curved:
+    #   semi circle with rod radius L,
+    #   starting at (2L, L, 0)
+    #   ending at (2L, -L, 0)
     #   via (L, 0, 0)
     r_OP02 = lambda xi: L * np.array([2 - np.sin(xi), np.cos(xi), 0.0])
     r_OP02_xi = lambda xi: L * np.array([-np.cos(xi), -np.sin(xi), 0.0])
     r_OP02_xixi = lambda xi: L * np.array([np.sin(xi), -np.cos(xi), 0.0])
 
     q0s = [
-        Rod.straight_configuration(nelements_per_segment, L), 
-        Rod.serret_frenet_configuration(2 * nelements_per_segment, r_OP02, r_OP02_xi, r_OP02_xixi, xi1=np.pi),
+        Rod.straight_configuration(nelements_per_segment, L),
+        Rod.serret_frenet_configuration(
+            2 * nelements_per_segment, r_OP02, r_OP02_xi, r_OP02_xixi, xi1=np.pi
+        ),
     ]
 
     # material model
@@ -56,29 +67,36 @@ def fork_structure(
     system = System()
 
     rods = [
-        Rod(cross_section, material_model, nelements_per_segment * (i + 1), Q=q0s[i], name=f"rod_{i}") for i in range(len(q0s))
+        Rod(
+            cross_section,
+            material_model,
+            nelements_per_segment * (i + 1),
+            Q=q0s[i],
+            cross_section_inertias=cross_section_inertias,
+            name=f"rod_{i}",
+        )
+        for i in range(len(q0s))
     ]
     system.add(*rods)
-
 
     # forces
     Fmax = 200
     F = lambda t: 2 * t * Fmax
 
-    if not reversal: 
+    if not reversal:
         F1 = lambda t: e3 * (F(t) if t <= 0.5 else Fmax)
-        F2 = lambda t: -e3 * (F(t - 0.5) if t >= 0.5 else 0.0)     
-    else: 
+        F2 = lambda t: -e3 * (F(t - 0.5) if t >= 0.5 else 0.0)
+    else:
         F1 = lambda t: e3 * (F(t - 0.5) if t >= 0.5 else 0.0)
         F2 = lambda t: -e3 * (F(t) if t <= 0.5 else Fmax)
-        
+
     Forces = [
         Force(F1, rods[1], xi=0, name="Force_1"),
-        Force(F2, rods[1], xi=1, name="Force_2")
+        Force(F2, rods[1], xi=1, name="Force_2"),
     ]
     system.add(*Forces)
-    
-    # constraints 
+
+    # constraints
     constraints = [
         RigidConnection(rods[0], system.origin, xi1=0, name="rod_origin"),
         RigidConnection(rods[0], rods[1], xi1=1, xi2=0.5, name="rod_rod"),
@@ -104,33 +122,54 @@ def fork_structure(
     )
     sol = solver.solve()
 
+    # eigenmodes
+    solver_eigenmodes = Eigenmodes(system, sol)
+    sol_eigenmodes_0 = solver_eigenmodes.solve(0)
+    sol_eigenmodes_1 = solver_eigenmodes.solve(n_load_steps_per_configuration)
+    sol_eigenmodes_2 = solver_eigenmodes.solve(2 * n_load_steps_per_configuration)
+
     #################
     # post-processing
     #################
-    # vtk-export
+    # blender-export
     dir_name = Path(sys.argv[0]).parent
     system.export_blender(dir_name, f"blender", sol, create_blend=True)
+    system.export_blender(
+        dir_name, f"blender_eig0", sol_eigenmodes_0, create_blend=True
+    )
+    system.export_blender(
+        dir_name, f"blender_eig1", sol_eigenmodes_1, create_blend=True
+    )
+    system.export_blender(
+        dir_name, f"blender_eig2", sol_eigenmodes_2, create_blend=True
+    )
 
     # csv export
-    [sensor.save(dir_name, f"csv", sol, functions=[SensorRecords.r_OP]) for sensor in sensors]
-    
+    [
+        sensor.save(dir_name, f"csv", sol, functions=[SensorRecords.r_OP])
+        for sensor in sensors
+    ]
+
     # load csv
     poss = ["P_1", "P_2", "P_B"]
     r_OPs = [
-        np.loadtxt(dir_name / f"csv/{pos}.csv", delimiter=",", skiprows=1) for pos in poss
+        np.loadtxt(dir_name / f"csv/{pos}.csv", delimiter=",", skiprows=1)
+        for pos in poss
     ]
 
     # Table 4
     u1_P1 = r_OPs[0][n_load_steps_per_configuration, 1:] - r_OPs[0][0, 1:]
-    u2_P1 = r_OPs[0][2*n_load_steps_per_configuration, 1:] - r_OPs[0][0, 1:]
-    print(f"Table 4: p={rods[0]._polynomial_degree}, nel (tot): {3 * nelements_per_segment}")
+    u2_P1 = r_OPs[0][2 * n_load_steps_per_configuration, 1:] - r_OPs[0][0, 1:]
+    print(
+        f"Table 4: p={rods[0]._polynomial_degree}, nel (tot): {3 * nelements_per_segment}"
+    )
     print(u1_P1, u2_P1)
 
     styles = ["--b", "--r", "--g"] if reversal else ["-b", "-r", "-g"]
     fig, ax = plt.subplots(1, 3, squeeze=False)
-    for i in range(3): # [x, y, z]
-        for j in range(3): # [P_1, P_2, P_B]
-            u = r_OPs[j][:, i+1] - r_OPs[j][0, i+1]
+    for i in range(3):  # [x, y, z]
+        for j in range(3):  # [P_1, P_2, P_B]
+            u = r_OPs[j][:, i + 1] - r_OPs[j][0, i + 1]
             ax[0, i].plot(r_OPs[j][:, 0], u, styles[j], label=poss[j])
 
         ax[0, i].grid()
@@ -138,6 +177,7 @@ def fork_structure(
         ax[0, i].set_ylim(-2.0, 2.0)
 
     plt.show()
+
 
 if __name__ == "__main__":
     Rod = make_CosseratRod(

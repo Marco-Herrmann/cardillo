@@ -9,13 +9,19 @@ from cardillo.constraints import Cylindrical, Prismatic, RigidConnection, Revolu
 from cardillo.discrete import Frame, RigidBody, Cylinder, Meshed
 from cardillo.forces import B_Moment, Moment, Force
 from cardillo.math import e1, e2, e3, A_IB_basic, Spurrier, ax2skew
-from cardillo.rods import *
-from cardillo.rods.cosseratRod import make_CosseratRod
+from cardillo.rods_new import (
+    CircularCrossSection,
+    CrossSectionInertias,
+    Simo1986,
+    UserDefinedCrossSection,
+)
+from cardillo.rods_new2 import make_CosseratRod
 from cardillo.rods.force_line_distributed import Force_line_distributed
 
 
 from cardillo.solver import (
     Newton,
+    Eigenmodes,
     Riks,
     SolverOptions,
     BackwardEuler,
@@ -79,10 +85,13 @@ def rotating_shaft(
     first_moment = np.array([0, 0, 0])  # [m^3]
     second_moment = np.diag([2, 1, 1]) / 4 * np.pi * (r_O**4 - r_I**4)  # [m^4]
 
-    cross_section = UserDefinedCrossSection(area, first_moment, second_moment)
+    cross_section_export = CircularCrossSection(radius=r_O)
+    cross_section = UserDefinedCrossSection(
+        area, first_moment, second_moment, cross_section_export
+    )
     # cross_section = AnnularCrossSection(radius_o, area, first_moment, second_moment)
-    A = cross_section.area  # [m^2]
-    Ip, Iy, Iz = np.diag(cross_section.second_moment)
+    A = cross_section.area(0.0)  # [m^2]
+    Ip, Iy, Iz = np.diag(cross_section.second_moment(0.0))
 
     cross_section_inertias = CrossSectionInertias(density, cross_section)
     A_rho0 = cross_section_inertias.A_rho0
@@ -208,10 +217,13 @@ def rotating_shaft(
     # rod(s) #
     ##########
     assert nelement % 2 == 0, "Number of elements must be even for disc in the middle!"
-    q0, u0 = Rod.straight_initial_configuration(
-        nelement, L, r_OR0, A_IR0, v_P0, B_omega_IB0
-    )
-
+    # q0, u0 = Rod.straight_initial_configuration(
+    #     nelement, L, r_OR0, A_IR0, v_P0, B_omega_IB0
+    # )
+    # TODO: straight_initial_configuration
+    q0 = Rod.straight_configuration(nelement, L)
+    u0 = np.zeros((6 * (nelement * Rod._polynomial_degree + 1)))
+    F_g = lambda t, xis: -9.81 * np.outer(A_rho0(xis), e3)
     rod = Rod(
         cross_section,
         material_model,
@@ -220,17 +232,13 @@ def rotating_shaft(
         q0=q0,
         u0=u0,
         cross_section_inertias=cross_section_inertias,
+        distributed_load=[F_g, None],
         name="rod",
     )
 
-    # add force line distributed gravity load
-    F_g = lambda t, xi: -9.81 * A_rho0 * e3
-    # F_g = lambda t, xi: -9.81 * e3
-    force_line = Force_line_distributed(F_g, rod)
-
     # connect disc to rod
     connection_cylinder = RigidConnection(rod, disc, xi1=0.5, r_OJ0=r_OM0)
-    system.add(rod, force_line, connection_cylinder)
+    system.add(rod, connection_cylinder)
 
     ##############################
     # add cylindrical constraint #
@@ -247,6 +255,18 @@ def rotating_shaft(
     # assemble system
     system.assemble(SolverOptions(compute_consistent_initial_conditions=False))
     sol = Newton(system, 1).solve()
+
+    ###
+    # look at eigenmodes
+    ###
+    solver_eig = Eigenmodes(system, sol)
+    sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=False)
+    # sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=True)
+    print(sol_eig.omegas)
+
+    dir_name = Path(__file__).parent
+    system.export_blender(dir_name, f"blend_eig", sol_eig, create_blend=True)
+    exit()
 
     system.set_new_initial_state(sol.q[-1], sol.u[-1])
     system.remove(clamping_static)
@@ -270,7 +290,7 @@ def rotating_shaft(
 
     # Solver parameters
     solver = ScipyDAE(system, t_final, dt, method="Radau")
-    solver = DualStormerVerlet(system, t_final, dt)
+    # solver = DualStormerVerlet(system, t_final, dt)
 
     #################
     # Simulation
@@ -281,13 +301,14 @@ def rotating_shaft(
     t = sol.t[:nt]
     u = sol.u
 
+    print(t)
+
     #################
     # post-processing
     #################
-
     # VTK export
     dir_name = Path(__file__).parent
-    if VTK_export:
+    if VTK_export and False:
         # trick rod to export a circular cross section
         rod.cross_section = CircularCrossSection(r_O)
 
@@ -298,6 +319,10 @@ def rotating_shaft(
 
         system.add(B2)
         system.export(dir_name, f"vtk/", sol)
+
+    rod.cross_section = CircularCrossSection(r_O)
+    sol.t *= 100
+    system.export_blender(dir_name, f"blender", sol, create_blend=True)
 
     path = Path(dir_name, "csv")
     path.mkdir(parents=True, exist_ok=True)
@@ -484,10 +509,10 @@ if __name__ == "__main__":
     #     name="IEB",
     # )
     rotating_shaft(
-        Rod=make_CosseratRod(interpolation="Quaternion", mixed=True),
+        Rod=make_CosseratRod(),  # interpolation="Quaternion", mixed=True),
         constitutive_law=Simo1986,
         nelement=20,
-        t_final=2.5,
+        t_final=10.0,
         dt=0.1 * 1e-3,
         VTK_export=True,
         name="Cosserat",

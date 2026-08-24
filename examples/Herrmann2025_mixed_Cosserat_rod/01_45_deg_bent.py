@@ -6,16 +6,17 @@ import warnings
 
 from cardillo import System
 from cardillo.constraints import RigidConnection
-from cardillo.forces import Force
-from cardillo.math import e3, A_IB_basic
+from cardillo.forces import Force, B_Force, Moment, B_Moment
+from cardillo.math import e1, e2, e3, A_IB_basic
 from cardillo.rods import RectangularCrossSection, animate_beam, Simo1986
 from cardillo.rods_new import (
     Simo1986 as Simo1986_new,
     RectangularCrossSection as RectangularCrossSection_new,
-    make_CosseratRod as make_CosseratRod_new,
 )
+from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
+from cardillo.utility.sensor import Sensor
 
 
 def bent_45(
@@ -75,6 +76,7 @@ def bent_45(
 
     # create rod
     q0 = Rod.pose_configuration(nelements, r_OP0, A_IB0)
+    # q0 = Rod.straight_configuration(nelements, R, r_OP0=r_OP0(0.0), A_IB0=A_IB0(0.0))
     rod = Rod(cross_section, material_model, nelements, Q=q0)
     system.add(rod)
 
@@ -85,9 +87,15 @@ def bent_45(
     # tip load
     Fz_dict = {1e1: 6e6, 1e2: 6e2, 1e3: 6e-2, 1e4: 6e-6}
     tip_force = Fz_dict[slenderness]
-    F = lambda t: tip_force * t * e3
+    F = lambda t: tip_force * t**2 * e3
+    # F = lambda t: tip_force * t * e1
+    force = B_Force(F, rod, xi=1)
     force = Force(F, rod, xi=1)
     system.add(force)
+
+    # sensor at tip
+    sensor = Sensor(rod, xi=1, name="Tip")
+    system.add(sensor)
 
     # assemble system
     system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
@@ -114,12 +122,113 @@ def bent_45(
         options=SolverOptions(newton_atol=atols_dict[slenderness]),  # rtol=0
     )
     sol = solver.solve()  # solve static equilibrium equations
+    dir_name = Path(sys.argv[0]).parent
+    system.export_blender(dir_name, f"blend_stat", sol, create_blend=True)
 
     # read solution
     t = sol.t
     q = sol.q
     la_c = sol.la_c
     la_g = sol.la_g
+
+    fig, ax = plt.subplots(6)
+    for i in range(6):
+        ax[i].plot(t, la_g[:, i])
+    # plt.show()
+
+    ##############
+    # Eigenmodes #
+    ##############
+    from cardillo.solver import Eigenmodes, FrequencyResponseFunction
+
+    np.set_printoptions(precision=2, linewidth=500)
+    solver_eig = Eigenmodes(system, sol)
+    solver_frf = FrequencyResponseFunction(system, sol)
+    omegas = np.zeros((n_load_steps + 1, 10))
+    omegas_DAE = np.zeros((n_load_steps + 1, 10))
+    omegas_proj = np.zeros((n_load_steps + 1, 10))
+    omegas_cheap = np.zeros((n_load_steps + 1, 10))
+
+    iom = 1j * np.logspace(-2, 4, 51)
+    frfs = np.zeros((n_load_steps + 1, len(iom), 6, 3), dtype=complex)
+
+    for i in range(n_load_steps + 1):
+        print(f"step {i}/{n_load_steps}")
+        sol_eig = solver_eig.solve(i)
+        omegas[i] = sol_eig.omegas[0, :10]
+
+        sol_DAE = solver_eig.solve(
+            i, bilateral_constraints=dict(Method="DAE", alpha=1.0, gamma=1.0)
+        )
+        omegas_DAE[i] = sol_DAE.omegas[0, :10]
+
+        sol_proj = solver_eig.solve(i, bilateral_constraints=dict(Method="Proj"))
+        omegas_proj[i] = sol_proj.omegas[0, :10]
+
+        # print(f"solve cheap")
+        # _, _, sol_eig_cheap = solver_eig.solve_cheap(i)
+        # omegas_cheap[i] = sol_eig_cheap.omegas[0, :10]
+
+        # # if i == 0 or i == n_load_steps:
+        # #     dir_name = Path(sys.argv[0]).parent
+        # #     system.export_blender(dir_name, f"blend_eig{i}", sol_eig, create_blend=True)
+
+        if i == 0 or i == n_load_steps:
+            frfs[i] = solver_frf.solve(i, iom)
+
+    fig, ax = plt.subplots(6, 3)
+    for i in range(6):
+        for j in range(3):
+            # for l in range(n_load_steps + 1):
+            l = 0
+            ax[i, j].loglog(iom.imag, np.abs(frfs[l, :, i, j]))
+
+            ax[i, j].grid()
+    plt.show()
+
+    fig, ax = plt.subplots(1, 1)
+    ax.plot(t, omegas, ".-", label="My method")
+    ax.plot(t, omegas_cheap, "x--", label="Cheap method")
+    ax.legend()
+    plt.show()
+
+    exit()
+
+    #######################
+    # test KN and Wla_g_q #
+    #######################
+    # for i in range(len(sol.t)):
+    #     ti = sol.t[i]
+    #     qi = sol.q[i]
+    #     la_gi = sol.la_g[i]
+    #     KN = [A.toarray() for A in system.KN_g(ti, qi, la_gi)]
+    #     Wla_g_q = system.Wla_g_q(ti, qi, la_gi).toarray()
+    #     B = system.q_dot_u(ti, qi).toarray()
+
+    #     # this should not have N contributions
+    #     print(f"norm(N): {np.linalg.norm(KN[1])}")
+
+    #     # K is on LHS, but Wla_g on RHS
+    #     K_proj = - (Wla_g_q @ B + B.T @ Wla_g_q.T) / 2
+
+    #     # TODO: I don't get why it is not symmetric?
+    #     # # check for symmetry
+    #     # print(f"K_proj - K_proj.T: {np.linalg.norm(K_proj - K_proj.T)}")
+
+    #     # compute difference
+    #     diff = K_proj - KN[0]
+    #     print(f"norm(diff): {np.linalg.norm(diff)}")
+
+    solver_eig = Eigenmodes(system, sol)
+    for i in range(0, 1):  # len(sol.t)):
+        _, _, sol_eig = solver_eig.solve(i)
+        omegas = sol_eig.omegas[0]
+
+        _, _, sol_eig_cheap = solver_eig.solve_cheap(i)
+        omegas_cheap = sol_eig_cheap.omegas[0]
+
+        diff = omegas - omegas_cheap
+        print(np.linalg.norm(diff))
 
     #################
     # post-processing
@@ -251,14 +360,16 @@ if __name__ == "__main__":
     elif formulation == "new":
         Rod = make_CosseratRod_new(
             polynomial_degree=2,
-            # idx_constraints=[0, 1, 2, 4],
-            idx_displacement_based=[0, 1, 2, 3, 4, 5],
+            # idx_constraints=[0, 1, 2, 5],
+            # idx_displacement_based=[0, 1, 2, 3, 4, 5],
+            # continuity=1,
+            # quadrature_int=6,
         )
 
     bent_45(
         Rod,
         Simo1986 if formulation == "old" else Simo1986_new,
-        nelements=4,
+        nelements=25,
         slenderness=1e1,
         tolType="MX",
         n_load_steps=20,

@@ -19,6 +19,7 @@ from cardillo.rods_new import (
 )
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
+from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 
 
 def helix(
@@ -245,6 +246,7 @@ if __name__ == "__main__":
         Rod,
         Simo1986 if formulation == "old" else Simo1986_new,
         nelements=16,
+        # nelements=1,
         slenderness=1e1,
         # atol=1e-12,
         # n_load_steps=1,
