@@ -271,6 +271,17 @@ class RigidBody:
         J2_P[:, 3:, 3:] = np.einsum(
             "jl, lki -> ijk", B_r_CP_tilde, ax2skew_a() @ A_IB.T
         ) - np.einsum("il, ljk -> ijk", A_IB @ B_r_CP_tilde, B_J2_R_phi)
+        # # that does the same
+        # J2_P[:, 3:, 3:] = (
+        #     np.einsum("ij,kjl->kil", B_r_CP_tilde, ax2skew(A_IB))
+        #     + np.einsum("kjl,li->kji", ax2skew(A_IB), B_r_CP_tilde)
+        # ) / 2
+        # # that does the same
+        # for i in range(3):
+        #     B_ei_I_tilde = ax2skew(A_IB[i])
+        #     J2_P[i, 3:, 3:] = (
+        #         B_r_CP_tilde @ B_ei_I_tilde + B_ei_I_tilde @ B_r_CP_tilde
+        #     ) / 2
         return J2_P
 
     def kappa_P(self, t, q, u, xi=None, B_r_CP=np.zeros(3)):
@@ -322,6 +333,7 @@ class RigidBody:
 
     def B_J2_R(self, t, q, xi=None):
         B_J2_R = np.zeros((3, self.nu, self.nu), dtype=q.dtype)
+        # TODO: I think the minus here is wrong! Check where it is used!
         B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
         return B_J2_R
 
