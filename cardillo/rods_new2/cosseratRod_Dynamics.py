@@ -167,5 +167,11 @@ class CosseratRod_dynamics_PG_IB(CosseratRod_Inertia):
 
         return self.M_h_u_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
 
+    def DG_f_gyr(self, t, q, u):
+        if u @ u > 0.0:
+            print("DG_f_gyr not implemented for non-zero u!")
+        D = CooMatrix((self.parent.nu, self.parent.nu))
+        return D, D
+
 
 class CosseratRod_dynamics_BG(CosseratRod_Inertia): ...

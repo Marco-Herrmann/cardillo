@@ -37,7 +37,7 @@ eye3 = np.eye(3, dtype=float)
 
 
 class CosseratRod_Velocity(ABC):
-    def __init__(self, parent, mesh):
+    def __init__(self, parent, mesh, quadrature_ext):
         self.parent = parent
         self.mesh = mesh
 
@@ -60,10 +60,42 @@ class CosseratRod_Velocity(ABC):
         self.parent.B_Psi_q = self.B_Psi_q
         self.parent.B_Psi_u = self.B_Psi_u
 
+        # quadrature
+        quadrature_ext = mesh.quadrature(*quadrature_ext, 1)
+        self.nquadrature_ext_total = quadrature_ext["nquadrature_total"]
+        self.qp_ext_vec = quadrature_ext["qp"]
+        self.qw_ext_vec = quadrature_ext["qw"]
+        self.qels_ext_vec = quadrature_ext["els"]
+        self.N_ext, self.N_xi_ext = quadrature_ext["N"]
+
+    def set_distributed_load(self, distributed_load):
+        assert (
+            len(distributed_load) == 2
+        ), "Line distributed forces must be a list of length 2 (force and moment)."
+        if (distributed_load[0] == None) and (distributed_load[1] == None):
+            self.include_f_ext = False
+        else:
+            self.include_f_ext = True
+
+            zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
+            self.distributed_load = distributed_load
+            if self.distributed_load[0] is None:
+                self.distributed_load[0] = lambda t, xis: zeros_ext
+            if self.distributed_load[1] is None:
+                self.distributed_load[1] = lambda t, xis: zeros_ext
+
+    def set_reference_strains(self, Q):
+        # external virtual work contributions
+        _, B_gamma_bar, _ = self.parent.kinematics._eval_internal_vec(
+            self.N_ext, self.N_xi_ext, Q
+        )
+        J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
+        self.weights_ext = J_ext_vec * self.qw_ext_vec
+
 
 class CosseratRod_PG_IB(CosseratRod_Velocity):
-    def __init__(self, parent, mesh):
-        super().__init__(parent, mesh)
+    def __init__(self, parent, mesh, quadrature_ext):
+        super().__init__(parent, mesh, quadrature_ext)
         self.nu_node = 6
 
     def J_P(self, t, qi, xi, B_r_CP=zeros3):
@@ -92,10 +124,7 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
         if B_r_CP @ B_r_CP == 0.0:
             return point_dict["zero_3_nui_nui"]
 
-        qnodes = qi.reshape(point_dict["nnodes"], -1)
-        N = point_dict["N"]
-
-        A_IB = self._A_IB(N @ qnodes[:, 3:])
+        A_IB = self.parent.A_IB(t, qi, xi)
         B_J2_R_phi = -0.5 * ax2skew_a()
         B_r_CP_tilde = ax2skew(B_r_CP)
 
@@ -236,6 +265,27 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
     def B_Psi_u(self, t, qi, ui, ui_dot, xi):
         point_dict = self.parent.get_interaction_point(xi)
         return point_dict["zero_3_nui"]
+
+    #################
+    # external load #
+    #################
+    def E_ext(self, t, q):
+        qnodes = q.reshape(self.nnodes, -1)
+        r_OC = self.N_ext @ qnodes[:, :3]
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
+
+    def f_ext(self, t, q, u):
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)
+
+        f_ext = np.empty((self.parent.nnodes, 6))
+        f_ext[:, :3] = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
+        f_ext[:, 3:] = self.N_ext.T @ (B_c_qp * self.weights_ext[:, None])
+        return f_ext.reshape(-1)
+
+    # TODO: KN_h
+    def KN_h(self, t, q, u): ...
 
 
 from cardillo.math.approx_fprime import approx_fprime

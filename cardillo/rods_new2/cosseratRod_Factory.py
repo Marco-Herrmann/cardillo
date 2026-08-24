@@ -86,22 +86,11 @@ class CosseratRod(RodBlenderExport):
         self.N_element = lambda xi, el: mesh_kin.shape_function_array_element(xi, el, 0)
         self.Nc = lambda xis, els: mesh_cg.shape_functions(xis, els, 0)[0]
 
-        #####################
-        # quadrature points #
-        #####################
-        # external virtual work contributions
-        quadrature_ext = mesh_kin.quadrature(*self._quadrature_ext, 1)
-        self.nquadrature_ext_total = quadrature_ext["nquadrature_total"]
-        self.qp_ext_vec = quadrature_ext["qp"]
-        self.qw_ext_vec = quadrature_ext["qw"]
-        self.qels_ext_vec = quadrature_ext["els"]
-        self.N_ext, self.N_xi_ext = quadrature_ext["N"]
-
         # initialize position/orientation interpolation
         self.kinematics = self._Kinematics(self, mesh_kin, self._parametrization)
 
         # initialize velocities interpolation
-        self.velocity = self._Velocity(self, mesh_kin)
+        self.velocity = self._Velocity(self, mesh_kin, self._quadrature_ext)
 
         ############################
         # create system interfaces #
@@ -150,13 +139,7 @@ class CosseratRod(RodBlenderExport):
 
         self.internal.set_reference_strains(Q)
         self.dynamics.set_reference_strains(Q)
-
-        # external virtual work contributions
-        _, B_gamma_bar, _ = self.kinematics._eval_internal_vec(
-            self.N_ext, self.N_xi_ext, self.Q
-        )
-        J_ext_vec = np.linalg.norm(B_gamma_bar, axis=1)
-        self.weights_ext = J_ext_vec * self.qw_ext_vec
+        self.velocity.set_reference_strains(Q)
 
     def set_parameter(
         self,
@@ -178,20 +161,7 @@ class CosseratRod(RodBlenderExport):
             self.dynamics.set_cross_section_inertias(cross_section_inertias)
 
         if distributed_load is not None:
-            assert (
-                len(distributed_load) == 2
-            ), "Line distributed forces must be a list of length 2 (force and moment)."
-            if (distributed_load[0] == None) and (distributed_load[1] == None):
-                self.include_f_ext = False
-            else:
-                self.include_f_ext = True
-
-                zeros_ext = np.zeros((len(self.qp_ext_vec), 3))
-                self.distributed_load = distributed_load
-                if self.distributed_load[0] is None:
-                    self.distributed_load[0] = lambda t, xis: zeros_ext
-                if self.distributed_load[1] is None:
-                    self.distributed_load[1] = lambda t, xis: zeros_ext
+            self.velocity.set_distributed_load(distributed_load)
 
         # compose E_pot, h, h_q and h_u
         self.compose_E_h()
@@ -203,6 +173,8 @@ class CosseratRod(RodBlenderExport):
         h_functions = []
         h_q_functions = []
         h_u_functions = []
+        KN_h_functions = []
+        DG_h_functions = []
         # TODO: KN_h?
 
         # gyroscopic forces
@@ -213,6 +185,10 @@ class CosseratRod(RodBlenderExport):
                 h_q_functions.append(self.dynamics.f_gyr_q)
             if hasattr(self.dynamics, "f_gyr_u"):
                 h_u_functions.append(self.dynamics.f_gyr_u)
+            if hasattr(self.dynamics, "KN_f_gyr"):
+                KN_h_functions.append(self.dynamics.KN_f_gyr)
+            if hasattr(self.dynamics, "DG_f_gyr"):
+                DG_h_functions.append(self.dynamics.DG_f_gyr)
 
         # displacement based potential forces
         if self.internal.include_f_pot:
@@ -224,15 +200,26 @@ class CosseratRod(RodBlenderExport):
                 h_q_functions.append(self.internal.f_pot_q)
             if hasattr(self.internal, "f_pot_u"):
                 h_u_functions.append(self.internal.f_pot_u)
+            if hasattr(self.internal, "KN_f_pot"):
+                KN_h_functions.append(self.internal.KN_f_pot)
+            if hasattr(self.internal, "DG_f_pot"):
+                DG_h_functions.append(self.internal.DG_f_pot)
 
         # line distributed forces
-        if self.include_f_ext:
-            # if hasattr(self, "E_pot_ext"):
-            E_pot_functions.append(self.E_pot_ext)
-            # if hasattr(self, "f_ext"):
-            h_functions.append(self.f_ext)
+        if self.velocity.include_f_ext:
+            if hasattr(self.velocity, "E_pot_ext"):
+                E_pot_functions.append(self.velocity.E_pot_ext)
+            if hasattr(self.velocity, "f_ext"):
+                h_functions.append(self.velocity.f_ext)
+            if hasattr(self.velocity, "KN_f_ext"):
+                KN_h_functions.append(self.velocity.KN_f_ext)
+            if hasattr(self.velocity, "DG_f_ext"):
+                DG_h_functions.append(self.velocity.DG_f_ext)
 
-        # 2) add them up
+        ##################
+        # 2) add them up #
+        ##################
+        # E_pot
         if len(E_pot_functions) == 1:
             self.E_pot = E_pot_functions[0]
         elif len(E_pot_functions) > 1:
@@ -242,6 +229,7 @@ class CosseratRod(RodBlenderExport):
         elif hasattr(self, "E_pot"):
             delattr(self, "E_pot")
 
+        # h
         if len(h_functions) == 1:
             self.h = h_functions[0]
         elif len(h_functions) > 1:
@@ -249,6 +237,7 @@ class CosseratRod(RodBlenderExport):
         elif hasattr(self, "h"):
             delattr(self, "h")
 
+        # h_q
         if len(h_q_functions) == 1:
             self.h_q = h_q_functions[0]
         elif len(h_q_functions) > 1:
@@ -258,6 +247,7 @@ class CosseratRod(RodBlenderExport):
         elif hasattr(self, "h_q"):
             delattr(self, "h_q")
 
+        # h_u
         if len(h_u_functions) == 1:
             self.h_u = h_u_functions[0]
         elif len(h_u_functions) > 1:
@@ -266,6 +256,22 @@ class CosseratRod(RodBlenderExport):
             )
         elif hasattr(self, "h_u"):
             delattr(self, "h_u")
+
+        # KN_h
+        if len(KN_h_functions) == 1:
+            self.KN_h = KN_h_functions[0]
+        elif len(KN_h_functions) > 1:
+            raise NotImplementedError
+        elif hasattr(self, "KN_h"):
+            delattr(self, "KN_h")
+
+        # DG_h
+        if len(DG_h_functions) == 1:
+            self.DG_h = DG_h_functions[0]
+        elif len(DG_h_functions) > 1:
+            raise NotImplementedError
+        elif hasattr(self, "DG_h"):
+            delattr(self, "DG_h")
 
     def compose_g(self):
         # 1) collect functions
