@@ -68,6 +68,7 @@ class Prismatic(ProjectedPositionOrientationBase):
         # return g_q_num
 
     def l_dot(self, t, q, u):
+        return self.W_l(t, q).T @ u
         raise NotImplementedError
         g_dot = np.zeros(self.nla_g, dtype=np.common_type(q, u))
 
@@ -147,6 +148,10 @@ class Prismatic(ProjectedPositionOrientationBase):
         return self.W_l(t, q).T
 
     def l_ddot(self, t, q, u, u_dot):
+        assert (
+            u @ u == 0.0
+        ), "u must be zero, as the part 'einsum('ijk,i,k->j', self.W_l_q(t, q), u, B(q)@u)' is neglected. We unfortunately cannot get the B(q) part here easily..."
+        return self.W_l(t, q).T @ u_dot
         raise NotImplementedError
         g_ddot = np.zeros(self.nla_g, dtype=np.common_type(q, u, u_dot))
 
@@ -199,12 +204,12 @@ class Prismatic(ProjectedPositionOrientationBase):
         return W_l
 
     def W_l_q(self, t, q):
-        raise NotImplementedError
+        # raise NotImplementedError
         W_l_q_num = approx_fprime(
             # q, lambda q: self.W_g(t, q), method="3-point", eps=1e-6
             q,
             lambda q: self.W_l(t, q),
-            method="cs",
+            method="3-point",  # TODO: cannot use "cs" here, as this fills A_IB_cache of RB with complex return value. When A_IB is called with float, hash key is the same, so complex is returned, but cannot be broadcasted to other matrix afterwards ...
             eps=1e-12,
         )
         return W_l_q_num
@@ -313,7 +318,7 @@ class Prismatic(ProjectedPositionOrientationBase):
 
         A_IJ1 = self.A_IJ1(t, q)
         J_R1 = self.J_R1(t, q)
-        J2_R1 = self.J2_R1(t, q)
+        J2_R1 = -self.J2_R1(t, q)  # TODO
         r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
         J_J1 = self.J_J1(t, q)
         J_J2 = self.J_J2(t, q)

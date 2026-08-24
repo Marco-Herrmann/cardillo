@@ -114,6 +114,7 @@ def auxiliary_functions(
         object.subsystem1.A_IB(t, q[:nq1], object.xi1),
         object.subsystem1.B_J_R_q(t, q[:nq1], object.xi1),
     )
+
     def J2_R1(t, q):
         A_IB = object.subsystem1.A_IB(t, q[:nq1], object.xi1)
         B_J_R = object.subsystem1.B_J_R(t, q[:nq1], object.xi1)
@@ -129,7 +130,8 @@ def auxiliary_functions(
             B_J_R,
             B_J_R,
         )
-    object.J2_R1 = J2_R1 
+
+    object.J2_R1 = J2_R1
 
     # auxiliary functions for subsystem 2
     object.r_OJ2 = lambda t, q: object.subsystem2.r_OP(
@@ -201,6 +203,7 @@ def auxiliary_functions(
         object.subsystem2.A_IB(t, q[nq1:], object.xi2),
         object.subsystem2.B_J_R_q(t, q[nq1:], object.xi2),
     )
+
     def J2_R2(t, q):
         A_IB = object.subsystem2.A_IB(t, q[nq1:], object.xi2)
         B_J_R = object.subsystem2.B_J_R(t, q[nq1:], object.xi2)
@@ -216,7 +219,8 @@ def auxiliary_functions(
             B_J_R,
             B_J_R,
         )
-    object.J2_R2 = J2_R2 
+
+    object.J2_R2 = J2_R2
 
 
 class PositionOrientationBase:
@@ -486,12 +490,16 @@ class PositionOrientationBase:
                 Dea = -ea_tilde @ J_R1
                 Deb = -eb_tilde @ J_R2
                 Dn1 = -eb_tilde @ Dea
-                Dn2 =  ea_tilde @ Deb
+                Dn2 = ea_tilde @ Deb
 
-                DW_g[:nu1, :nu1] += la_g[3 + i] * (J_R1.T @ Dn1 + np.einsum("i,ijk->jk", n, DJ_R1))
+                DW_g[:nu1, :nu1] += la_g[3 + i] * (
+                    J_R1.T @ Dn1 + np.einsum("i,ijk->jk", n, DJ_R1)
+                )
                 DW_g[:nu1, nu1:] += la_g[3 + i] * J_R1.T @ Dn2
                 DW_g[nu1:, :nu1] += -la_g[3 + i] * J_R2.T @ Dn1
-                DW_g[nu1:, nu1:] += -la_g[3 + i] * (J_R2.T @ Dn2 + np.einsum("i,ijk->jk", n, DJ_R2))
+                DW_g[nu1:, nu1:] += -la_g[3 + i] * (
+                    J_R2.T @ Dn2 + np.einsum("i,ijk->jk", n, DJ_R2)
+                )
 
         N_g = np.zeros((self._nu, self._nu), dtype=q.dtype)
         # move to left side of equation
@@ -881,14 +889,16 @@ class ProjectedPositionOrientationBase:
         # return Wla_g_q_num
 
     def KN_g(self, t, q, la_g):
-        print("TODO: update KN_g in ProjectedPositionOrientationBase, according to the implementation in PositionOrientationBase")
+        print(
+            "TODO: update KN_g in ProjectedPositionOrientationBase, according to the implementation in PositionOrientationBase"
+        )
         nu1 = self._nu1
         K = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
         N = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
 
         A_IJ1 = self.A_IJ1(t, q)
         J_R1 = self.J_R1(t, q)
-        J2_R1 = self.J2_R1(t, q)
+        J2_R1 = -self.J2_R1(t, q)  # TODO
         if self.constrain_translation:
             r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
             J_J1 = self.J_J1(t, q)
@@ -914,7 +924,7 @@ class ProjectedPositionOrientationBase:
         if self.constrain_orientation:
             A_IJ2 = self.A_IJ2(t, q)
             J_R2 = self.J_R2(t, q)
-            J2_R2 = self.J2_R2(t, q)
+            J2_R2 = -self.J2_R2(t, q)  # TODO
             for i, (a, b) in enumerate(self.projection_pairs_rotation):
                 e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
                 n = cross3(e_a, e_b)
