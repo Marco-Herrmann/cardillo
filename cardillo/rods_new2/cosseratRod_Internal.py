@@ -187,24 +187,6 @@ class CosseratRod_Internal:
     # A) there is no coupling between the deformations
     # B) all of the coupled deformations are (not) db
     #    --> we put a warning when there are db and mx deformations
-    def _E_pot_comp(self, t, q, la_c):
-        if self._nDB > 0:
-            msg = "E_pot_comp might not be correct if there are displacement-based deformations."
-            warn(msg)
-        _eval = self._eval_internal_vec(self.N_int, self.N_xi_int, q)
-        epsilon_db = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
-        d_epsilon = epsilon_db - self.epsilon0_int
-
-        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
-        la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
-        la_sigma = self.Nc_int @ la_sigma_nodes
-
-        C_qp = self.material_model.C_inv(self.material_model_qp)
-        E_pot_i_star = 0.5 * np.einsum("ij,ijk,ik->i", la_sigma, C_qp, la_sigma)
-        E_pot_i = np.sum(d_epsilon * la_sigma, axis=1) - E_pot_i_star
-        E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
-        return E_pot
-
     def E_pot(self, t, q):
         if self._nla_c > 0:
             warn("E_pot might not be correct if there are compliant deformations.")
