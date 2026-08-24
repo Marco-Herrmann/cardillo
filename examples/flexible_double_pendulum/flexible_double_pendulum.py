@@ -118,6 +118,12 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
     system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
+    print(f"{system.nq = }, {system.nu = }, {system.nla_c = }, {system.nla_g = }")
+
+    M = system.M(system.t0, system.q0)
+    nnz = sum(np.isclose(M.data, 0.0) == False)
+    print(f"{nnz = }, ratio: {nnz / system.nu**2} | {nnz / system.nu}")
+
     t1 = 1.5
     dt = 5e-3
     dt = 1e-2
@@ -166,12 +172,13 @@ def flexible_double_pendulum(Rod, show_plots, name):
 
 
 if __name__ == "__main__":
-    pDeg = 2
+    pDeg = 3
     flexible_double_pendulum(
         make_CosseratRod(
             polynomial_degree=pDeg,
             quadrature_dyn=(pDeg + 1, "Trapezoidal"),
             quadrature_ext=(pDeg + 1, "Trapezoidal"),
+            # continuity=pDeg-1,
         ),
         show_plots=True,
         name="new",
