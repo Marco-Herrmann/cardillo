@@ -9,7 +9,6 @@ from scipy.sparse import (
     eye_array,
 )
 from scipy.sparse.linalg import spsolve
-from warnings import warn
 
 from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
 from cardillo.math.approx_fprime import approx_fprime
@@ -151,6 +150,36 @@ class Rod_Kinematics(ABC):
         return cls.pose_configuration(
             nelement, r_OP, A_IB, xi1, r_OP0=r_OP0, A_IB0=A_IB0
         )
+
+    @classmethod
+    def straight_initial_configuration(
+        cls,
+        nelement,
+        L,
+        r_OP0=zeros3,
+        A_IB0=eye3,
+        v_P0=zeros3,
+        B_omega_IB0=zeros3,
+    ):
+        q = cls.straight_configuration(nelement, L, r_OP0, A_IB0)
+
+        mesh = cls._mesh_kin(None, nelement)
+        nnodes = mesh.nnodes
+
+        r_OP = np.zeros((nnodes, 3))
+        r_OP[:, 0] = np.linspace(0, L, num=nnodes)
+        r_OP = r_OP0 + r_OP @ A_IB0.T
+
+        I_omega_IB0 = A_IB0 @ B_omega_IB0
+        vO = np.zeros((nnodes, 6), dtype=float)
+        vO[:, :3] = v_P0 + np.cross(I_omega_IB0, r_OP - r_OP0)
+        vO[:, 3:] = B_omega_IB0
+
+        if cls._IGA:
+            A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
+            vO = spsolve(A, vO)
+
+        return q, vO.reshape(-1)
 
 
 class CosseratRod_Kinematics(ABC):
