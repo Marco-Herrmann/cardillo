@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import json
 import numpy as np
-import os
+from pathlib import Path
 from pygltflib import (
     Mesh,
     Primitive,
@@ -423,8 +423,7 @@ class RodInterface(RodExportBase):
     def export_blender(self, path, solution):
         xis, data = self._export_nodes(solution)
 
-        # TODO: get rid of os
-        filename = os.path.join(path, f"{self.name}.glb")
+        filename = Path(path) / f"{self.name}.glb"
 
         assert (
             data.shape[2] == 7
@@ -485,8 +484,7 @@ class RodInterface(RodExportBase):
     def export_blender_modes(self, path, solution):
         xis, data, delta = self._export_nodes_modes(solution)
 
-        # TODO: get rid of os
-        filename = os.path.join(path, f"{self.name}.glb")
+        filename = Path(path) / f"{self.name}.glb"
 
         assert (
             data.shape[1] == 7

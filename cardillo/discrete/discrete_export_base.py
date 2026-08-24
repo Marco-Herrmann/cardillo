@@ -1,5 +1,5 @@
 import numpy as np
-import os
+from pathlib import Path
 from pygltflib import (
     Animation,
     AnimationChannel,
@@ -33,8 +33,7 @@ def make_glTF(
     B_Omega=None,
     mesh=None,
 ):
-    # TODO: get rid of os
-    filename = os.path.join(path, f"{name}.glb")
+    filename = Path(path) / f"{name}.glb"
 
     buf = BufferBuilder()
     nodes = []
@@ -179,8 +178,7 @@ def make_glTF(
 def make_glTF_modes(
     path, name, omegas, r_OP, Delta_r=None, P_IB=None, B_Delta_phi=None, mesh=None
 ):
-    # TODO: get rid of os
-    filename = os.path.join(path, f"{name}.glb")
+    filename = Path(path) / f"{name}.glb"
     buf = BufferBuilder()
 
     nodes = []
@@ -245,8 +243,7 @@ def make_glTF_modes(
 
 
 def make_glTF_arrow(path, name, t, r_OP0, r_OP1, block=False):
-    # TODO: get rid of os
-    filename = os.path.join(path, f"{name}.glb")
+    filename = Path(path) / f"{name}.glb"
 
     buf = BufferBuilder()
     t_acc = buf.add(t.astype(np.float32), 5126, "SCALAR")
@@ -321,8 +318,7 @@ def make_glTF_arrow(path, name, t, r_OP0, r_OP1, block=False):
 def make_glTF_arrow_modes(
     path, name, omegas, r_OP0, r_OP1, Delta_r_P0=None, Delta_r_P1=None, block=False
 ):
-    # TODO: get rid of os
-    filename = os.path.join(path, f"{name}.glb")
+    filename = Path(path) / f"{name}.glb"
     buf = BufferBuilder()
     nodes = []
 

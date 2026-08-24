@@ -1,7 +1,7 @@
 from copy import deepcopy
 import numpy as np
-import os
 from pathlib import Path
+from shutil import rmtree
 import subprocess
 import warnings
 
@@ -191,6 +191,7 @@ class System:
         create_blend=False,
         blenderPath="blender",
         verbose=False,
+        overwrite=True,
     ):
         # TODO: use simple flag instead to decide
         if hasattr(solution, "omegas") and hasattr(solution, "Delta_z"):
@@ -198,9 +199,17 @@ class System:
         else:
             export_str = "export_blender"
 
-        # TODO: can we get rid of os?
         path = Path(path, folder_name)
-        os.makedirs(path, exist_ok=True)
+        if overwrite:
+            if path.exists():
+                rmtree(path)
+        else:
+            i = 0
+            base_path = path
+            while path.exists():
+                path = base_path.parent / f"{base_path.name}_{i}"
+                i += 1
+        path.mkdir(parents=True, exist_ok=overwrite)
         for contr in self.contributions:
             if hasattr(contr, export_str):
                 export = getattr(contr, export_str)
