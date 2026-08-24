@@ -28,8 +28,8 @@ class ExportableCrossSection(CrossSection):
     def create_mesh(self, xis): ...
 
 
-class UserDefinedCrossSection(CrossSection):
-    def __init__(self, area, first_moment, second_moment):
+class UserDefinedCrossSection(ExportableCrossSection):
+    def __init__(self, area, first_moment, second_moment, export_fallback=None):
         """User defined cross-section.
 
         Parameters
@@ -45,6 +45,10 @@ class UserDefinedCrossSection(CrossSection):
         self._first_moment = parametrize(first_moment)
         self._second_moment = parametrize(second_moment)
 
+        self.export_fallback = (
+            CircularCrossSection(1.0) if export_fallback is None else export_fallback
+        )
+
     def area(self, xi):
         return self._area(xi)
 
@@ -53,6 +57,9 @@ class UserDefinedCrossSection(CrossSection):
 
     def second_moment(self, xi):
         return self._second_moment(xi)
+
+    def create_mesh(self, xis):
+        return self.export_fallback.create_mesh(xis)
 
 
 class CircularCrossSection(ExportableCrossSection):
