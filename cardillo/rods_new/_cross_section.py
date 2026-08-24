@@ -40,6 +40,8 @@ class UserDefinedCrossSection(ExportableCrossSection):
             Vector containing the first moments of area.
         second_moment : np.ndarray (3, 3) or callable(xi) -> np.ndarray (3, 3)
             Matrix containing the second moments of area.
+        export_fallback : ExportableCrossSection
+            Cross section that will be exported. If None: CircularCrossSection(1.0) is used.
         """
         self._area = parametrize(area)
         self._first_moment = parametrize(first_moment)
