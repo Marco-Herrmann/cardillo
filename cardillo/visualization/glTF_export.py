@@ -58,3 +58,9 @@ def cardillo_to_gltf_rot(rot):
     # rot: y <- z and z <- -y
     rot = np.stack([rot[:, 1], rot[:, 3], -rot[:, 2], rot[:, 0]], axis=-1)
     return rot
+
+
+def cardillo_to_gltf_scale(scale):
+    # only change y and z
+    scale = np.stack([scale[:, 0], scale[:, 2], scale[:, 1]], axis=1)
+    return scale

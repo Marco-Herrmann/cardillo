@@ -31,8 +31,6 @@ def make_glTF(
     v_P=None,
     P_IB=None,
     B_Omega=None,
-    Delta_r=None,
-    B_Delta_phi=None,
     mesh=None,
 ):
     # TODO: get rid of os

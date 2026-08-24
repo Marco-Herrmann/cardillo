@@ -356,7 +356,7 @@ class RigidBody:
         return r_OP, v_P, P_IB, B_Omega
 
     def _export_nodes_modes(self, solution):
-        t0 = solution.t
+        t0 = solution.t0 if hasattr(solution, "t0") else solution.t
         q0 = solution.q[self.qDOF]
         r_OP = q0[:3]
         P_IB = q0[3:]
