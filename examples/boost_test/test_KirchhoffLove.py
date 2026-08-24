@@ -28,9 +28,16 @@ if __name__ == "__main__":
     B_I_rho0 = np.diag(np.random.rand(3))
     cross_section_inertia = CrossSectionInertias_new(A_rho0=A_rho0, B_I_rho0=B_I_rho0)
     cross_section_inertia = False
+    nelement = 1
     nelement = 8
 
-    Rod = make_KirchhoffLoveRod()
+    Rod = make_KirchhoffLoveRod(
+        # idx_displacement_based=[0, 1, 2, 3],
+        # idx_displacement_based=[0, 2, 3],
+        # idx_displacement_based=[2, 3],
+        # idx_constraints=[0, 1, 2, 3],
+        # idx_constraints=[1],
+    )
     # Rod = make_BoostedCosseratRod()
 
     Q = Rod.straight_configuration(nelement, 5)
@@ -53,12 +60,11 @@ if __name__ == "__main__":
     constraint = RigidConnection(system.origin, rod, xi2=0.0)
     forcing = Force(lambda t: np.array([0.5, 1.0, 0.2]) * t * 0.5, rod, xi=1.0)
     forcing = Force(lambda t: np.array([0.0, 1.0, 0.0]) * t, rod, xi=1.0)
-    forcing = Force(lambda t: np.array([0.0, 0.0, 1.0]) * t, rod, xi=1.0)
-    forcing = Force(lambda t: np.array([0.0, 0.0, 1.0]) * 0.0, rod, xi=1.0)
-    # TODO: why moment in y and z not working?
-    M = 2 * np.pi
-    print(M)
-    forcing = B_Moment(lambda t: np.array([0.0, 0.0, M]) * t, rod, xi=1.0)
+    forcing = Force(lambda t: np.array([0.0, 0.0, 0.1]) * t, rod, xi=1.0)
+    # forcing = Force(lambda t: np.array([0.1, 0.0, 0.0]) * t, rod, xi=1.0)
+    # M = 2 * np.pi
+    # print(M)
+    # forcing = B_Moment(lambda t: np.array([0.0, 0.0, M]) * t, rod, xi=1.0)
 
     system.add(rod, constraint, forcing)
 
@@ -93,20 +99,28 @@ if __name__ == "__main__":
     for i in range(3):
         ax[i, 0].plot(xis, eps_Ga[:, i])
         ax[i, 1].plot(xis, eps_Ka[:, i])
+    ax[0, 0].set_title("Gammas")
+    ax[0, 1].set_title("Kappas")
     # plt.show()
 
-    fig, ax = plt.subplots(2, 2)
-    r_OP0 = sol.q[:, 0:3]
-    r_OP1 = sol.q[:, 3:6]
-    P0 = sol.q[:, 6:10]
-    P1 = sol.q[:, 10:14]
-    alpha = sol.q[:, 14]
+    # fig, ax = plt.subplots(2, 2)
+    # r_OP0 = sol.q[:, 0:3]
+    # r_OP1 = sol.q[:, 3:6]
+    # P0 = sol.q[:, 6:10]
+    # P1 = sol.q[:, 10:14]
+    # alpha = sol.q[:, 14]
 
-    ax[0, 0].plot(sol.t, r_OP0)
-    ax[1, 0].plot(sol.t, r_OP1)
+    # ax[0, 0].plot(sol.t, r_OP0)
+    # ax[1, 0].plot(sol.t, r_OP1)
 
-    ax[0, 1].plot(sol.t, P0 * P0)  # - r_OP1[:, 0][:, None])
-    ax[1, 1].plot(sol.t, P1 * P1)  # - r_OP1[:, 0][:, None])
+    # ax[0, 1].plot(sol.t, P0 * P0)  # - r_OP1[:, 0][:, None])
+    # ax[1, 1].plot(sol.t, P1 * P1)  # - r_OP1[:, 0][:, None])
+
+    # ax[0, 0].set_title("r_OP0")
+    # ax[1, 0].set_title("r_OP0")
+
+    # ax[0, 1].set_title("P0*P0")
+    # ax[1, 1].set_title("P1*P1")
 
     # animation
     # animate_beam(np.linspace(0, 1, 5), np.array([system.q0] * 5), [rod], scale=5, n_r=50, n_frames=11)

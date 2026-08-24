@@ -237,7 +237,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         # uDOF
         self.nu_r = 3 * self.nnodes
         self.nu_phi = 3 * self.nnodes
-        self.nu_eps = 2 * self.nnodes - 2
+        self.nu_eps = 2 * self.nelement
         self.nu_alpha = self.nelement
         nu = np.cumsum([self.nu_r, self.nu_phi, self.nu_eps, self.nu_alpha])
         self.uDOF_r = slice(0, nu[0])
@@ -245,6 +245,10 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         self.uDOF_eps = slice(nu[1], nu[2])
         self.uDOF_alpha = slice(nu[2], nu[3])
         self.nu = nu[-1]
+
+        # TODO: how to order epsilons? (plus, minus) or (0, 1-, 1+, 2-, 2+, ...(N-1)-, (N-1)+, N)?
+        self.uDOF_eps_plus = slice(self.uDOF_eps.start, self.uDOF_eps.start, 2)
+        self.uDOF_eps_minus = slice(self.uDOF_eps.start + 1, self.uDOF_eps.start, 2)
 
         self.nu_rt = 3 * self.nnodes + 6 * self.nelement
         self.nu_theta = self.nnodes + self.nelement
@@ -344,6 +348,16 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         # self._M_coo()
         if self._nla_c > 0:
             self._c_la_c_coo()
+
+    #####################
+    # kinematic equations
+    #####################
+    def q_dot(self, t, q, u): ...
+
+    # not required by DualStormerVerlet
+    def q_dot_q(self, t, q, u): ...
+
+    def q_dot_u(self, t, q): ...
 
     ############################################
     # interpolations and virtual work mappings #
@@ -567,6 +581,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
             blocksize=block_size,
         )
 
+        # TODO: put them in the uDOFs/rtDOFs
         t_plus_row = slice(self.nu_r, self.nu_r + 3 * self.nelement)
         t_minus_row = slice(
             self.nu_r + 3 * self.nelement, self.nu_r + 6 * self.nelement
@@ -577,12 +592,6 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         phi_y_minus_col = slice(self.uDOF_phi.start + 1 + 3, self.uDOF_phi.stop, 3)
         phi_z_minus_col = slice(self.uDOF_phi.start + 2 + 3, self.uDOF_phi.stop, 3)
 
-        # TODO: how to order epsilons? (plus, minus) or (0, 1-, 1+, 2-, 2+, ...(N-1)-, (N-1)+, N)?
-        # eps_plus_col = slice(self.uDOF_eps.start, self.uDOF_eps.stop, 2)
-        # eps_minus_col = slice(self.uDOF_eps.start+1, self.uDOF_eps.stop, 2)
-        eps_plus_col = slice(self.uDOF_eps.start, self.uDOF_eps.stop - self.nelement)
-        eps_minus_col = slice(self.uDOF_eps.start + self.nelement, self.uDOF_eps.stop)
-
         # TODO: predefine
         D_rt = CooMatrix((self.nu_rt, self.nu))
         D_rt["I", : self.nu_r, self.uDOF_r] = eye_array(self.nu_r)
@@ -590,10 +599,101 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         D_rt["phi_y-", t_minus_row, phi_y_minus_col] = D_phi_y_minus
         D_rt["phi_z+", t_plus_row, phi_z_plus_col] = D_phi_z_plus
         D_rt["phi_z-", t_minus_row, phi_z_minus_col] = D_phi_z_minus
-        D_rt["eps+", t_plus_row, eps_plus_col] = D_eps_plus
-        D_rt["eps-", t_minus_row, eps_minus_col] = D_eps_minus
+        D_rt["eps+", t_plus_row, self.uDOF_eps_plus] = D_eps_plus
+        D_rt["eps-", t_minus_row, self.uDOF_eps_minus] = D_eps_minus
 
         return D_rt
+
+    def _projection_D_dot(self, q, u):
+        # TODO: cache and optimize
+
+        P_IB = q[self.qDOF_P].reshape(self.nnodes, 4)
+        eps = np.array([0, *q[self.qDOF_eps], 0])
+
+        P2 = np.sum(P_IB**2, axis=1)
+        A_IB = Exp_SO3_quat(P_IB)
+
+        scl_plus = (1 + eps) * P2
+        scl_minus = (1 - eps) * P2
+
+        B_Omega_IB = u[self.uDOF_phi].reshape(self.nnodes, 3)
+        A_IB_dot = np.cross(A_IB, B_Omega_IB, axis=...)
+
+        eps_plus_dot = u[self.uDOF_eps_plus]
+        eps_minus_dot = u[self.uDOF_eps_minus]
+        phi_y_plus_dot = (
+            -A_IB_dot[:-1, :, 2] * scl_plus[:-1, None]
+            - A_IB[:-1, :, 2] * eps_plus_dot[:, None]
+        )
+        phi_y_minus_dot = (
+            -A_IB_dot[1:, :, 2] * scl_minus[1:, None]
+            - A_IB[1:, :, 2] * eps_minus_dot[:, None]
+        )
+        phi_z_plus_dot = (
+            A_IB_dot[:-1, :, 1] * scl_plus[:-1, None]
+            + A_IB[:-1, :, 1] * eps_plus_dot[:, None]
+        )
+        phi_z_minus_dot = (
+            A_IB_dot[1:, :, 1] * scl_minus[1:, None]
+            + A_IB[1:, :, 1] * eps_minus_dot[:, None]
+        )
+
+        block_cols = np.arange(self.nelement)
+        indptr = np.arange(self.nelement + 1)
+        shape = (3 * self.nelement, self.nelement)
+        block_size = (3, 1)
+
+        D_dot_phi_y_plus = bsr_array(
+            (phi_y_plus_dot[:, :, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_dot_phi_y_minus = bsr_array(
+            (phi_y_minus_dot[:, :, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_dot_phi_z_plus = bsr_array(
+            (phi_z_plus_dot[:, :, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_dot_phi_z_minus = bsr_array(
+            (phi_z_minus_dot[:, :, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_dot_eps_plus = bsr_array(
+            (A_IB_dot[:-1, :, 0, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+        D_dot_eps_minus = bsr_array(
+            (A_IB_dot[1:, :, 0, None], block_cols, indptr),
+            shape=shape,
+            blocksize=block_size,
+        )
+
+        t_plus_row = slice(self.nu_r, self.nu_r + 3 * self.nelement)
+        t_minus_row = slice(
+            self.nu_r + 3 * self.nelement, self.nu_r + 6 * self.nelement
+        )
+
+        phi_y_plus_col = slice(self.uDOF_phi.start + 1, self.uDOF_phi.stop - 3, 3)
+        phi_z_plus_col = slice(self.uDOF_phi.start + 2, self.uDOF_phi.stop - 3, 3)
+        phi_y_minus_col = slice(self.uDOF_phi.start + 1 + 3, self.uDOF_phi.stop, 3)
+        phi_z_minus_col = slice(self.uDOF_phi.start + 2 + 3, self.uDOF_phi.stop, 3)
+
+        # TODO: predefine
+        D_dot_rt = CooMatrix((self.nu_rt, self.nu))
+        D_dot_rt["phi_y+", t_plus_row, phi_y_plus_col] = D_dot_phi_y_plus
+        D_dot_rt["phi_y-", t_minus_row, phi_y_minus_col] = D_dot_phi_y_minus
+        D_dot_rt["phi_z+", t_plus_row, phi_z_plus_col] = D_dot_phi_z_plus
+        D_dot_rt["phi_z-", t_minus_row, phi_z_minus_col] = D_dot_phi_z_minus
+        D_dot_rt["eps+", t_plus_row, self.uDOF_eps_plus] = D_dot_eps_plus
+        D_dot_rt["eps-", t_minus_row, self.uDOF_eps_minus] = D_dot_eps_minus
+
+        return D_dot_rt
 
     def _D_theta_coo(self):
         phi_x_col = slice(self.uDOF_phi.start, self.uDOF_phi.stop, 3)
@@ -633,12 +733,15 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
     # equations of motion
     #########################################
     def M(self, t, q):
-        warn("Not implemented yet")
-        return np.eye(self.nu)
+        D = self._projection_D_matrix(q)
+        M = D.T @ self._MH @ D + self._Mtheta
+        return M
 
     def f_gyr(self, t, q, u):
-        warn("Not implemented yet")
-        return np.zeros(self.nu)
+        D = self._projection_D_matrix(q)
+        D_dot = self._projection_D_dot(q, u)
+        f_gyr = D.T @ self._MH @ D_dot @ u + ...
+        return f_gyr
 
     def f_gyr_u(self, t, q, u):
         warn("Not implemented yet")
