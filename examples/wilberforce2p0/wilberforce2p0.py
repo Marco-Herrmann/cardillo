@@ -4,29 +4,27 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation
 
 from cardillo import System
-from cardillo.constraints import RigidConnection, Spherical
+from cardillo.constraints import RigidConnection
 from cardillo.discrete import RigidBody, Cylinder
-from cardillo.forces import Force, Moment
-from cardillo.math import e1, e2, e3, ax2skew
-from cardillo.rods import (
+from cardillo.forces import Force
+from cardillo.math import e3
+from cardillo.rods import animate_beam
+from cardillo.rods_new import (
     CircularCrossSection,
     CrossSectionInertias,
     Simo1986,
-    animate_beam,
 )
-from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods.force_line_distributed import Force_line_distributed
+from cardillo.rods_new2 import make_CosseratRod
 from cardillo.solver import (
     Newton,
     BackwardEuler,
     SolverOptions,
     ScipyDAE,
     DualStormerVerlet,
+    Eigenmodes,
 )
 
-
 if __name__ == "__main__":
-
     # nturns = 3  # number of coils
     # nturns = 10  # number of coils
     nturns = 20  # number of coils Harsch2021
@@ -41,7 +39,8 @@ if __name__ == "__main__":
     #######################
     # spring modeled as rod
     #######################
-    Rod = make_CosseratRod(mixed=True, interpolation="Quaternion")
+    system = System()
+    Rod = make_CosseratRod()
 
     polynomial_degree = 2
     elements_per_turn = 12
@@ -68,17 +67,21 @@ if __name__ == "__main__":
     # rod cross-section
     cross_section = CircularCrossSection(wire_radius)
     cross_section_inertias = CrossSectionInertias(rho, cross_section)
+    A = cross_section.area(0.0)
+    I_ii = np.diag(cross_section.second_moment(0.0))
 
-    A_rho0 = rho * cross_section.area
-    K_S_rho0 = rho * cross_section.first_moment
-    K_I_rho0 = rho * cross_section.second_moment
-    A = cross_section.area
-    Ip, I2, I3 = np.diag(cross_section.second_moment)
+    A_rho0 = rho * A
     Ei = np.array([E * A, G * A, G * A])
-    Fi = np.array([G * Ip, E * I2, E * I3])
+    Fi = np.array([G * I_ii[0], E * I_ii[1], E * I_ii[2]])
     material_model = Simo1986(Ei, Fi)
     print(f"Ei: {Ei}")
     print(f"Fi: {Fi}")
+
+    # gravity load
+    f_g_rod_statics = (
+        lambda t, xi: -(2 * t if t <= 0.5 else 1.0) * A_rho0 * gravity * e3
+    )
+    f_g_rod = lambda t, xi: -A_rho0 * gravity * e3
 
     # helix and derivatives
     def r(xi, phi0=0):
@@ -110,13 +113,12 @@ if __name__ == "__main__":
     dcurve = lambda xi: dr(xi, phi0=np.pi)
     ddcurve = lambda xi: ddr(xi, phi0=np.pi)
 
-    q0 = Rod.serret_frenet_configuration(
+    q0_rod = Rod.serret_frenet_configuration(
         nelements,
         curve,
         dcurve,
         ddcurve,
         xi1=1,
-        # polynomial_degree=polynomial_degree,
         r_OP0=np.zeros(3, dtype=float),
         A_IB0=np.eye(3, dtype=float),
     )
@@ -125,53 +127,50 @@ if __name__ == "__main__":
         cross_section,
         material_model,
         nelements,
-        Q=q0,
-        q0=q0,
-        # polynomial_degree=polynomial_degree,
+        Q=q0_rod,
+        distributed_load=[f_g_rod_statics, None],
         cross_section_inertias=cross_section_inertias,
     )
+    system.add(rod)
 
     ##############
     # pendulum bob
     ##############
-    # R = 23e-3  # radius of the main cylinder
-    # h = 36e-3  # height of the main cylinder
     R = 25e-3  # radius of the main cylinder
     h = 34e-3  # height of the main cylinder
     density = 7850  # [kg / m^3]; steel
     r_OS0 = np.array([0, 0, -h / 2 - wire_radius])
     p0 = np.array([1, 0, 0, 0], dtype=float)
-    q0 = np.concatenate((r_OS0, p0))
-    # mass_bob = 0.469
-    mass_bob = density * R**2 * np.pi * h
-    # K_Theta_S_bob = np.diag([1.468e-4, 1.468e-4, 1.247e-4])
-    bob = Cylinder(RigidBody)(radius=R, height=h, density=density, q0=q0)
-    # bob = RigidBody(mass_bob, K_Theta_S_bob, q0=q0)
+    q0_bob = np.concatenate((r_OS0, p0))
+    bob = Cylinder(RigidBody)(radius=R, height=h, density=rho, q0=q0_bob)
 
-    system = System()
+    f_g_bob_statics = lambda t: -(2 * t if t <= 0.5 else 1.0) * bob.mass * gravity * e3
+    f_g_bob = lambda t: -bob.mass * gravity * e3
+    gravity_bob_statics = Force(f_g_bob_statics, bob, name="bob_grav_stat")
+    gravity_bob = Force(f_g_bob, bob, name="bob_grav")
+    system.add(bob, gravity_bob_statics)
 
-    f_g_rod_statics = lambda t, xi: -t * A_rho0 * gravity * e3
-    gravity_rod_statics = Force_line_distributed(f_g_rod_statics, rod)
-    f_g_bob_statics = lambda t: -t * mass_bob * gravity * e3
-    gravity_bob_statics = Force(f_g_bob_statics, bob)
+    pulling_factor = 0.3
+    # pulling_factor = 0.1
+    f_pulling = (
+        lambda t: -(2 * (t - 0.5) if t >= 0.5 else 0.0)
+        * bob.mass
+        * gravity
+        * e3
+        * pulling_factor
+    )
+    pulling_force = Force(f_pulling, bob, name="puliing")
 
-    f_pulling = lambda t: -t * mass_bob * gravity * e3 * 0.3
-    pulling_force = Force(f_pulling, bob)
-
-    joint1 = RigidConnection(system.origin, rod, xi2=1)
-    joint2 = RigidConnection(bob, rod, xi2=0)
+    joint1 = RigidConnection(system.origin, rod, xi2=1, name="ground-rod")
+    joint2 = RigidConnection(bob, rod, xi2=0, name="bob-rod")
 
     #####################
     # assemble the system
     #####################
     # system.add(rod, joint1, force_rod)
     system.add(
-        rod,
-        bob,
         joint1,
         joint2,
-        gravity_rod_statics,
-        gravity_bob_statics,
         pulling_force,
     )
     system.assemble()
@@ -179,53 +178,93 @@ if __name__ == "__main__":
     #####################
     # solve static system
     #####################
-    n_load_steps = 4
+    n_load_steps = 10
     sol = Newton(
         system,
         n_load_steps=n_load_steps,
+        # t1 = 0.5,
+        t1=1.0,
     ).solve()
     q = sol.q
+    q_stat = q
     nt = len(q)
     t = sol.t[:nt]
 
+    i_stat0 = np.argwhere(sol.t == 0.5)[0, 0]
+    print(bob.r_OP(t[i_stat0], q[i_stat0, bob.qDOF]))
+    print(bob.r_OP(t[-1], q[-1, bob.qDOF]))
+
+    ################
+    # blender export
+    ################
+    dir_name = Path(__file__).parent
+    system.export_blender(dir_name, "blend_stat", sol, create_blend=True)
+
+    ##############
+    # Eigenmodes #
+    ##############
+    solver_eig = Eigenmodes(system, sol)
+    omegas = np.zeros((n_load_steps + 1, 10))
+    omegas_cheap = np.zeros((n_load_steps + 1, 10))
+    # for i in range(n_load_steps + 1):
+    #     print(f"step {i}/{n_load_steps}")
+    #     sol_eig = solver_eig.solve(i, n_eig=11, compute_dense=False)
+    #     omegas[i] = sol_eig.omegas[:10]
+
+    #     # print(f"solve cheap")
+    #     # _, _, sol_eig_cheap = solver_eig.solve_cheap(i)
+    #     # omegas_cheap[i] = sol_eig_cheap.omegas[0, :10]
+
+    #     # print(f"export")
+    #     # system.export_blender(dir_name, f"blend_eig{i}", sol_eig, create_blend=True)
+
+    # fig, ax = plt.subplots(1, 1)
+    # ax.plot(t, omegas)
+    # ax.plot(t, omegas_cheap, "--")
+    # plt.show()
+
+    # compute with reduced number of DOFs
+    sol_stat0 = solver_eig.solve(i_stat0, n_eig=11, compute_dense=True)
+
     system.set_new_initial_state(q0=sol.q[-1], u0=sol.u[-1])
 
-    f_g_rod = lambda t, xi: -A_rho0 * gravity * e3
-    gravity_rod = Force_line_distributed(f_g_rod, rod)
-    f_g_bob = lambda t: -mass_bob * gravity * e3
-    gravity_bob = Force(f_g_bob, bob)
+    rod.set_parameter(
+        distributed_load=[f_g_rod, None],
+    )
 
-    system.remove(gravity_bob_statics, gravity_rod_statics, pulling_force)
-    system.add(gravity_bob, gravity_rod)
+    system.remove(gravity_bob_statics, pulling_force)
+    system.add(gravity_bob)
     system.assemble()
 
     solver = ScipyDAE(
         system,
         t1=t1,
+        # t1 = 5.0e-3,
         dt=1.0e-3,
         method="Radau",
-        atol=1e-1,
-        rtol=1e-1,
+        atol=1e-3,
+        rtol=1e-3,
         stages=3,
     )
-    solver = DualStormerVerlet(
-        system,
-        t1=t1,
-        dt=1.0e-3,
-        options=SolverOptions(
-            fixed_point_atol=1e-3,
-            fixed_point_rtol=1e-3,
-        ),
-    )
+    # solver = DualStormerVerlet(
+    #     system,
+    #     t1=t1,
+    #     dt=1.0e-3,
+    #     options=SolverOptions(
+    #         fixed_point_atol=1e-3,
+    #         fixed_point_rtol=1e-3,
+    #     ),
+    # )
 
     sol = solver.solve()
     q = sol.q
+    q_dyn = q
     nt = len(q)
     t = sol.t[:nt]
 
-    # ################################
-    # # plot characteristic quantities
-    # ################################
+    ################################
+    # plot characteristic quantities
+    ################################
     r_OS = np.array([bob.r_OP(ti, qi[bob.qDOF]) for (ti, qi) in zip(sol.t, sol.q)])
 
     ordering = "zyx"
@@ -260,16 +299,7 @@ if __name__ == "__main__":
 
     plt.show()
 
-    ############
-    # VTK export
-    ############
-    # VTK export
-    dir_name = Path(__file__).parent
-    VTK_export = True
-    if VTK_export:
-        # fake second bob for export
-        bob_glyph = RigidBody(1.0, np.eye(3, dtype=float), name="bob_glyph")
-        bob_glyph.qDOF = bob.qDOF
-        bob_glyph.uDOF = bob.uDOF
-        system.add(bob_glyph)
-        system.export(dir_name, "vtk", sol, fps=50)
+    ################
+    # blender export
+    ################
+    system.export_blender(dir_name, "blend_dyn", sol, create_blend=True)

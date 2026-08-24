@@ -15,8 +15,8 @@ from cardillo.rods_new import (
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
-    make_CosseratRod,
 )
+from cardillo.rods_new2 import make_CosseratRod
 
 
 def consistent_constraints(sys, rod, constraints):
@@ -42,6 +42,12 @@ def consistent_constraints(sys, rod, constraints):
         g_rot1.append((2, 0))
     if 5 in rod_impressed:
         g_rot1.append((0, 1))
+
+    g_pos0 = [0, 1, 2]
+    g_rot0 = [(1, 2), (2, 0), (0, 1)]
+    g_pos1 = [0]
+    # g_pos1 = []
+    g_rot1 = []
 
     g_pos = [g_pos0, g_pos1]
     g_rot = [g_rot0, g_rot1]
@@ -133,17 +139,27 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     # compute eigenmodes #
     ######################
     solver = Eigenmodes(system, system.sol0)
-    omegas, modes_dq, sol_modes = solver.solve(-1)
+    sol_modes = solver.solve(-1)
 
+    omegas = sol_modes.omegas
     print(omegas)
     print(len(omegas))
 
-    # theoretical values for axial vibrations in clamped-clamped
     factor = np.pi / length * np.sqrt(E / density)
-    theo = (np.arange(len(omegas)) + 1) * factor
-    # theoretical values for axial vibrations in clamped-free
-    factor = np.pi / length * np.sqrt(E / density)
-    theo = (2 * np.arange(len(omegas)) + 1) / 2 * factor
+    if constraints[0] == "clamped" and constraints[1] == "clamped":
+        # theoretical values for axial vibrations in clamped-clamped
+        theo = (np.arange(len(omegas)) + 1) * factor
+
+    elif (constraints[0] == "free" and constraints[1] == "clamped") or (
+        constraints[0] == "clamped" and constraints[1] == "free"
+    ):
+        # theoretical values for axial vibrations in clamped-free
+        theo = (2 * np.arange(len(omegas)) + 1) / 2 * factor
+
+    elif constraints[0] == "free" and constraints[1] == "free":
+        omegas = omegas[6:]  # remove Rigid body modes
+        theo = theo = (np.arange(len(omegas)) + 1) * factor
+
     ratio = omegas / theo
 
     fig, ax = plt.subplots()
@@ -153,21 +169,24 @@ def cantilever(Rod, nel, constraints=["free", "free"]):
     plt.show()
 
     # vtk-export
-    rod._export_dict["level"] = "NodalVolume"
     dir_name = Path(__file__).parent
-    system.export(dir_name, f"vtk_modes", sol_modes, fps=25)
+    system.export_blender(dir_name, f"blender_modes", sol_modes, create_blend=True)
 
 
 if __name__ == "__main__":
-    nel = 20
+    nel = 50
     pDeg = 2
     Rod = make_CosseratRod(
         polynomial_degree=pDeg,
-        idx_constraints=[1, 2, 3, 5],
+        idx_constraints=[1, 2, 3, 4, 5],
+        # quadrature_dyn=(pDeg + 1, "Trapezoidal"),
+        quadrature_int=(2 * pDeg + 1, "Gauss"),
+        # continuity=1+0*pDeg-1,
+        # continuity=pDeg-1,
     )
 
-    # constraints = ["free", "free"]
-    constraints = ["rigid", "rigid"]
     # constraints = ["rigid", "rigid"]
+    # constraints = ["rigid", "free"]
+    constraints = ["free", "free"]
     # constraints = ["rot_z", "rot_z"]
     cantilever(Rod, nel, constraints)

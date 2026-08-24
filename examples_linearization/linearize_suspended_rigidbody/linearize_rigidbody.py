@@ -72,15 +72,14 @@ if __name__ == "__main__":
 
     # compute eigenmodes
     solver = Eigenmodes(system, system.sol0)
-    omegas, modes_dq, sol = solver.solve(-1)
+    sol = solver.solve(-1)
 
     print("Theoretical values: ")
     print(f"  omega_vertical: {np.sqrt(4 * k / block.mass)}")
     print(f" omega long axis: {np.sqrt(k * block_dim[1]**2 / block.B_Theta_C[0, 0])}")
     print(f"omega short axis: {np.sqrt(k * block_dim[0]**2 / block.B_Theta_C[1, 1])}")
-    print(f"Computed values: {omegas}")
+    print(f" Computed values: {sol.omegas}")
 
     # vtk-export
     dir_name = Path(__file__).parent
-    system.export(dir_name, f"vtk", sol, fps=25)
     system.export_blender(dir_name, f"blender", sol, create_blend=True)
