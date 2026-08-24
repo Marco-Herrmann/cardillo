@@ -220,7 +220,6 @@ def helix(
 if __name__ == "__main__":
     formulation = "old"
     formulation = "new"
-    # formulation = "Kirchhoff"
 
     if formulation == "old":
         Rod = make_CosseratRod(
@@ -231,20 +230,15 @@ if __name__ == "__main__":
         )
     elif formulation == "new":
         Rod = make_CosseratRod_new(
+            # polynomial_degree=1,
             # polynomial_degree=2,
             # polynomial_degree=3,
             # idx_constraints=[0, 1, 2, 4],
             # idx_constraints=[1, 2],
-            idx_displacement_based=[0, 1, 2, 3, 4, 5],
-        )
-    elif formulation == "Kirchhoff":
-        from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
-
-        Rod = make_KirchhoffLoveRod(
-            # idx_displacement_based=[0, 1, 2, 3],
-            # idx_displacement_based=[0, 1] #, 2, 3],
-            # idx_displacement_based=[2, 3],
-            # idx_constraints=[0, 1],
+            # idx_displacement_based=[3, 4, 5],
+            # idx_displacement_based=[0, 1, 2, 3, 4, 5],
+            # parametrization="R12",
+            # projection="BG",
         )
 
     helix(

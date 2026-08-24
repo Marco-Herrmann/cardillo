@@ -241,21 +241,6 @@ def rod_to_helical_form(
 
 
 if __name__ == "__main__":
-    if False:
-        from cardillo.rods.KirchhoffLoveRod import make_KirchhoffLoveRod
-        from cardillo.rods._material_models_new import Simo1986
-
-        Rod = make_KirchhoffLoveRod()
-        rod_to_helical_form(
-            Rod,
-            Simo1986,
-            nelements=30,
-            n_load_steps=90,
-            show_plots=True,
-            name="Rod to helical form",
-            new_interface=True,
-        )
-
     Rod = make_CosseratRod(
         interpolation="Quaternion",
         mixed=True,
