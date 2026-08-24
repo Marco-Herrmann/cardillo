@@ -30,6 +30,7 @@ from cardillo.solver import (
     SolverOptions,
     Solution,
     Eigenmodes,
+    FrequencyResponseFunction,
 )
 
 # sources:
@@ -77,9 +78,9 @@ def motion_stage(l_x0, l_y0):
 
     # TODO: tune these parameters
     # cable material
-    E = 5.0 * 1e7
-    G = 2.5 * 1e7
-    density = 1.0 * 1e-3
+    E = 5.0 * 1e5  # 5 MPa
+    G = 2.5 * 1e5
+    density = 3.5 * 1e-3  # 3_500 kg/m^3
 
     # geometry
     r_OP1_lower = np.array([-42.0, 47.0, 24.3])
@@ -99,8 +100,8 @@ def motion_stage(l_x0, l_y0):
     actuation_frequency_short = 2.0  # [1/s = Hz]
 
     # masses of stages
-    mass_long = 1.0 * 1e4
-    mass_short = 1.0 * 1e4
+    mass_long = 50.0
+    mass_short = 25.0
 
     # discretization and model
     system = System()
@@ -229,13 +230,28 @@ def motion_stage(l_x0, l_y0):
     A = cross_section.area(0.0)
     Ix, Iy, Iz = np.diag(cross_section.second_moment(0.0))
 
-    # TODO: get this into Simo
+    A = 4 * np.pi * r_cable**2
+    # cable can slide along each other (without steiner)
+    Iy_f = Iz_f = np.pi * r_cable**4
+
+    # cable cannot slide along each other (with steiner)
+    Iy_s = np.pi * r_cable**4
+    Iz_s = 21 * np.pi * r_cable**4
+
+    eta_steiner = 0.75
+    Iy = (1 - eta_steiner) * Iy_f + eta_steiner * Iy_s
+    Iz = (1 - eta_steiner) * Iz_f + eta_steiner * Iz_s
+    Ix = Iy + Iz
+
     Ei = np.array([E * A, G * A, G * A])
     Fi = np.array([G * Ix, E * Iy, E * Iz])
     material_model = Simo1986(Ei, Fi)
 
     # cross section inertias
     cross_section_inertias = CrossSectionInertias(density, cross_section)
+    cross_section_inertias = CrossSectionInertias(
+        A_rho0=A * density, B_I_rho0=np.diag([Ix, Iy, Iz]) * density
+    )
 
     b = lambda t, xi: np.array([0.0, 0.0, -9.81 * A * density])
 
@@ -290,6 +306,7 @@ def motion_stage(l_x0, l_y0):
             A_BP_upper=None,
         ),
     ]
+    # properties = []
 
     ######################
     # Cables in the loop #
@@ -401,7 +418,7 @@ def motion_stage(l_x0, l_y0):
     # blender export
     dir_name = Path(__file__).parent
     sol_stat.t *= 10
-    # system.export_blender(dir_name, "blender_02_stat", sol_stat, create_blend=True)
+    system.export_blender(dir_name, "blender_02_stat", sol_stat, create_blend=True)
 
     # visualize static result
     if len(cables) > 0:
@@ -426,9 +443,6 @@ def motion_stage(l_x0, l_y0):
         active=False, inactive_force=sol_stat.la_g[-1, actuation_short_stroke.la_gDOF]
     )
 
-    # actuation_long_stroke.update_actuation(tau=actuation_long_stat(sol_stat.t[-1]), active=True)
-    # actuation_short_stroke.update_actuation(tau=actuation_short_stat(sol_stat.t[-1]), active=True)
-
     # assemble
     system.assemble(options=assemble_options_ccic)
 
@@ -443,7 +457,41 @@ def motion_stage(l_x0, l_y0):
     dir_name = Path(__file__).parent
     system.export_blender(dir_name, "blender_02_eig", sol_eig, create_blend=True)
 
-    print(np.argsort(-np.abs(sol_eig.Delta_z[short_stroke.uDOF[0]])))
+    print(sol_eig.omegas[:10])
+
+    # frequency response function
+    iom = 1j * np.logspace(-3, 1, 201)
+    solver_FRF = FrequencyResponseFunction(system, sol_stat2)
+    sol_FRF = solver_FRF.solve(-1, iom)
+
+    # Inpu-output of interest
+    outDOF_long = long_stroke.outDOF[0]
+    outDOF_short = short_stroke.outDOF[1]
+
+    inDOF_long = actuation_long_stroke.inDOF[0]
+    inDOF_short = actuation_short_stroke.inDOF[0]
+
+    frf_long_long = sol_FRF[:, outDOF_long, inDOF_long]
+    frf_short_short = sol_FRF[:, outDOF_short, inDOF_short]
+
+    # FRF-plots
+    fig, ax = plt.subplots(2, 2, sharex=True)
+    ax[0, 0].loglog(iom.imag, np.abs(frf_long_long))
+    ax[1, 0].plot(iom.imag, np.degrees(np.angle(frf_long_long)))
+    ax[0, 1].loglog(iom.imag, np.abs(frf_short_short))
+    ax[1, 1].plot(iom.imag, np.degrees(np.angle(frf_short_short)))
+
+    ax[0, 0].grid()
+    ax[1, 0].grid()
+    ax[0, 1].grid()
+    ax[1, 1].grid()
+
+    # expectation from free rigid body
+    ax[0, 0].loglog(iom.imag, 1 / (iom.imag**2 * (mass_long + mass_short)), "--")
+    ax[1, 0].plot(iom.imag, np.ones_like(iom.imag) * 180, "--")
+    ax[0, 1].loglog(iom.imag, 1 / (iom.imag**2 * mass_short), "--")
+    ax[1, 1].plot(iom.imag, np.ones_like(iom.imag) * 180, "--")
+    plt.show()
 
     exit()
 
