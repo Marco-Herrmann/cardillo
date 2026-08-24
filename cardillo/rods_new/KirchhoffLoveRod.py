@@ -651,7 +651,7 @@ class KirchhoffLoveRod_PetrovGalerkin(RodInterface):
         # TODO: call this from constraints, see Tianxiang Marker, so that it is not called from postprocessing r_OP, etc. calls
         # TODO: check that it is always done using this function, never access interaction points directly!
         if not (xi in self.interaction_points.keys()):
-            if (node_number := self.node_number(xi)) is not False:
+            if (node_number := self.node_number(xi)) != -1:
                 qDOF_r = uDOF_r = np.arange(3) + 3 * node_number
                 qDOF_P = np.arange(4) + 4 * node_number + 3 * self.nnodes
                 uDOF_phi = np.arange(3) + 3 * node_number + 3 * self.nnodes

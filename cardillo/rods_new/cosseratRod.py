@@ -457,7 +457,7 @@ class CosseratRod_PetrovGalerkin(RodInterface):
     def get_interaction_point(self, xi):
         # TODO: check that it is always done using this function, never access interaction points directly!
         if not (xi in self.interaction_points.keys()):
-            if (node_number := self.node_number(xi)) is not False:
+            if (node_number := self.node_number(xi)) != -1:
                 nnodes = 1
                 qDOF = np.arange(self.nq_node) + self.nq_node * node_number
                 uDOF = np.arange(6) + 6 * node_number

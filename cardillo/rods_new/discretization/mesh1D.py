@@ -109,16 +109,17 @@ class Mesh1D_equidistant:
 
         self.polynomials = polynomials
 
-    # TODO: vectorize
-    # def node_numer(self, xis):
-    def node_number(self, xi):
-        # TODO: check to be consistent with element number for lagrange disc!
-        """For given xi in I = [0.0, 1.0], returns node number if xi is a node, otherwise False"""
-        idx = np.where(self.xis_nodes == xi)[0]
-        if len(idx) == 1:
-            return idx[0]
-        else:
-            return False
+    def node_number(self, xis):
+        """For given xi(s) in I = [0.0, 1.0], returns the node number(s) if xi is a node, otherwise -1."""
+        xis = np.asarray(xis)
+        was_scalar = xis.ndim == 0
+        xis = np.atleast_1d(xis)
+
+        matches = np.isclose(xis[:, None], self.xis_nodes[None, :], atol=1e-15)
+        counts = matches.sum(axis=1)
+        node_numbers = np.where(counts == 1, matches.argmax(axis=1), -1)
+
+        return node_numbers[0] if was_scalar else node_numbers
 
     def element_number(self, xis):
         """returns the element number(s) for xi, such that xi_{element} <= xi < xi_{element + 1}, expect for the last element, where xi_{element} <= xi <= xi_{element + 1}"""
@@ -250,14 +251,18 @@ class Mesh1D_IGA(Mesh1D_equidistant):
         self.nnodes = self.npolynomials = self.polynomials.shape[1]
         self.nnodes_element = self.npolynomials_element = polynomial_degree + 1
 
-    # TODO: vectorize
-    def node_number(self, xi):
-        if xi == 0.0:
-            return 0
-        elif xi == 1.0:
-            return self.nnodes - 1
-        else:
-            return False
+    def node_number(self, xis):
+        """For given xi(s) in I = [0.0, 1.0], returns 0 if xi is 0.0, nnodes - 1 if xi
+        is 1.0, otherwise -1."""
+        xis = np.asarray(xis)
+        was_scalar = xis.ndim == 0
+        xis = np.atleast_1d(xis)
+
+        node_numbers = np.where(
+            xis == 0.0, 0, np.where(xis == 1.0, self.nnodes - 1, -1)
+        )
+
+        return node_numbers[0] if was_scalar else node_numbers
 
     def shape_functions(self, xis, els=None, derivative_order=0):
         xis = np.atleast_1d(xis)

@@ -14,7 +14,7 @@ class CosseratRod_Interaction:
         if not (xi in self.interaction_points.keys()):
             nq_node = self.kinematics.nq_node
             nu_node = self.velocity.nu_node
-            if (node_number := self.node_number(xi)) is not False:
+            if (node_number := self.node_number(xi)) != -1:
                 nnodes = 1
                 qDOF = np.arange(nq_node) + nq_node * node_number
                 uDOF = np.arange(nu_node) + nu_node * node_number
