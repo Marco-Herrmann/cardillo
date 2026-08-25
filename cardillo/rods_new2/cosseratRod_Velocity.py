@@ -432,12 +432,13 @@ class CosseratRod_BG(CosseratRod_Velocity):
         return point_dict["Nu"][3:]
 
     def B_J_R_q(self, t, qi, xi):
-        return approx_fprime(qi, lambda qi_: self.B_J_R(t, qi, xi))
+        return approx_fprime(qi, lambda qi_: self.B_J_R(t, qi_, xi))
         warn("B_J_R_q not implemented yet")
         point_dict = self.parent.get_interaction_point(xi)
         return point_dict["zero_3_nui_nqi"]
 
     def B_J2_R(self, t, qi, xi):
+        raise NotImplementedError("B_J2_R not implemented yet!")
         return self.B_J2_R(t, qi, xi)
         warn("B_J2_R not implemented yet")
         point_dict = self.parent.get_interaction_point(xi)
@@ -474,7 +475,7 @@ class CosseratRod_BG(CosseratRod_Velocity):
         return N @ unodes[:, 3:]
 
     def B_Omega_q(self, t, qi, ui, xi):
-        return approx_fprime(qi, lambda qi_: self.B_Omega(t, qi, xi))
+        return approx_fprime(qi, lambda qi_: self.B_Omega(t, qi_, xi))
         warn("B_Omega_q not implemented yet")
         point_dict = self.parent.get_interaction_point(xi)
         return point_dict["zero_3_nqi"]
