@@ -44,6 +44,18 @@ from cardillo.rods_new2.cosseratRod_Dynamics import (
 )
 
 
+###################
+# next things TODO:
+###################
+# - export non-prismatic cross-sections
+# - think of caching
+# - clean up imports
+# - Lagrange basis with nodes at quadrature points of RI? --> sigma(qp[i]) = la_sigma[i]
+#       --> c_la_c should become diag when RI is used
+
+# additional: look up how Tianxiang did avoid the bmat!
+
+
 class CosseratRod(RodBlenderExport):
     def __init__(
         self,
