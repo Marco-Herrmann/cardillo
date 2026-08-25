@@ -116,7 +116,7 @@ class Harsch2021(RodMaterialModel):
         """
 
         # TODO: do this maybe nicer
-        from ._material_models import Harsch2021 as Harsch2021_old
+        from cardillo.rods._material_models import Harsch2021 as Harsch2021_old
 
         self.old = Harsch2021_old(Ei, Fi)
 

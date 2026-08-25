@@ -1,7 +1,6 @@
 from warnings import warn
 import numpy as np
 from cardillo.math.algebra import norm, cross3, ax2skew
-from cardillo.rods_new.cosseratRod import CosseratRod_PetrovGalerkin
 
 
 class Force_line_distributed:
@@ -17,9 +16,6 @@ class Force_line_distributed:
             Cosserat rod from Cardillo.
 
         """
-        if isinstance(rod, CosseratRod_PetrovGalerkin):
-            raise NotImplementedError("add the distributed load to the rod directly!")
-
         if not callable(force):
             self.force = lambda t, xi: force
         else:
