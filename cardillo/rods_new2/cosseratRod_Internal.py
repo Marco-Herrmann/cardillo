@@ -264,6 +264,23 @@ class CosseratRod_Internal:
 
         return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
 
+    def l_sigma_dot_q(self, q, u):
+        # TODO: do this without approx_fprime
+        # TODO: this is in the fully constraint case None and somehow called for consistent initial conditions...
+        l_c_dot_q = approx_fprime(q, lambda q_: self.W_sigma(q_)[0].T @ u)
+        l_g_dot_q = approx_fprime(q, lambda q_: self.W_sigma(q_)[1].T @ u)
+        return l_c_dot_q, l_g_dot_q
+
+    def l_sigma_ddot(self, q, u, u_dot):
+        # TODO: do this consistent, i.e., w/o q_dot
+        W_c, W_g = self.W_sigma(q)
+        l_c_dot_q, l_g_dot_q = self.l_sigma_dot_q(q, u)
+        q_dot = self.parent.q_dot(0.0, q, u)
+
+        l_c_ddot = W_c.T @ u_dot + l_c_dot_q @ q_dot
+        l_g_ddot = W_g.T @ u_dot + l_g_dot_q @ q_dot
+        return l_c_ddot, l_g_ddot
+
     ########################
     # evaluation functions #
     ########################
@@ -572,6 +589,10 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         ) + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
 
         return self.h_pot_q_SAB.add_blocks(f_pot_qp_qbar)
+
+    def KN_f_pot(self, t, q, u):
+        warn("KN_f_pot not implemented")
+        return None, None
 
 
 class CosseratRod_internal_BG(CosseratRod_Internal):
