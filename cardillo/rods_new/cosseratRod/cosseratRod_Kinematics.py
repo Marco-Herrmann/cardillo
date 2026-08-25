@@ -234,9 +234,7 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
             qnodes[:, 3:] /= np.linalg.norm(qnodes[:, 3:], axis=1)[:, None]
         else:
             # nearest orthogonal matrix to [d1 | d2 | d3] in Frobenius norm
-            A_IB = np.stack(
-                [qnodes[:, 3:6], qnodes[:, 6:9], qnodes[:, 9:12]], axis=-1
-            )
+            A_IB = np.stack([qnodes[:, 3:6], qnodes[:, 6:9], qnodes[:, 9:12]], axis=-1)
             U, _, Vt = np.linalg.svd(A_IB)
             A_IB = U @ Vt
             qnodes[:, 3:6] = A_IB[:, :, 0]

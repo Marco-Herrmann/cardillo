@@ -145,8 +145,6 @@ def bent_45(
     solver_eig = Eigenmodes(system, sol)
     solver_frf = FrequencyResponseFunction(system, sol)
     omegas = np.zeros((n_load_steps + 1, 10))
-    omegas_DAE = np.zeros((n_load_steps + 1, 10))
-    omegas_proj = np.zeros((n_load_steps + 1, 10))
     omegas_cheap = np.zeros((n_load_steps + 1, 10))
 
     iom = 1j * np.logspace(-2, 4, 51)
@@ -155,15 +153,7 @@ def bent_45(
     for i in range(n_load_steps + 1):
         print(f"step {i}/{n_load_steps}")
         sol_eig = solver_eig.solve(i)
-        omegas[i] = sol_eig.omegas[0, :10]
-
-        sol_DAE = solver_eig.solve(
-            i, bilateral_constraints=dict(Method="DAE", alpha=1.0, gamma=1.0)
-        )
-        omegas_DAE[i] = sol_DAE.omegas[0, :10]
-
-        sol_proj = solver_eig.solve(i, bilateral_constraints=dict(Method="Proj"))
-        omegas_proj[i] = sol_proj.omegas[0, :10]
+        omegas[i] = sol_eig.omegas[:10]
 
         # print(f"solve cheap")
         # _, _, sol_eig_cheap = solver_eig.solve_cheap(i)
