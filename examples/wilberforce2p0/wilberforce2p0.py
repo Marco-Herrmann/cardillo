@@ -13,8 +13,8 @@ from cardillo.rods_new import (
     CircularCrossSection,
     CrossSectionInertias,
     Simo1986,
+    make_CosseratRod,
 )
-from cardillo.rods_new2 import make_CosseratRod
 from cardillo.solver import (
     Newton,
     BackwardEuler,

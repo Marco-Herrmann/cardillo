@@ -14,8 +14,8 @@ from cardillo.rods_new import (
     CrossSectionInertias,
     Simo1986,
     UserDefinedCrossSection,
+    make_CosseratRod,
 )
-from cardillo.rods_new2 import make_CosseratRod
 from cardillo.rods.force_line_distributed import Force_line_distributed
 
 

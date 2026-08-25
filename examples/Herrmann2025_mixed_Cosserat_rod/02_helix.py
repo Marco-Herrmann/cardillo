@@ -19,7 +19,6 @@ from cardillo.rods_new import (
 )
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
-from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 
 
 def helix(

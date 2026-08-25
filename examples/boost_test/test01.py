@@ -12,7 +12,6 @@ from cardillo.rods_new import (
     CrossSectionInertias as CrossSectionInertias_new,
     make_CosseratRod as make_CosseratRod_new,
 )
-from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 from cardillo import System
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.math.rotations import Exp_SO3_quat

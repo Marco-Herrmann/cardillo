@@ -22,23 +22,23 @@ from cardillo.rods._base_export import RodExportBase
 
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
-from cardillo.rods_new2.cosseratRod_Blender import RodBlenderExport
-from cardillo.rods_new2.cosseratRod_Kinematics import (
+from .cosseratRod_Blender import RodBlenderExport
+from .cosseratRod_Kinematics import (
     Rod_Kinematics,
     CosseratRod_Quaternion_R12,
 )
-from cardillo.rods_new2.cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG
-from cardillo.rods_new2.cosseratRod_Interaction import CosseratRod_Interaction
-from cardillo.rods_new2.cosseratRod_q_dot import (
+from .cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG
+from .cosseratRod_Interaction import CosseratRod_Interaction
+from .cosseratRod_q_dot import (
     CosseratRod_rP_dot_from_vO_IB,
     CosseratRod_kin_trivial,
 )
 
-from cardillo.rods_new2.cosseratRod_Internal import (
+from .cosseratRod_Internal import (
     CosseratRod_internal_PG_IB,
     CosseratRod_internal_BG,
 )
-from cardillo.rods_new2.cosseratRod_Dynamics import (
+from .cosseratRod_Dynamics import (
     CosseratRod_dynamics_PG_IB,
     CosseratRod_dynamics_BG,
 )

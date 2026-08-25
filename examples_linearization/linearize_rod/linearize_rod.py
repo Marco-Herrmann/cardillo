@@ -15,8 +15,8 @@ from cardillo.rods_new import (
     RectangularCrossSection,
     CrossSectionInertias,
     Simo1986,
+    make_CosseratRod,
 )
-from cardillo.rods_new2 import make_CosseratRod
 
 
 def consistent_constraints(sys, rod, constraints):

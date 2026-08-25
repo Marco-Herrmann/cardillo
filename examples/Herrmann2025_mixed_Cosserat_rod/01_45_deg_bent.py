@@ -12,8 +12,8 @@ from cardillo.rods import RectangularCrossSection, animate_beam, Simo1986
 from cardillo.rods_new import (
     Simo1986 as Simo1986_new,
     RectangularCrossSection as RectangularCrossSection_new,
+    make_CosseratRod as make_CosseratRod_new,
 )
-from cardillo.rods_new2 import make_CosseratRod as make_CosseratRod_new
 from cardillo.rods.cosseratRod import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions
 from cardillo.utility.sensor import Sensor

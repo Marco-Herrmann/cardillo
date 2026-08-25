@@ -13,8 +13,8 @@ from cardillo.rods_new import (
     Simo1986,
     RectangularCrossSection,
     CrossSectionInertias,
+    make_CosseratRod,
 )
-from cardillo.rods_new2 import make_CosseratRod
 from cardillo.solver import Newton, SolverOptions, Eigenmodes
 from cardillo.utility.sensor import Sensor, SensorRecords
 

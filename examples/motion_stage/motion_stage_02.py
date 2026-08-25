@@ -9,8 +9,8 @@ from cardillo.rods_new import (
     CrossSectionInertias,
     Simo1986,
     CircularCrossSection,
+    make_CosseratRod,
 )
-from cardillo.rods_new2 import make_CosseratRod
 from cardillo.discrete import RigidBody, Frame
 from cardillo.constraints import RigidConnection, Prismatic
 from cardillo.forces import Force
