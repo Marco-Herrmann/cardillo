@@ -22,6 +22,9 @@ import matplotlib.pyplot as plt
 
 from cardillo import System
 from cardillo.constraints import RigidConnection
+from cardillo.discrete import Sphere, RigidBody
+from cardillo.force_laws import KelvinVoigtElement
+from cardillo.interactions import TwoPointInteraction
 from cardillo.forces import Force
 from cardillo.math import e1, e2, e3
 from cardillo.rods_new import (
@@ -68,7 +71,7 @@ if __name__ == "__main__":
 
     # gravity as distributed load along the rod
     g = 9.81
-    b = lambda t, xi: np.array([0.0, 0.0, -g * A * density * t])
+    b = lambda t, xi: t * np.array([0.0, 0.0, -g * A * density])
 
     ##############
     # system setup
@@ -94,20 +97,64 @@ if __name__ == "__main__":
     clamping = RigidConnection(rod, system.origin, xi1=0)
     system.add(clamping)
 
-    # tip force: mostly axial (e1) with a slight upward (e3) component
+    #######################
+    # sphere at cable's tip
+    #######################
+    sphere_radius = 0.2
+    sphere_density = 300  # [kg/m^3]
+    sphere_mass = sphere_density * (4 / 3 * np.pi * sphere_radius**3)
+
+    r_OP_tip0 = L * e1
+    r_OP0_sphere = r_OP_tip0 + sphere_radius * e1
+    sphere = Sphere(RigidBody)(
+        radius=sphere_radius,
+        subdivisions=2,
+        q0=RigidBody.pose2q(r_OP0_sphere, np.eye(3)),
+        density=sphere_density,
+    )
+    system.add(sphere)
+
+    # rigidly connect the cable's tip center of the sphere
+    connection = RigidConnection(
+        rod, sphere, xi1=1, r_OJ0=r_OP0_sphere, name="cable_to_sphere"
+    )
+    system.add(connection)
+
+    # gravity acting on the sphere
+    gravity_sphere = Force(
+        lambda t: t * np.array([0.0, 0.0, -sphere_mass * g]),
+        sphere,
+        name="gravity_sphere",
+    )
+    system.add(gravity_sphere)
+
+    # force element
+    L0_spring = 3.0
+    interaction = TwoPointInteraction(
+        sphere, system.origin, B_r_CP2=r_OP0_sphere + L0_spring * e3
+    )
+    KV_k = 1e3
+    KV_d = 1e0
+    KV_element = KelvinVoigtElement(interaction, KV_k, KV_d, compliance_form=False)
+    system.add(interaction, KV_element)
+
+    # perturbating force in e2
     F_axial = 1.0e3  # [N]
     F_axial = 2.0e1  # [N]
-    F_up = 0.5 * g * A * density * L  # [Nd]
-    print(f"{F_axial = }, {F_up = }")
+    F_up = 0.5 * g * A * density * L + sphere_mass * g  # [N]
+    print(f"{F_axial = }, {F_up = }, sphere gravity: {sphere_mass * g}")
     F_perp = F_up * 0.05  # [N]
     F = lambda t: t * (F_axial * e1 + F_perp * e2 + F_up * e3)
-    force = Force(F, rod, xi=1)
+    F = lambda t: t * F_up * e3
+    F = lambda t: t * F_perp * e2
+    F = lambda t: np.zeros(3)
+    force = Force(F, sphere, name="tip_force")
     system.add(force)
 
-    # sensor at the tip; together with `force` above this defines the
-    # 6 (translation + rotation) x 3 (force) input/output pair used by
-    # the FRF solver
-    sensor = Sensor(rod, xi=1, name="Tip")
+    # sensor at the tip; together with `force` above
+    # this defines the 6 (translation + rotation) x 3 (force)
+    # input/output pair used by the FRF solver
+    sensor = Sensor(sphere, name="Tip")
     system.add(sensor)
 
     if WITH_GROUND:
@@ -126,8 +173,8 @@ if __name__ == "__main__":
     )
     sol = solver.solve()
 
-    r_OP_tip = rod.r_OP(sol.t[-1], sol.q[-1][sensor.qDOF], 1)
-    print(f"tip position: {r_OP_tip} (undeformed: {L * e1})")
+    r_OP_tip = sphere.r_OP(sol.t[-1], sol.q[-1][sensor.qDOF])
+    print(f"tip position: {r_OP_tip} (undeformed: {r_OP0_sphere})")
 
     ##############
     # eigenmodes
@@ -137,13 +184,21 @@ if __name__ == "__main__":
     print(f"first 10 natural frequencies [rad/s]:\n{sol_eig.omegas[:10]}")
 
     dir_name = Path(__file__).parent
-    system.export_blender(dir_name, "blender_static", sol, create_blend=True)
-    system.export_blender(dir_name, "blender_eigenmodes", sol_eig, create_blend=True)
+    if WITH_GROUND:
+        system.export_blender(dir_name, "blender_static_ground", sol, create_blend=True)
+        system.export_blender(
+            dir_name, "blender_eigenmodes_ground", sol_eig, create_blend=True
+        )
+    else:
+        system.export_blender(dir_name, "blender_static", sol, create_blend=True)
+        system.export_blender(
+            dir_name, "blender_eigenmodes", sol_eig, create_blend=True
+        )
 
     ############################
     # frequency response function
     ############################
-    iom = 1j * np.logspace(-1, 4, 200)
+    iom = 1j * np.logspace(-1, 4, 2_000)
     solver_frf = FrequencyResponseFunction(system, sol)
     frfs = solver_frf.solve(-1, iom)  # shape (len(iom), 6, 3)
 
@@ -162,5 +217,15 @@ if __name__ == "__main__":
                 ax[i, j].set_ylabel(f"tip {labels_out[i]}")
             if i == 2:
                 ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
+
+    # pure pendulum (e1, e2) and mass-spring-oszillator with sqrt(g/l) (e3)
+    ax[0, 0].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
+    ax[1, 1].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
+    ax[2, 2].loglog(
+        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k)), "--"
+    )
+    ax[2, 2].loglog(
+        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k)), "--"
+    )
     fig.suptitle("Tip receptance FRF of clamped cable")
     plt.show()
