@@ -7,6 +7,7 @@ from scipy.linalg import eigh, null_space, eig, qr, solve
 from tqdm import tqdm
 
 from cardillo.math.fsolve import fsolve
+from cardillo.solver._base import compute_I_F
 from cardillo.solver import Solution, SolverOptions, SolverSummary
 from cardillo.utility.coo_matrix import CooMatrix
 
@@ -679,11 +680,12 @@ def null_space_qr(G, tol=1e-12):
 
 
 class Eigenmodes:
-    def __init__(self, system, sol):
+    def __init__(self, system, sol, *, g_N_tol=1e-3):
         self.system = system
         self.sol = sol
 
         self.la_sqared_tol = 1e-5
+        self.g_N_tol = g_N_tol
 
         self.u = np.zeros(system.nu, dtype=float)
 
@@ -698,6 +700,7 @@ class Eigenmodes:
             self.C_inv = self.C_inv.asformat("csr")
 
     def solve(self, index=-1, *, n_eig=-1, compute_dense=True, verbose=False):
+        # TODO: clean up and different bil.constraint levels and contacts!
         # TODO: check for static equilibrium
 
         # extract values
@@ -790,18 +793,32 @@ class Eigenmodes:
         #     scipy.linalg.null_space(W_g_non_internalT @ T_int)
         # )
 
-        # TODO: add also other constraint like things
-        if self.system.nla_g == 0:
+        n_constraints = self.system.nla_g + self.system.nla_gamma + self.system.nla_N + self.system.nla_F
+        if n_constraints == 0:
             T = eye_array(self.system.nu)
             M = M0
             K = K0
 
         else:
             W_g = self.system.W_g(t, q, format="csr")
+            W_gamma = self.system.W_gamma(t, q, format="csr")
+            W_N = self.system.W_N(t, q, format="csr")
+            W_F = self.system.W_F(t, q, format="csr")
+
+            g_N = self.system.g_N(t, q)
+            I_N = g_N <= self.g_N_tol
+            I_F = compute_I_F(np.arange(self.system.nla_N)[I_N], self.system)[0]
+
+            W = bmat(
+                [
+                    [W_g, W_gamma, W_N[:, I_N], W_F[:, I_F]],
+                ],
+                format="csr",
+            )
 
             # eliminate constraints
-            T_svd = csc_array(null_space(W_g.T.toarray()))  # uses SVD
-            T_qr = csc_array(null_space_qr(W_g.T.toarray()))  # uses qr decomposition
+            T_svd = csc_array(null_space(W.T.toarray()))  # uses SVD
+            T_qr = csc_array(null_space_qr(W.T.toarray()))  # uses qr decomposition
             # TODO: get sparseqer working, but the package is not working with native windows
 
             # projection
@@ -815,9 +832,9 @@ class Eigenmodes:
             M = M_svd
             K = K_svd
 
-            # T = T_qr
-            # M = M_qr
-            # K = K_qr
+            T = T_qr
+            M = M_qr
+            K = K_qr
 
             # T_m bestimmen
             # TODO: get non-massive DOFs from contributions, and perform steps from here on only when necessary
@@ -894,8 +911,9 @@ class Eigenmodes:
         else:
             # we want to comp
             # TODO: check which is faster
-            res = list(eigsh(K.toarray(), k=n_eig, M=M.toarray(), which="SA"))
-            res = list(eigsh(K.toarray(), k=n_eig, M=M.toarray(), which="SM"))
+            # res = list(eigsh(K, k=n_eig, M=M, which="SA"))
+            res = list(eigsh(K, k=n_eig, M=M, which="SM"))
+            # res = list(eigsh(K, k=n_eig, M=M))
 
         # make everything real
         # TODO: remove?
@@ -1047,47 +1065,52 @@ class Eigenmodes:
 
 
 class FrequencyResponseFunction:
-    def __init__(self, system, sol):
+    def __init__(self, system, sol, *, g_N_tol=1e-3):
         self.system = system
         self.sol = sol
 
-        self.la_sqared_tol = 1e-5
+        self.g_N_tol = g_N_tol
 
         self.u = np.zeros(system.nu, dtype=float)
 
         # TODO: it might be benefitial to implement the inverse of c_la_c directly in the contributions
-        C = system.c_la_c("csc")
+        self.C = system.c_la_c("csc")
         if system.nla_c > 1:
-            self.C_inv = sparse_inv(C)
+            self.C_inv = sparse_inv(self.C)
         else:
             self.C_inv = CooMatrix((system.nla_c, system.nla_c))
             if system.nla_c == 1:
-                self.C_inv[0, 0] = 1 / C[0, 0]
+                self.C_inv[0, 0] = 1 / self.C[0, 0]
             self.C_inv = self.C_inv.asformat("csr")
 
         # system dimensions
         seps = np.cumsum(
             np.array(
-                [0, system.nu, system.nu, system.nla_g, system.nla_c],
+                [
+                    0,
+                    system.nu,
+                    system.nu,
+                    system.nla_c,
+                    system.nla_g,
+                    system.nla_N, 
+                    system.nla_F
+                ],
                 dtype=int,
             )
         )
 
         self.slices = [slice(seps[i], seps[i + 1]) for i in range(len(seps) - 1)]
-        assert (
-            self.system.nla_N == self.system.nla_F == 0
-        ), "No (frictional) contacts allowed!"
         assert self.system.nla_gamma == 0, "No velocity level constraints allowed!"
         self.nx = seps[-1]
+        self.nu = self.system.nu
         self.nin = self.system.nin
         self.nout = self.system.nout
-        nu = self.nu = self.system.nu
 
         # create coo matrices of linear system
         self.E_coo = CooMatrix((self.nx, self.nx))
         self.A_coo = CooMatrix((self.nx, self.nx))
-        self.B_coo = CooMatrix((self.nx, self.nin))
-        self.C_coo = CooMatrix((self.nout, self.nx))
+        self.B_coo = CooMatrix((2 * self.nu, self.nin))
+        self.C_coo = CooMatrix((self.nout, 2 * self.nu))
         self.D_coo = CooMatrix((self.nout, self.nin))
 
         # kinematic equation
@@ -1096,7 +1119,7 @@ class FrequencyResponseFunction:
         self.A_coo["eye_kin", self.slices[0], self.slices[1]] = eye_nu
 
         # compliance
-        self.A_coo["C", self.slices[3], self.slices[3]] = self.C_inv
+        self.A_coo["C", self.slices[2], self.slices[2]] = self.C
 
         # prepare for coo matrices of nonlinear system
         self.KN_h_coo = None
@@ -1109,6 +1132,8 @@ class FrequencyResponseFunction:
 
         self.W_c_coo = None
         self.W_g_coo = None
+        self.W_N_coo = None
+        self.W_F_coo = None
 
     def solve(self, index=-1, s_val=None):
         # TODO: check for static equilibrium
@@ -1139,7 +1164,7 @@ class FrequencyResponseFunction:
         #############
         # mass matrix
         #############
-        # TODO: constant mass matrix: invert in init
+        # TODO: constant mass matrix: evaluate once in init
         M0 = self.system.M(t, q)
 
         ##############################
@@ -1147,7 +1172,20 @@ class FrequencyResponseFunction:
         ##############################
         self.W_g_coo = self.system.W_g(t, q, format="Coo", coo=self.W_g_coo)
         self.W_c_coo = self.system.W_c(t, q, format="Coo", coo=self.W_c_coo)
-        # TODO: W_N
+        self.W_N_coo = self.system.W_N(t, q, format="Coo", coo=self.W_N_coo)
+        self.W_F_coo = self.system.W_F(t, q, format="Coo", coo=self.W_F_coo)
+
+        # frictional contact
+        g_N = self.system.g_N(t, q)
+        I_N = g_N <= self.g_N_tol        
+        I_F = compute_I_F(np.arange(self.system.nla_N)[I_N], self.system)[0]
+
+        W_NF = bmat(
+            [
+                [self.W_N_coo.tocsc()[:, I_N], self.W_F_coo.tocsc()[:, I_F]],
+            ],
+            format="csr",
+        )
 
         #####################
         # assemble matrices #
@@ -1168,17 +1206,17 @@ class FrequencyResponseFunction:
         self.A_coo["G_h", self.slices[1], self.slices[1]] = -self.DG_h_coo[1]
         self.A_coo["G_c", self.slices[1], self.slices[1]] = -self.DG_c_coo[1]
 
-        self.A_coo["W_g", self.slices[1], self.slices[2]] = self.W_g_coo
-        self.A_coo["W_c", self.slices[1], self.slices[3]] = self.W_c_coo
-
-        # constraint
-        self.A_coo["W_gT", self.slices[2], self.slices[0]] = self.W_g_coo.T
+        self.A_coo["W_c", self.slices[1], self.slices[2]] = self.W_c_coo
+        self.A_coo["W_g", self.slices[1], self.slices[3]] = self.W_g_coo
 
         # compliance
-        self.A_coo["WcT", self.slices[3], self.slices[0]] = self.W_c_coo.T
+        self.A_coo["WcT", self.slices[2], self.slices[0]] = self.W_c_coo.T
+
+        # constraint
+        self.A_coo["W_gT", self.slices[3], self.slices[0]] = self.W_g_coo.T
 
         # input matrix
-        self.B_coo["W_in", self.slices[0], :] = self.system.W_in(t, q)
+        self.B_coo["W_in", self.slices[1], :] = self.system.W_in(t, q)
 
         # output matrix
         # TODO: put to init
@@ -1191,6 +1229,33 @@ class FrequencyResponseFunction:
         # throuput matrix
         # self.D_coo[...] = ...
 
+        #################
+        # expand matrices with active frictional contacts
+        #################
+        n_active = W_NF.shape[1]
+        zeros_E = lil_array((n_active, n_active), dtype=float)
+
+        W_NF_extended1 = CooMatrix((self.nx, n_active))
+        W_NF_extended1[self.slices[1], :] = W_NF
+        W_NF_extended1 = W_NF_extended1.tocsc()
+
+        W_NF_extended2 = CooMatrix((self.nx, n_active))
+        W_NF_extended2[self.slices[0], :] = W_NF
+        W_NF_extended2 = W_NF_extended2.tocsc()
+
+        E = bmat(
+            [
+                [self.E_coo.tocsc(), None],
+                [None, zeros_E],
+            ]
+        )
+        A = bmat(
+            [
+                [self.A_coo.tocsc(), W_NF_extended1],
+                [W_NF_extended2.T, None],
+            ]
+        )
+
         # TODO: use coo?
         # too sparse
         E = self.E_coo.asformat("csc")
@@ -1199,7 +1264,7 @@ class FrequencyResponseFunction:
         C = self.C_coo.asformat("csc")
         D = self.D_coo.asformat("csc")
 
-        H = lambda s: C @ sparse_inv(E * s - A) @ B + D
+        H = lambda s: C @ sparse_inv(E * s - A)[: 2 * self.nu, : 2 * self.nu] @ B + D
         if s_val is None:
             return H
 
