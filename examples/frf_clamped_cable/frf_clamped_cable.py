@@ -7,12 +7,12 @@ computed with `Newton`, then linearized eigenmodes and the tip FRF
 (force -> tip displacement/rotation) are evaluated about that
 equilibrium.
 
-This system was intentionally kept free of unilateral/frictional
-contacts so it exercises the "clean" path of `Eigenmodes` and
-`FrequencyResponseFunction` (no active `nla_N`/`nla_F`). A ground
-plane with `Sphere2Plane` contacts can be added later along the rod to
-also exercise the contact-related code paths (see `WITH_GROUND`
-below).
+With `WITH_GROUND = True` a horizontal ground plane is added below the
+cable with `Sphere2Plane` contacts along the rod (and the tip sphere),
+so active/inactive `nla_N`/`nla_F` are exercised in `Eigenmodes` and
+`FrequencyResponseFunction`. With `WITH_GROUND = False` the system
+stays free of unilateral/frictional contacts, exercising the "clean"
+path instead.
 """
 
 from pathlib import Path
@@ -22,7 +22,8 @@ import matplotlib.pyplot as plt
 
 from cardillo import System
 from cardillo.constraints import RigidConnection
-from cardillo.discrete import Sphere, RigidBody
+from cardillo.contacts import Sphere2Plane
+from cardillo.discrete import Box, Sphere, RigidBody, Frame
 from cardillo.force_laws import KelvinVoigtElement
 from cardillo.interactions import TwoPointInteraction
 from cardillo.forces import Force
@@ -41,13 +42,8 @@ from cardillo.solver import (
 )
 from cardillo.utility.sensor import Sensor
 
-# toggle for a future extension: add a ground plane with Sphere2Plane
-# contacts along the rod (see cardillo.contacts.Sphere2Plane) to also
-# exercise the frictional-contact code paths of the FRF solver.
-WITH_GROUND = False
 
-
-if __name__ == "__main__":
+def main(with_ground, make_plot=True, blender_export=True):
     #####################
     # geometry & material
     #####################
@@ -157,10 +153,37 @@ if __name__ == "__main__":
     sensor = Sensor(sphere, name="Tip")
     system.add(sensor)
 
-    if WITH_GROUND:
-        raise NotImplementedError(
-            "ground contact (Sphere2Plane) is not wired up yet in this example"
+    if with_ground:
+        ####################
+        # ground with contacts
+        ####################
+        z_ground = -0.7
+        dimensions = np.array([L + 2, 2, 1])
+        r_OP_frame = np.array([L / 2, 0.0, z_ground - dimensions[2] / 2])
+        ground = Box(Frame)(dimensions=dimensions, r_OP=r_OP_frame, name="ground")
+        system.add(ground)
+
+        mu = 0.5
+
+        # point contacts along the rod (skip node 0, it is clamped and
+        # never moves, so a contact there would be permanently inert)
+        for node in range(1, rod.nnodes):
+            contact_rod = Sphere2Plane(
+                ground,
+                rod,
+                mu=mu,
+                radius=radius,
+                B_r_CP1=np.array([0.0, 0.0, dimensions[2] / 2]),
+                xi2=node / (rod.nnodes - 1),
+                name=f"contact_ground_rod_{node:02d}",
+            )
+            system.add(contact_rod)
+
+        # the tip sphere itself, using its actual radius
+        contact_sphere = Sphere2Plane(
+            ground, sphere, mu=mu, radius=sphere_radius, name="contact_ground_sphere"
         )
+        system.add(contact_sphere)
 
     system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
@@ -184,12 +207,12 @@ if __name__ == "__main__":
     print(f"first 10 natural frequencies [rad/s]:\n{sol_eig.omegas[:10]}")
 
     dir_name = Path(__file__).parent
-    if WITH_GROUND:
+    if with_ground and blender_export:
         system.export_blender(dir_name, "blender_static_ground", sol, create_blend=True)
         system.export_blender(
             dir_name, "blender_eigenmodes_ground", sol_eig, create_blend=True
         )
-    else:
+    elif blender_export:
         system.export_blender(dir_name, "blender_static", sol, create_blend=True)
         system.export_blender(
             dir_name, "blender_eigenmodes", sol_eig, create_blend=True
@@ -202,6 +225,10 @@ if __name__ == "__main__":
     solver_frf = FrequencyResponseFunction(system, sol)
     frfs = solver_frf.solve(-1, iom)  # shape (len(iom), 6, 3)
 
+    if not make_plot:
+        globals().update(locals())
+        return frfs
+
     fig, ax = plt.subplots(3, 3, sharex=True)
     labels_out = ["x", "y", "z"]
     labels_in = ["axial (e1)", "e2", "vertical (e3)"]
@@ -210,6 +237,44 @@ if __name__ == "__main__":
             # small floor avoids log-scale warnings on exactly-zero
             # (out-of-plane) entries, e.g. y-response for x-z loading
             ax[i, j].loglog(iom.imag, np.abs(frfs[:, i, j]) + 1e-30)
+            ax[i, j].grid()
+            if i == 0:
+                ax[i, j].set_title(f"F: {labels_in[j]}")
+            if j == 0:
+                ax[i, j].set_ylabel(f"tip {labels_out[i]}")
+            if i == 2:
+                ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
+
+    # pure pendulum (e1, e2) and mass-spring-oszillator with sqrt(g/l) (e3)
+    ax[0, 0].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
+    ax[1, 1].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
+    ax[2, 2].loglog(
+        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k)), "--"
+    )
+    ax[2, 2].loglog(
+        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k)), "--"
+    )
+    fig.suptitle("Tip receptance FRF of clamped cable")
+    plt.show()
+
+
+if __name__ == "__main__":
+    # main(with_ground=True)
+    # exit()
+
+    # compare
+    frf_no_ground = main(with_ground=False, blender_export=False, make_plot=False)
+    frf_ground = main(with_ground=True, blender_export=False, make_plot=False)
+
+    fig, ax = plt.subplots(3, 3, sharex=True)
+    labels_out = ["x", "y", "z"]
+    labels_in = ["axial (e1)", "e2", "vertical (e3)"]
+    for i in range(3):
+        for j in range(3):
+            # small floor avoids log-scale warnings on exactly-zero
+            # (out-of-plane) entries, e.g. y-response for x-z loading
+            ax[i, j].loglog(iom.imag, np.abs(frf_no_ground[:, i, j]) + 1e-30)
+            ax[i, j].loglog(iom.imag, np.abs(frf_ground[:, i, j]) + 1e-30)
             ax[i, j].grid()
             if i == 0:
                 ax[i, j].set_title(f"F: {labels_in[j]}")
