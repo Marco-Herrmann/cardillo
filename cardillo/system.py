@@ -218,9 +218,7 @@ class System:
         if not create_blend:
             return
 
-        # TODO: self.name in __init__?
-        self.name = self.name if hasattr(self, "name") else "System"
-        output_file = f"{path}/{self.name}.blend"
+        output_file = f"{path.parent}/{path.name}.blend"
 
         build_blend = Path(Path(__file__).parent, "visualization", "build_blend.py")
         subprocess.run(

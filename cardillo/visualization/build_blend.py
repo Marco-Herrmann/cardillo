@@ -70,4 +70,5 @@ bpy.context.scene.frame_end = int(np.ceil(max_frame))
 
 # deselect all objects and save
 bpy.ops.object.select_all(action="DESELECT")
+bpy.context.preferences.filepaths.save_version = 0
 bpy.ops.wm.save_as_mainfile(filepath=output_path)

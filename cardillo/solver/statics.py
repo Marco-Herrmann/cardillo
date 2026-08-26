@@ -793,7 +793,12 @@ class Eigenmodes:
         #     scipy.linalg.null_space(W_g_non_internalT @ T_int)
         # )
 
-        n_constraints = self.system.nla_g + self.system.nla_gamma + self.system.nla_N + self.system.nla_F
+        n_constraints = (
+            self.system.nla_g
+            + self.system.nla_gamma
+            + self.system.nla_N
+            + self.system.nla_F
+        )
         if n_constraints == 0:
             T = eye_array(self.system.nu)
             M = M0
@@ -1177,7 +1182,7 @@ class FrequencyResponseFunction:
 
         # frictional contact
         g_N = self.system.g_N(t, q)
-        I_N = g_N <= self.g_N_tol        
+        I_N = g_N <= self.g_N_tol
         I_F = compute_I_F(np.arange(self.system.nla_N)[I_N], self.system)[0]
 
         W_NF = bmat(
