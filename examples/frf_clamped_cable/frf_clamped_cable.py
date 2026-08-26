@@ -15,6 +15,7 @@ stays free of unilateral/frictional contacts, exercising the "clean"
 path instead.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -43,13 +44,26 @@ from cardillo.solver import (
 from cardillo.utility.sensor import Sensor
 
 
+@dataclass
+class FRFResult:
+    """Bundles the tip FRF together with the parameters needed to
+    plot analytic reference curves against it (see `__main__` below)."""
+
+    frfs: np.ndarray
+    iom: np.ndarray
+    L0_spring: float
+    sphere_mass: float
+    KV_k: float
+    KV_d: float
+
+
 def main(with_ground, make_plot=True, blender_export=True):
     #####################
     # geometry & material
     #####################
     L = 10.0  # cable length [m]
     radius = 5e-3  # cable radius [m]
-    nelement = 10
+    nelement = 50
 
     E = 2.0e11  # Young's modulus [Pa] (steel)
     G = 8.0e10  # shear modulus [Pa]
@@ -126,23 +140,18 @@ def main(with_ground, make_plot=True, blender_export=True):
 
     # force element
     L0_spring = 3.0
+    excentricity = 0.1
     interaction = TwoPointInteraction(
-        sphere, system.origin, B_r_CP2=r_OP0_sphere + L0_spring * e3
+        sphere, system.origin, B_r_CP2=r_OP0_sphere + L0_spring * e3 + excentricity * e2
     )
     KV_k = 1e3
     KV_d = 1e0
-    KV_element = KelvinVoigtElement(interaction, KV_k, KV_d, compliance_form=False)
+    KV_element = KelvinVoigtElement(
+        interaction, KV_k, KV_d, l_ref=L0_spring, compliance_form=False
+    )
     system.add(interaction, KV_element)
 
-    # perturbating force in e2
-    F_axial = 1.0e3  # [N]
-    F_axial = 2.0e1  # [N]
-    F_up = 0.5 * g * A * density * L + sphere_mass * g  # [N]
-    print(f"{F_axial = }, {F_up = }, sphere gravity: {sphere_mass * g}")
-    F_perp = F_up * 0.05  # [N]
-    F = lambda t: t * (F_axial * e1 + F_perp * e2 + F_up * e3)
-    F = lambda t: t * F_up * e3
-    F = lambda t: t * F_perp * e2
+    # "control input force"
     F = lambda t: np.zeros(3)
     force = Force(F, sphere, name="tip_force")
     system.add(force)
@@ -225,9 +234,17 @@ def main(with_ground, make_plot=True, blender_export=True):
     solver_frf = FrequencyResponseFunction(system, sol)
     frfs = solver_frf.solve(-1, iom)  # shape (len(iom), 6, 3)
 
+    result = FRFResult(
+        frfs=frfs,
+        iom=iom,
+        L0_spring=L0_spring,
+        sphere_mass=sphere_mass,
+        KV_k=KV_k,
+        KV_d=KV_d,
+    )
+
     if not make_plot:
-        globals().update(locals())
-        return frfs
+        return result
 
     fig, ax = plt.subplots(3, 3, sharex=True)
     labels_out = ["x", "y", "z"]
@@ -257,14 +274,24 @@ def main(with_ground, make_plot=True, blender_export=True):
     fig.suptitle("Tip receptance FRF of clamped cable")
     plt.show()
 
+    return result
+
 
 if __name__ == "__main__":
     # main(with_ground=True)
     # exit()
 
     # compare
-    frf_no_ground = main(with_ground=False, blender_export=False, make_plot=False)
-    frf_ground = main(with_ground=True, blender_export=False, make_plot=False)
+    result_no_ground = main(with_ground=False, blender_export=True, make_plot=False)
+    result_ground = main(with_ground=True, blender_export=True, make_plot=False)
+
+    # iom and the analytic-reference parameters are identical for both
+    # runs, so either result carries what's needed for the plot below
+    iom = result_no_ground.iom
+    L0_spring = result_no_ground.L0_spring
+    sphere_mass = result_no_ground.sphere_mass
+    KV_k = result_no_ground.KV_k
+    KV_d = result_no_ground.KV_d
 
     fig, ax = plt.subplots(3, 3, sharex=True)
     labels_out = ["x", "y", "z"]
@@ -273,8 +300,8 @@ if __name__ == "__main__":
         for j in range(3):
             # small floor avoids log-scale warnings on exactly-zero
             # (out-of-plane) entries, e.g. y-response for x-z loading
-            ax[i, j].loglog(iom.imag, np.abs(frf_no_ground[:, i, j]) + 1e-30)
-            ax[i, j].loglog(iom.imag, np.abs(frf_ground[:, i, j]) + 1e-30)
+            ax[i, j].loglog(iom.imag, np.abs(result_no_ground.frfs[:, i, j]) + 1e-30)
+            ax[i, j].loglog(iom.imag, np.abs(result_ground.frfs[:, i, j]) + 1e-30)
             ax[i, j].grid()
             if i == 0:
                 ax[i, j].set_title(f"F: {labels_in[j]}")
@@ -284,13 +311,13 @@ if __name__ == "__main__":
                 ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
 
     # pure pendulum (e1, e2) and mass-spring-oszillator with sqrt(g/l) (e3)
-    ax[0, 0].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
-    ax[1, 1].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
-    ax[2, 2].loglog(
-        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k)), "--"
-    )
-    ax[2, 2].loglog(
-        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k)), "--"
-    )
+    H_pendulum = np.abs(1 / (iom**2 * L0_spring + 9.81))
+    H_osc_damped = np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k))
+    H_osc_undamped = np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k))
+    ax[0, 0].loglog(iom.imag, H_pendulum, "--")
+    ax[1, 1].loglog(iom.imag, H_pendulum, "--")
+    ax[2, 2].loglog(iom.imag, H_osc_damped, "--")
+    ax[2, 2].loglog(iom.imag, H_osc_undamped, "--")
+    ax[2, 2].legend(["No ground", "Ground", "Pendulum", "Unpdamed Pendulum"])
     fig.suptitle("Tip receptance FRF of clamped cable")
     plt.show()
