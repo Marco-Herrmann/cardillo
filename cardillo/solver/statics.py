@@ -1097,8 +1097,6 @@ class FrequencyResponseFunction:
                     system.nu,
                     system.nla_c,
                     system.nla_g,
-                    system.nla_N, 
-                    system.nla_F
                 ],
                 dtype=int,
             )
@@ -1263,8 +1261,8 @@ class FrequencyResponseFunction:
 
         # TODO: use coo?
         # too sparse
-        E = self.E_coo.asformat("csc")
-        A = self.A_coo.asformat("csc")
+        E = E.asformat("csc")
+        A = A.asformat("csc")
         B = self.B_coo.asformat("csc")
         C = self.C_coo.asformat("csc")
         D = self.D_coo.asformat("csc")
