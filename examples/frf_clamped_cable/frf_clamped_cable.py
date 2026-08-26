@@ -1,18 +1,25 @@
 """Minimal debugging example for `Eigenmodes` / `FrequencyResponseFunction`.
 
-A slender, straight cable is clamped at xi=0 and pulled at xi=1 with a
-force that is mostly axial with a small upward component. Gravity acts
-as a distributed load along the whole rod. The static equilibrium is
-computed with `Newton`, then linearized eigenmodes and the tip FRF
-(force -> tip displacement/rotation) are evaluated about that
-equilibrium.
+A sphere hangs from a `TwoPointInteraction` + `KelvinVoigtElement` spring
+("pendulum arm") anchored at the origin, with gravity pulling it down.
+The static equilibrium is computed with `Newton`, then linearized
+eigenmodes and the tip FRF (force -> tip displacement/rotation) are
+evaluated about that equilibrium.
 
-With `WITH_GROUND = True` a horizontal ground plane is added below the
-cable with `Sphere2Plane` contacts along the rod (and the tip sphere),
-so active/inactive `nla_N`/`nla_F` are exercised in `Eigenmodes` and
-`FrequencyResponseFunction`. With `WITH_GROUND = False` the system
-stays free of unilateral/frictional contacts, exercising the "clean"
-path instead.
+The `level` argument controls how much of the model is built, from the
+purely analytic linear pendulum up to the full cable-on-ground model,
+so the numerical model can be validated step by step against the
+previous, simpler one:
+
+    0: closed-form linear pendulum (e1, e2) + mass-spring-damper (e3);
+       no `System`/solver involved at all.
+    1: point mass (sphere) on the spring/gravity "pendulum", no cable.
+    2: like 1, plus a slender cable clamped at xi=0 with the sphere
+       rigidly attached at its tip (xi=1).
+    3: like 2, plus a horizontal ground plane with `Sphere2Plane`
+       contacts along the rod (and the tip sphere), so active/inactive
+       `nla_N`/`nla_F` are exercised in `Eigenmodes` and
+       `FrequencyResponseFunction`.
 """
 
 from dataclasses import dataclass
@@ -23,6 +30,7 @@ import matplotlib.pyplot as plt
 
 from cardillo import System
 from cardillo.constraints import RigidConnection
+from cardillo.constraints._base import ProjectedPositionOrientationBase
 from cardillo.contacts import Sphere2Plane
 from cardillo.discrete import Box, Sphere, RigidBody, Frame
 from cardillo.force_laws import KelvinVoigtElement
@@ -43,6 +51,31 @@ from cardillo.solver import (
 )
 from cardillo.utility.sensor import Sensor
 
+LEVEL_LABELS = {
+    0: "linear pendulum",
+    1: "mass only",
+    2: "cable",
+    3: "cable + ground",
+}
+
+
+class FixedOrientation(ProjectedPositionOrientationBase):
+    """Locks a body's orientation to that of its reference subsystem
+    while leaving its position completely free."""
+
+    def __init__(
+        self, subsystem1, subsystem2, xi1=None, xi2=None, name="fixed_orientation"
+    ):
+        super().__init__(
+            subsystem1,
+            subsystem2,
+            constrained_axes_translation=(),
+            projection_pairs_rotation=[(1, 2), (2, 0), (0, 1)],
+            xi1=xi1,
+            xi2=xi2,
+            name=name,
+        )
+
 
 @dataclass
 class FRFResult:
@@ -57,65 +90,82 @@ class FRFResult:
     KV_d: float
 
 
-def main(with_ground, make_plot=True, blender_export=True):
-    #####################
-    # geometry & material
-    #####################
-    L = 10.0  # cable length [m]
-    radius = 5e-3  # cable radius [m]
-    nelement = 50
+def _plot_frf(result, title):
+    iom = result.iom
+    fig, ax = plt.subplots(3, 3, sharex=True)
+    labels_out = ["x", "y", "z"]
+    labels_in = ["axial (e1)", "e2", "vertical (e3)"]
+    for i in range(3):
+        for j in range(3):
+            # small floor avoids log-scale warnings on exactly-zero
+            # (out-of-plane) entries, e.g. y-response for x-z loading
+            ax[i, j].loglog(iom.imag, np.abs(result.frfs[:, i, j]) + 1e-30)
+            ax[i, j].grid()
+            if i == 0:
+                ax[i, j].set_title(f"F: {labels_in[j]}")
+            if j == 0:
+                ax[i, j].set_ylabel(f"tip {labels_out[i]}")
+            if i == 2:
+                ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
 
-    E = 2.0e11  # Young's modulus [Pa] (steel)
-    G = 8.0e10  # shear modulus [Pa]
-    density = 7.8e3  # [kg/m^3]
+    fig.suptitle(title)
 
-    cross_section = CircularCrossSection(radius)
-    A = cross_section.area(0.0)
-    I1, I2, I3 = np.diag(cross_section.second_moment(0.0))
 
-    Ei = np.array([E * A, G * A, G * A])
-    Fi = np.array([G * I1, E * I2, E * I3])
-    material_model = Simo1986(Ei, Fi)
+def main(level, make_plot=True, blender_export=True):
+    assert level in (0, 1, 2, 3), f"level must be 0, 1, 2 or 3, got {level}"
+    print(f"level: {level}")
 
-    cross_section_inertias = CrossSectionInertias(density, cross_section)
+    g = 9.81  # gravity [m/s^2]
 
-    # gravity as distributed load along the rod
-    g = 9.81
-    b = lambda t, xi: t * np.array([0.0, 0.0, -g * A * density])
+    #############################
+    # sphere / "pendulum arm"
+    #############################
+    L = 10.0  # horizontal offset of the sphere [m]
+    sphere_radius = 0.2
+    sphere_density = 300  # [kg/m^3]
+    sphere_mass = sphere_density * (4 / 3 * np.pi * sphere_radius**3)
+
+    L0_spring = 3.0
+    excentricity = 0.1
+    KV_k = 1e3
+    KV_d = 1e0
+
+    iom = 1j * np.logspace(-1, 4, 2_000)
+
+    if level == 0:
+        ##################################################
+        # closed-form linear pendulum / mass-spring model
+        ##################################################
+        frfs = np.zeros((len(iom), 6, 3), dtype=complex) * np.nan
+        frfs[:, 0, 0] = frfs[:, 1, 1] = 1 / (iom**2 * L0_spring + g)
+        frfs[:, 2, 2] = 1 / (iom**2 * sphere_mass + iom * KV_d + KV_k)
+
+        result = FRFResult(
+            frfs=frfs,
+            iom=iom,
+            L0_spring=L0_spring,
+            sphere_mass=sphere_mass,
+            KV_k=KV_k,
+            KV_d=KV_d,
+        )
+        if make_plot:
+            _plot_frf(result, f"Tip receptance FRF ({LEVEL_LABELS[level]})")
+            plt.show()
+        return result
 
     ##############
     # system setup
     ##############
     system = System()
+    r_OP0_sphere = L * e1
+    # spring attaches at the sphere's center, so the mounting point is
+    # L0_spring away from there for l_ref=L0_spring to match the actual
+    # initial spring length
+    r_OP0_mounting = r_OP0_sphere + L0_spring * e3 + excentricity * e2
 
-    Cable = make_CosseratRod(polynomial_degree=2)
-
-    Q = Cable.straight_configuration(nelement, L)
-    rod = Cable(
-        cross_section,
-        material_model,
-        nelement,
-        Q=Q,
-        q0=Q,
-        cross_section_inertias=cross_section_inertias,
-        distributed_load=[b, None],
-        name="cable",
-    )
-    system.add(rod)
-
-    # clamp at xi=0
-    clamping = RigidConnection(rod, system.origin, xi1=0)
-    system.add(clamping)
-
-    #######################
-    # sphere at cable's tip
-    #######################
-    sphere_radius = 0.2
-    sphere_density = 300  # [kg/m^3]
-    sphere_mass = sphere_density * (4 / 3 * np.pi * sphere_radius**3)
-
-    r_OP_tip0 = L * e1
-    r_OP0_sphere = r_OP_tip0 + sphere_radius * e1
+    #####################
+    # sphere (Rigid Body)
+    #####################
     sphere = Sphere(RigidBody)(
         radius=sphere_radius,
         subdivisions=2,
@@ -124,30 +174,21 @@ def main(with_ground, make_plot=True, blender_export=True):
     )
     system.add(sphere)
 
-    # rigidly connect the cable's tip center of the sphere
-    connection = RigidConnection(
-        rod, sphere, xi1=1, r_OJ0=r_OP0_sphere, name="cable_to_sphere"
-    )
-    system.add(connection)
+    if level == 1:
+        # a mass on a single point-to-point spring through its center
+        # has no restoring torque at all, leaving the sphere's
+        # orientation completely unconstrained (a singular rigid-body
+        # spin mode); lock its orientation instead, since the cable
+        # (level >= 2) would otherwise do this via `connection` below
+        orientation_lock = FixedOrientation(
+            sphere, system.origin, name="sphere_orientation_lock"
+        )
+        system.add(orientation_lock)
 
-    # gravity acting on the sphere
-    gravity_sphere = Force(
-        lambda t: t * np.array([0.0, 0.0, -sphere_mass * g]),
-        sphere,
-        name="gravity_sphere",
-    )
-    system.add(gravity_sphere)
-
-    # force element
-    L0_spring = 3.0
-    excentricity = 0.1
-    interaction = TwoPointInteraction(
-        sphere, system.origin, B_r_CP2=r_OP0_sphere + L0_spring * e3 + excentricity * e2
-    )
-    KV_k = 1e3
-    KV_d = 1e0
+    # force element ("pendulum arm")
+    interaction = TwoPointInteraction(sphere, system.origin, B_r_CP2=r_OP0_mounting)
     KV_element = KelvinVoigtElement(
-        interaction, KV_k, KV_d, l_ref=L0_spring, compliance_form=False
+        interaction, KV_k, KV_d, l_ref=L0_spring, compliance_form=True
     )
     system.add(interaction, KV_element)
 
@@ -162,10 +203,70 @@ def main(with_ground, make_plot=True, blender_export=True):
     sensor = Sensor(sphere, name="Tip")
     system.add(sensor)
 
-    if with_ground:
-        ####################
-        # ground with contacts
-        ####################
+    # gravity acting on the sphere
+    gravity_sphere = Force(
+        lambda t: np.array([0.0, 0.0, -sphere_mass * g]) * (1.0 if level == 1 else t),
+        sphere,
+        name="gravity_sphere",
+    )
+    system.add(gravity_sphere)
+
+    ###########
+    # add cable
+    ###########
+    if level >= 2:
+        #####################
+        # geometry & material
+        #####################
+        radius = 5e-3  # cable radius [m]
+        nelement = 10
+
+        E = 2.0e11  # Young's modulus [Pa] (steel)
+        G = 8.0e10  # shear modulus [Pa]
+        density = 7.8e3  # [kg/m^3]
+
+        cross_section = CircularCrossSection(radius)
+        A = cross_section.area(0.0)
+        I1, I2, I3 = np.diag(cross_section.second_moment(0.0))
+
+        Ei = np.array([E * A, G * A, G * A])
+        Fi = np.array([G * I1, E * I2, E * I3])
+        material_model = Simo1986(Ei, Fi)
+
+        cross_section_inertias = CrossSectionInertias(density, cross_section)
+
+        # gravity as distributed load along the rod
+        b = lambda t, xi: t * np.array([0.0, 0.0, -g * A * density])
+
+        Cable = make_CosseratRod(polynomial_degree=2)
+
+        Q = Cable.straight_configuration(nelement, L - sphere_radius)
+        rod = Cable(
+            cross_section,
+            material_model,
+            nelement,
+            Q=Q,
+            q0=Q,
+            cross_section_inertias=cross_section_inertias,
+            distributed_load=[b, None],
+            name="cable",
+        )
+        system.add(rod)
+
+        # clamp at xi=0
+        clamping = RigidConnection(rod, system.origin, xi1=0)
+        system.add(clamping)
+
+        # rigidly connect the cable's tip to the center of the sphere
+        connection = RigidConnection(
+            rod, sphere, xi1=1, r_OJ0=r_OP0_sphere, name="cable_to_sphere"
+        )
+        system.add(connection)
+
+    ########
+    # ground
+    ########
+    if level == 3:
         z_ground = -0.7
         dimensions = np.array([L + 2, 2, 1])
         r_OP_frame = np.array([L / 2, 0.0, z_ground - dimensions[2] / 2])
@@ -194,11 +295,11 @@ def main(with_ground, make_plot=True, blender_export=True):
         )
         system.add(contact_sphere)
 
-    system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
+    system.assemble(options=SolverOptions(compute_consistent_initial_conditions=True))
 
-    ############
+    #########
     # statics
-    ############
+    #########
     n_load_steps = 10
     solver = Newton(
         system, n_load_steps=n_load_steps, options=SolverOptions(newton_atol=1e-10)
@@ -215,22 +316,19 @@ def main(with_ground, make_plot=True, blender_export=True):
     sol_eig = solver_eig.solve(-1)
     print(f"first 10 natural frequencies [rad/s]:\n{sol_eig.omegas[:10]}")
 
-    dir_name = Path(__file__).parent
-    if with_ground and blender_export:
-        system.export_blender(dir_name, "blender_static_ground", sol, create_blend=True)
+    if blender_export:
+        dir_name = Path(__file__).parent
+        suffix = f"_level{level}"
         system.export_blender(
-            dir_name, "blender_eigenmodes_ground", sol_eig, create_blend=True
+            dir_name, f"blender_static{suffix}", sol, create_blend=True
         )
-    elif blender_export:
-        system.export_blender(dir_name, "blender_static", sol, create_blend=True)
         system.export_blender(
-            dir_name, "blender_eigenmodes", sol_eig, create_blend=True
+            dir_name, f"blender_eigenmodes{suffix}", sol_eig, create_blend=True
         )
 
     ############################
     # frequency response function
     ############################
-    iom = 1j * np.logspace(-1, 4, 2_000)
     solver_frf = FrequencyResponseFunction(system, sol)
     frfs = solver_frf.solve(-1, iom)  # shape (len(iom), 6, 3)
 
@@ -243,65 +341,34 @@ def main(with_ground, make_plot=True, blender_export=True):
         KV_d=KV_d,
     )
 
-    if not make_plot:
-        return result
-
-    fig, ax = plt.subplots(3, 3, sharex=True)
-    labels_out = ["x", "y", "z"]
-    labels_in = ["axial (e1)", "e2", "vertical (e3)"]
-    for i in range(3):
-        for j in range(3):
-            # small floor avoids log-scale warnings on exactly-zero
-            # (out-of-plane) entries, e.g. y-response for x-z loading
-            ax[i, j].loglog(iom.imag, np.abs(frfs[:, i, j]) + 1e-30)
-            ax[i, j].grid()
-            if i == 0:
-                ax[i, j].set_title(f"F: {labels_in[j]}")
-            if j == 0:
-                ax[i, j].set_ylabel(f"tip {labels_out[i]}")
-            if i == 2:
-                ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
-
-    # pure pendulum (e1, e2) and mass-spring-oszillator with sqrt(g/l) (e3)
-    ax[0, 0].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
-    ax[1, 1].loglog(iom.imag, np.abs(1 / (iom**2 * L0_spring + 9.81)), "--")
-    ax[2, 2].loglog(
-        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k)), "--"
-    )
-    ax[2, 2].loglog(
-        iom.imag, np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k)), "--"
-    )
-    fig.suptitle("Tip receptance FRF of clamped cable")
-    plt.show()
+    if make_plot:
+        _plot_frf(result, f"Tip receptance FRF ({LEVEL_LABELS[level]})")
+        plt.show()
 
     return result
 
 
 if __name__ == "__main__":
-    # main(with_ground=True)
-    # exit()
+    main(0)
+    # build up the model level by level and compare the tip FRF of each
+    # against the previous, simpler one
+    results = {level: main(level=level, make_plot=False) for level in (0, 1, 2, 3)}
 
-    # compare
-    result_no_ground = main(with_ground=False, blender_export=True, make_plot=False)
-    result_ground = main(with_ground=True, blender_export=True, make_plot=False)
-
-    # iom and the analytic-reference parameters are identical for both
-    # runs, so either result carries what's needed for the plot below
-    iom = result_no_ground.iom
-    L0_spring = result_no_ground.L0_spring
-    sphere_mass = result_no_ground.sphere_mass
-    KV_k = result_no_ground.KV_k
-    KV_d = result_no_ground.KV_d
+    iom = results[0].iom
 
     fig, ax = plt.subplots(3, 3, sharex=True)
     labels_out = ["x", "y", "z"]
     labels_in = ["axial (e1)", "e2", "vertical (e3)"]
     for i in range(3):
         for j in range(3):
-            # small floor avoids log-scale warnings on exactly-zero
-            # (out-of-plane) entries, e.g. y-response for x-z loading
-            ax[i, j].loglog(iom.imag, np.abs(result_no_ground.frfs[:, i, j]) + 1e-30)
-            ax[i, j].loglog(iom.imag, np.abs(result_ground.frfs[:, i, j]) + 1e-30)
+            for level, result in results.items():
+                # small floor avoids log-scale warnings on exactly-zero
+                # (out-of-plane) entries, e.g. y-response for x-z loading
+                ax[i, j].loglog(
+                    iom.imag,
+                    np.abs(result.frfs[:, i, j]) + 1e-30,
+                    label=LEVEL_LABELS[level],
+                )
             ax[i, j].grid()
             if i == 0:
                 ax[i, j].set_title(f"F: {labels_in[j]}")
@@ -309,15 +376,6 @@ if __name__ == "__main__":
                 ax[i, j].set_ylabel(f"tip {labels_out[i]}")
             if i == 2:
                 ax[i, j].set_xlabel(r"$\omega$ [rad/s]")
-
-    # pure pendulum (e1, e2) and mass-spring-oszillator with sqrt(g/l) (e3)
-    H_pendulum = np.abs(1 / (iom**2 * L0_spring + 9.81))
-    H_osc_damped = np.abs(1 / (iom**2 * sphere_mass + iom * KV_d + KV_k))
-    H_osc_undamped = np.abs(1 / (iom**2 * sphere_mass + iom * 0.0 + KV_k))
-    ax[0, 0].loglog(iom.imag, H_pendulum, "--")
-    ax[1, 1].loglog(iom.imag, H_pendulum, "--")
-    ax[2, 2].loglog(iom.imag, H_osc_damped, "--")
-    ax[2, 2].loglog(iom.imag, H_osc_undamped, "--")
-    ax[2, 2].legend(["No ground", "Ground", "Pendulum", "Unpdamed Pendulum"])
-    fig.suptitle("Tip receptance FRF of clamped cable")
+    ax[2, 2].legend()
+    fig.suptitle("Tip receptance FRF: comparison across levels")
     plt.show()
