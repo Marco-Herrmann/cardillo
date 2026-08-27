@@ -120,7 +120,7 @@ def smallest_rotation_quaternion(v, i=None):
             q[1 + (i + 1) % 3] = 1.0
             return q, i
 
-    angle = np.acos(u @ ei)
+    angle = np.arccos(np.clip(u @ ei, -1.0, 1.0))
     axis = np.cross(ei, u)
     axis = axis / np.linalg.norm(axis)
     p, p0 = np.sin(angle / 2) * axis, np.cos(angle / 2)
@@ -253,9 +253,8 @@ def bake_animation(idx, amplitude, play_time):
     for arm_obj in bpy.data.objects:
         if arm_obj.type != "ARMATURE":
             continue
-        print(f"print {arm_obj}")
-        pose_bones = arm_obj.pose.bones
 
+        pose_bones = arm_obj.pose.bones
         arm_obj.animation_data_clear()
 
         for root in pose_bones:
@@ -318,24 +317,31 @@ class AnimateModesProperties(bpy.types.PropertyGroup):
     play_time: bpy.props.FloatProperty(name="Play Time (s)", default=2.0, min=0.01)
 
 
+def update_animation(context):
+    props = context.scene.animate_modes_props
+    omegas = get_omegas()
+
+    if not omegas:
+        return False
+
+    idx = int(props.select_mode)
+    idx = min(idx, len(omegas) - 1)
+
+    props.current_omega = f"{omegas[idx]:.6f} 1/s"
+
+    bake_animation(idx, props.amplitude, props.play_time)
+    return True
+
+
 class ANIMATEMODES_OT_update(bpy.types.Operator):
     bl_idname = "animatemodes.update"
     bl_label = "Update"
 
     def execute(self, context):
-        props = context.scene.animate_modes_props
-        omegas = get_omegas()
-
-        if not omegas:
+        if not update_animation(context):
             self.report({"WARNING"}, "No omegas found")
             return {"CANCELLED"}
 
-        idx = int(props.select_mode)
-        idx = min(idx, len(omegas) - 1)
-
-        props.current_omega = f"{omegas[idx]:.6f} 1/s"
-
-        bake_animation(idx, props.amplitude, props.play_time)
         return {"FINISHED"}
 
 
@@ -376,6 +382,11 @@ def register():
     bpy.types.Scene.animate_modes_props = bpy.props.PointerProperty(
         type=AnimateModesProperties
     )
+
+    context = bpy.context
+    if context.scene is not None:
+        context.scene.animate_modes_props.select_mode = "0"
+        update_animation(context)
 
 
 def unregister():
