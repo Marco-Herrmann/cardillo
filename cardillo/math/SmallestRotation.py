@@ -192,7 +192,7 @@ def smallest_rotation_quaternion(v, i=None):
             q[1 + (i + 1) % 3] = 1.0
             return q, i
 
-    angle = np.acos(u @ ei)
+    angle = np.arccos(np.clip(u @ ei, -1.0, 1.0))
     axis = np.cross(ei, u)
     axis = axis / np.linalg.norm(axis)
     p, p0 = np.sin(angle / 2) * axis, np.cos(angle / 2)

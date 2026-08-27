@@ -29,7 +29,7 @@ class RodBlenderExport:
         eye4 = np.eye(4, dtype=np.float32)
         ibm = np.array([eye4 for _ in range(len(xis))])
 
-        pos_acc = buf.add(verts, 5126, "VEC3")
+        pos_acc = buf.add(verts, 5126, "VEC3", set_bounds=True)
         idx_acc = buf.add(indices, 5125, "SCALAR")
         joint_acc = buf.add(joints, 5123, "VEC4")
         weight_acc = buf.add(weights, 5126, "VEC4")

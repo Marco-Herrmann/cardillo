@@ -1,5 +1,5 @@
 import numpy as np
-from pygltflib import *
+from pygltflib import Accessor, BufferView
 
 
 class BufferBuilder:
@@ -8,7 +8,7 @@ class BufferBuilder:
         self.views = []
         self.accessors = []
 
-    def add(self, array, componentType, type_str):
+    def add(self, array, componentType, type_str, set_bounds=False):
         raw = array.tobytes()
         offset = len(self.data)
 
@@ -21,6 +21,11 @@ class BufferBuilder:
         view_id = len(self.views)
         self.views.append(BufferView(buffer=0, byteOffset=offset, byteLength=len(raw)))
 
+        # the glTF spec requires min/max on accessors used as a mesh
+        # primitive's POSITION attribute
+        min_ = array.min(axis=0).tolist() if set_bounds else None
+        max_ = array.max(axis=0).tolist() if set_bounds else None
+
         accessor_id = len(self.accessors)
         self.accessors.append(
             Accessor(
@@ -28,6 +33,8 @@ class BufferBuilder:
                 componentType=componentType,
                 count=len(array),
                 type=type_str,
+                min=min_,
+                max=max_,
             )
         )
 

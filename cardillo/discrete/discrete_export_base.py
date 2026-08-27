@@ -12,7 +12,6 @@ from pygltflib import (
     Primitive,
     Scene,
 )
-from warnings import warn
 
 from cardillo.visualization.glTF_export import (
     BufferBuilder,
@@ -46,7 +45,7 @@ def make_glTF(
         verts = cardillo_to_gltf_trans(mesh.vertices)
         faces = mesh.faces.astype(np.uint32)
 
-        pos_acc = buf.add(verts, 5126, "VEC3")
+        pos_acc = buf.add(verts, 5126, "VEC3", set_bounds=True)
         idx_acc = buf.add(faces.reshape(-1), 5125, "SCALAR")
 
         prim = Primitive(attributes={"POSITION": pos_acc}, indices=idx_acc)
@@ -195,7 +194,7 @@ def make_glTF_modes(
         verts = cardillo_to_gltf_trans(mesh.vertices)
         faces = mesh.faces.astype(np.uint32)
 
-        pos_acc = buf.add(verts, 5126, "VEC3")
+        pos_acc = buf.add(verts, 5126, "VEC3", set_bounds=True)
         idx_acc = buf.add(faces.reshape(-1), 5125, "SCALAR")
 
         prim = Primitive(attributes={"POSITION": pos_acc}, indices=idx_acc)
