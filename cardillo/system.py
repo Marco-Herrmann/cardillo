@@ -218,11 +218,15 @@ class System:
         if not create_blend:
             return
 
-        output_file = f"{path.parent}/{path.name}.blend"
+        # source_file holds the actual imported/processed data, next to the
+        # glTF files it was built from; link_file only links its collection,
+        # so it stays small and updates automatically when source_file changes
+        source_file = f"{path}/system.blend"
+        link_file = f"{path.parent}/{path.name}.blend"
 
         build_blend = Path(Path(__file__).parent, "visualization", "build_blend.py")
         subprocess.run(
-            [blenderPath, "-b", "-P", build_blend, "--", output_file, path],
+            [blenderPath, "-b", "-P", build_blend, "--", source_file, link_file, path],
             stdout=subprocess.DEVNULL if not verbose else None,
         )
 

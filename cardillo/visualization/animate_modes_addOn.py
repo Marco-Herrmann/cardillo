@@ -137,7 +137,9 @@ def smallest_rotation_quaternion(v, i=None):
     return np.array([p0, *p]), i
 
 
-def bake_arrow_root(root, r_OP0, r_OP1, Delta_r_P0, Delta_r_P1, scale_perp, frames, A_t_all):
+def bake_arrow_root(
+    root, r_OP0, r_OP1, Delta_r_P0, Delta_r_P1, scale_perp, frames, A_t_all
+):
     """Keyframe a line/arrow root: it points from a moving P0 to a moving P1."""
     root.rotation_mode = "QUATERNION"
     scale_dir = np.array([scale_perp, scale_perp, 1.0])
@@ -162,7 +164,9 @@ def bake_arrow_root(root, r_OP0, r_OP1, Delta_r_P0, Delta_r_P1, scale_perp, fram
         root.keyframe_insert(data_path="scale", frame=frame)
 
 
-def bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all):
+def bake_discrete_root(
+    root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all
+):
     """Keyframe a root/child pair: root translates, child carries the residual
     rotation of the linearized (non-orthogonal) mode rotation, see decomposition()."""
     root.rotation_mode = "QUATERNION"
@@ -250,7 +254,9 @@ def bake_animation(idx, amplitude, play_time):
 
         root.animation_data_clear()
         child.animation_data_clear()
-        bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all)
+        bake_discrete_root(
+            root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all
+        )
 
     # armatures
     for arm_obj in bpy.data.objects:
@@ -277,7 +283,9 @@ def bake_animation(idx, amplitude, play_time):
             Delta_r = np.array(root["Delta_r"][idx], dtype=float)
             B_Delta_phi = np.array(root["B_Delta_phi"][idx], dtype=float)
 
-            bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all)
+            bake_discrete_root(
+                root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all
+            )
 
 
 class AnimateModesProperties(bpy.types.PropertyGroup):

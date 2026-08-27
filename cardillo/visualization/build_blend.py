@@ -6,14 +6,16 @@ import numpy as np
 argv = sys.argv
 argv = argv[argv.index("--") + 1 :]
 
-output_path = argv[0]
-gltf_files = sorted(Path(argv[1]).glob("*.glb"))
+source_path = argv[0]
+link_path = argv[1]
+gltf_files = sorted(Path(argv[2]).glob("*.glb"))
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # gather everything the gltf importer creates into one dedicated collection,
 # instead of relying on whatever the default active collection happens to be
-collection = bpy.data.collections.new(Path(output_path).stem)
+collection_name = "System"
+collection = bpy.data.collections.new(collection_name)
 bpy.context.scene.collection.children.link(collection)
 bpy.context.view_layer.active_layer_collection = (
     bpy.context.view_layer.layer_collection.children[collection.name]
@@ -33,14 +35,13 @@ if len(bpy.context.selected_objects) > 0:
     bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
     bpy.ops.object.shade_auto_smooth(angle=np.deg2rad(80))
 
-# give each mesh its own material, so colors can be tweaked per body later
+# give every mesh the same shared material, instead of one material per mesh
+material = bpy.data.materials.new(name="Material")
 for obj in bpy.context.scene.objects:
     if obj.type != "MESH" or obj.data.materials:
         continue
 
-    mat = bpy.data.materials.new(name=obj.data.name)
-    mat.use_nodes = True
-    obj.data.materials.append(mat)
+    obj.data.materials.append(material)
 
 # handling of empties
 for obj in bpy.context.scene.objects:
@@ -85,7 +86,41 @@ bpy.context.scene.frame_current = 0
 bpy.context.scene.frame_start = 0
 bpy.context.scene.frame_end = int(np.ceil(max_frame))
 
-# deselect all objects and save
+# deselect all objects and save the file that owns all the imported data
 bpy.ops.object.select_all(action="DESELECT")
 bpy.context.preferences.filepaths.save_version = 0
-bpy.ops.wm.save_as_mainfile(filepath=output_path)
+bpy.ops.wm.save_as_mainfile(filepath=source_path)
+
+# start a fresh file that only links the collection from source_path, so it
+# stays small and updates automatically whenever source_path is rebuilt.
+# Only create it once: it is meant for local additions (camera, lights, ...)
+# and must not be clobbered by later reruns of this script.
+if not Path(link_path).exists():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
+    with bpy.data.libraries.load(source_path, link=True) as (data_from, data_to):
+        data_to.collections = [collection_name]
+
+    linked_collection = data_to.collections[0]
+    bpy.context.scene.collection.children.link(linked_collection)
+
+    # equivalent to Outliner > Library Override > "Selected and Content":
+    # gives every object in the collection its own local, editable override
+    # (transform, visibility, modifiers, material slots, ...) while mesh and
+    # action data stay linked to system.blend. This is the non-UI API
+    # because background mode (blender -b) has no Outliner to run that
+    # operator from. do_fully_editable=True is needed, otherwise most
+    # properties are locked "system overrides" instead of freely editable.
+    linked_collection.override_hierarchy_create(
+        bpy.context.scene, bpy.context.view_layer, do_fully_editable=True
+    )
+
+    # override_hierarchy_create adds the override collection to the scene but
+    # does not remove the plain link we made above, so drop it ourselves
+    bpy.context.scene.collection.children.unlink(linked_collection)
+
+    bpy.context.scene.frame_current = 0
+    bpy.context.scene.frame_start = 0
+    bpy.context.scene.frame_end = int(np.ceil(max_frame))
+
+    bpy.ops.wm.save_as_mainfile(filepath=link_path)
