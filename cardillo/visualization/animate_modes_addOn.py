@@ -137,7 +137,59 @@ def smallest_rotation_quaternion(v, i=None):
     return np.array([p0, *p]), i
 
 
-# TODO: factorize
+def bake_arrow_root(root, r_OP0, r_OP1, Delta_r_P0, Delta_r_P1, scale_perp, frames, A_t_all):
+    """Keyframe a line/arrow root: it points from a moving P0 to a moving P1."""
+    root.rotation_mode = "QUATERNION"
+    scale_dir = np.array([scale_perp, scale_perp, 1.0])
+
+    # translation, direction and length for every frame at once
+    r0_all = r_OP0 + A_t_all[:, None] * Delta_r_P0
+    r1_all = r_OP1 + A_t_all[:, None] * Delta_r_P1
+    a_all = r1_all - r0_all
+    length_all = np.linalg.norm(a_all, axis=1)
+
+    for k, frame in enumerate(frames):
+        frame = int(frame)
+
+        root.location = Vector(r0_all[k])
+        root.keyframe_insert(data_path="location", frame=frame)
+
+        look_quat, _ = smallest_rotation_quaternion(a_all[k], 2)
+        root.rotation_quaternion = look_quat
+        root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+        root.scale = Vector(scale_dir * length_all[k])
+        root.keyframe_insert(data_path="scale", frame=frame)
+
+
+def bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all):
+    """Keyframe a root/child pair: root translates, child carries the residual
+    rotation of the linearized (non-orthogonal) mode rotation, see decomposition()."""
+    root.rotation_mode = "QUATERNION"
+    child.rotation_mode = "QUATERNION"
+
+    # translation for every frame at once
+    d_r_all = A_t_all[:, None] * Delta_r
+
+    # root rotation is constant per mode
+    P_IJ, fun = decomposition(P_IB0, B_Delta_phi)
+    root.rotation_quaternion = P_IJ
+
+    for k, frame in enumerate(frames):
+        frame = int(frame)
+
+        root.location = Vector(r_OP0 + d_r_all[k])
+        root.keyframe_insert(data_path="location", frame=frame)
+
+        P_JB, s = fun(A_t_all[k])
+
+        root.scale = s
+        root.keyframe_insert(data_path="scale", frame=frame)
+
+        child.rotation_quaternion = P_JB
+        child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+
 def bake_animation(idx, amplitude, play_time):
     scene = bpy.context.scene
 
@@ -148,12 +200,11 @@ def bake_animation(idx, amplitude, play_time):
     scene.frame_start = 0
     scene.frame_end = int(fps * play_time)
 
-    frame_start = scene.frame_start
-    frame_end = scene.frame_end
-
-    def time_factor(frame):
-        t = frame / fps
-        return np.sin(2.0 * np.pi * t / play_time)
+    # frame range and oscillation amplitude are shared by every root, so
+    # compute them once instead of per root/frame
+    frames = np.arange(scene.frame_start, scene.frame_end + 1)
+    t = frames / fps
+    A_t_all = amplitude * np.sin(2.0 * np.pi * t / play_time)
 
     # arrow/line
     for root in bpy.data.objects:
@@ -168,43 +219,16 @@ def bake_animation(idx, amplitude, play_time):
         ):
             continue
 
-        scale = np.array([root["scale_perp"], root["scale_perp"], 1.0])
-
-        # set rotation modes
-        root.rotation_mode = "QUATERNION"
-
-        # eq position
         r_OP0 = np.array(root["r_OP0"], dtype=float)
         r_OP1 = np.array(root["r_OP1"], dtype=float)
-
-        # Delta positions
         Delta_r_P0 = np.array(root["Delta_r_P0"][idx], dtype=float)
         Delta_r_P1 = np.array(root["Delta_r_P1"][idx], dtype=float)
+        scale_perp = root["scale_perp"]
 
-        # clear animation
         root.animation_data_clear()
-
-        # go trhough frames
-        for frame in range(frame_start, frame_end + 1):
-            A_t = amplitude * time_factor(frame)
-
-            # translation
-            r0 = r_OP0 + A_t * Delta_r_P0
-            r1 = r_OP1 + A_t * Delta_r_P1
-
-            a = r1 - r0
-            look_quat, look_idx = smallest_rotation_quaternion(a, 2)
-
-            root.location = Vector(r0)
-            root.keyframe_insert(data_path="location", frame=frame)
-
-            # rotation
-            root.rotation_quaternion = look_quat
-            root.keyframe_insert(data_path="rotation_quaternion", frame=frame)
-
-            # scale
-            root.scale = Vector(scale * np.linalg.norm(a))
-            root.keyframe_insert(data_path="scale", frame=frame)
+        bake_arrow_root(
+            root, r_OP0, r_OP1, Delta_r_P0, Delta_r_P1, scale_perp, frames, A_t_all
+        )
 
     # discrete
     for root in bpy.data.objects:
@@ -219,45 +243,14 @@ def bake_animation(idx, amplitude, play_time):
 
         child = root.children[0]
 
-        # set rotation modes
-        root.rotation_mode = "QUATERNION"
-        child.rotation_mode = "QUATERNION"
-
-        # eq position
         r_OP0 = np.array(root["r_OP0"], dtype=float)
         P_IB0 = Quaternion(np.array(root["P_IB0"], dtype=float))
-
-        # displacements
         Delta_r = np.array(root["Delta_r"][idx], dtype=float)
         B_Delta_phi = np.array(root["B_Delta_phi"][idx], dtype=float)
 
-        # clear animation
         root.animation_data_clear()
         child.animation_data_clear()
-
-        # update for rotation and scale
-        P_IJ, fun = decomposition(P_IB0, B_Delta_phi)
-
-        # root rotation is constant per mode
-        root.rotation_quaternion = P_IJ
-
-        # go trhough frames
-        for frame in range(frame_start, frame_end + 1):
-            A_t = amplitude * time_factor(frame)
-
-            # translation
-            d_r = A_t * Delta_r
-            root.location = Vector(r_OP0 + d_r)
-            root.keyframe_insert(data_path="location", frame=frame)
-
-            # root scale and child rotation
-            P_JB, s = fun(A_t)
-
-            root.scale = s
-            root.keyframe_insert(data_path="scale", frame=frame)
-
-            child.rotation_quaternion = P_JB
-            child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+        bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all)
 
     # armatures
     for arm_obj in bpy.data.objects:
@@ -271,53 +264,20 @@ def bake_animation(idx, amplitude, play_time):
             if not root.name.endswith("_root"):
                 continue
 
-            if "Delta_r" not in root:
+            if "Delta_r" not in root or "B_Delta_phi" not in root:
                 continue
 
-            if "B_Delta_phi" not in root:
-                continue
-
-            if len(root.children) == 0:
+            if not root.children:
                 continue
 
             child = root.children[0]
 
-            # set rotation modes
-            root.rotation_mode = "QUATERNION"
-            child.rotation_mode = "QUATERNION"
-
-            # eq position
             r_OP0 = np.array(root["r_OP0"], dtype=float)
             P_IB0 = Quaternion(np.array(root["P_IB0"], dtype=float))
-
-            # displacements
             Delta_r = np.array(root["Delta_r"][idx], dtype=float)
-
             B_Delta_phi = np.array(root["B_Delta_phi"][idx], dtype=float)
 
-            # update for scale
-            P_IJ, fun = decomposition(P_IB0, B_Delta_phi)
-
-            # root rotation is constant per mode
-            root.rotation_quaternion = P_IJ
-
-            # go trhough frames
-            for frame in range(frame_start, frame_end + 1):
-                A_t = amplitude * time_factor(frame)
-
-                # translation
-                d_r = A_t * Delta_r
-                root.location = Vector(r_OP0 + d_r)
-                root.keyframe_insert(data_path="location", frame=frame)
-
-                # root scale and child rotation
-                P_JB, s = fun(A_t)
-
-                root.scale = s
-                root.keyframe_insert(data_path="scale", frame=frame)
-
-                child.rotation_quaternion = P_JB
-                child.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+            bake_discrete_root(root, child, r_OP0, P_IB0, Delta_r, B_Delta_phi, frames, A_t_all)
 
 
 class AnimateModesProperties(bpy.types.PropertyGroup):
