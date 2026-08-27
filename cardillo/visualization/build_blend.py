@@ -11,6 +11,14 @@ gltf_files = sorted(Path(argv[1]).glob("*.glb"))
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
+# gather everything the gltf importer creates into one dedicated collection,
+# instead of relying on whatever the default active collection happens to be
+collection = bpy.data.collections.new(Path(output_path).stem)
+bpy.context.scene.collection.children.link(collection)
+bpy.context.view_layer.active_layer_collection = (
+    bpy.context.view_layer.layer_collection.children[collection.name]
+)
+
 for f in gltf_files:
     bpy.ops.import_scene.gltf(filepath=str(f), bone_heuristic="TEMPERANCE")
 
@@ -24,6 +32,15 @@ for obj in bpy.context.scene.objects:
 if len(bpy.context.selected_objects) > 0:
     bpy.context.view_layer.objects.active = bpy.context.selected_objects[0]
     bpy.ops.object.shade_auto_smooth(angle=np.deg2rad(80))
+
+# give each mesh its own material, so colors can be tweaked per body later
+for obj in bpy.context.scene.objects:
+    if obj.type != "MESH" or obj.data.materials:
+        continue
+
+    mat = bpy.data.materials.new(name=obj.data.name)
+    mat.use_nodes = True
+    obj.data.materials.append(mat)
 
 # handling of empties
 for obj in bpy.context.scene.objects:
