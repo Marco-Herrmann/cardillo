@@ -17,6 +17,7 @@ from cardillo.visualization.glTF_export import (
     BufferBuilder,
     cardillo_to_gltf_trans,
     cardillo_to_gltf_rot,
+    cardillo_to_gltf_scale,
 )
 from cardillo.math.rotations import Exp_SO3_quat
 from cardillo.math.SmallestRotation import smallest_rotation_quaternion
@@ -255,8 +256,9 @@ def make_glTF_arrow(path, name, t, r_OP0, r_OP1, block=False):
     if block:
         r_OP0 = (r_OP0 + r_OP1) / 2
         vec_mag /= 2
-        # TODO: make this via cardillo_to_glTF_scale or so, such that we can here have [1/100, 1, 1/100]
-        scale = np.vstack([vec_mag / 100, vec_mag, vec_mag / 100]).T
+        # long dimension along z-axis
+        scale = np.vstack([vec_mag / 100, vec_mag / 100, vec_mag]).T
+        scale = cardillo_to_gltf_scale(scale)
     else:
         scale = np.stack([vec_mag] * 3, axis=1)
 
