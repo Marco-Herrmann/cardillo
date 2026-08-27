@@ -1,36 +1,9 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 import numpy as np
-from cachetools import cachedmethod, LRUCache
-from cachetools.keys import hashkey
-from scipy.sparse import (
-    block_diag,
-    bsr_array,
-    csr_array,
-    eye_array,
-)
-from scipy.sparse.linalg import spsolve
 from warnings import warn
 
-from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
+from cardillo.math.algebra import ax2skew, ax2skew_a, skew2ax
 from cardillo.math.approx_fprime import approx_fprime
-from cardillo.math.rotations import (
-    Log_SO3_quat,
-    Exp_SO3_quat,
-    Exp_SO3_quat_P,
-    T_SO3_quat,
-    T_SO3_quat_P,
-    T_SO3_inv_quat,
-    T_SO3_inv_quat_P,
-    Log_SO3_R9,
-    Exp_SO3_R9,
-    Exp_SO3_R9_R9,
-    T_SO3_R9,
-    T_SO3_R9_R9,
-    T_SO3_inv_R9,
-    T_SO3_inv_R9_R9,
-)
-from cardillo.utility.coo_matrix import CooMatrix
-from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -286,10 +259,6 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
 
     # TODO: KN_h
     def KN_h(self, t, q, u): ...
-
-
-from cardillo.math.approx_fprime import approx_fprime
-from cardillo.math import ax2skew, skew2ax
 
 
 class CosseratRod_BG(CosseratRod_Velocity):

@@ -1,34 +1,6 @@
-from abc import ABC, abstractmethod
 import numpy as np
-from cachetools import cachedmethod, LRUCache
-from cachetools.keys import hashkey
-from scipy.sparse import (
-    block_diag,
-    bsr_array,
-    csr_array,
-    eye_array,
-)
-from scipy.sparse.linalg import spsolve
-from warnings import warn
+from cardillo.math.algebra import ax2skew
 
-from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
-from cardillo.math.approx_fprime import approx_fprime
-from cardillo.math.rotations import (
-    Log_SO3_quat,
-    Exp_SO3_quat,
-    Exp_SO3_quat_P,
-    T_SO3_quat,
-    T_SO3_quat_P,
-    T_SO3_inv_quat,
-    T_SO3_inv_quat_P,
-    Log_SO3_R9,
-    Exp_SO3_R9,
-    Exp_SO3_R9_R9,
-    T_SO3_R9,
-    T_SO3_R9_R9,
-    T_SO3_inv_R9,
-    T_SO3_inv_R9_R9,
-)
 from cardillo.rods_new._cross_section import CrossSectionInertias
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks

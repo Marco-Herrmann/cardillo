@@ -1,24 +1,4 @@
-from abc import ABC, abstractmethod
 import numpy as np
-from cachetools import cachedmethod, LRUCache
-from cachetools.keys import hashkey
-from scipy.sparse import (
-    block_diag,
-    bsr_array,
-    csr_array,
-    eye_array,
-)
-from scipy.sparse.linalg import spsolve
-from warnings import warn
-
-from cardillo.math.algebra import norm, cross3, ax2skew, ax2skew_a
-from cardillo.math.approx_fprime import approx_fprime
-
-from cardillo.utility.coo_matrix import CooMatrix
-from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
-
-from cardillo.rods._base_export import RodExportBase
-
 
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
