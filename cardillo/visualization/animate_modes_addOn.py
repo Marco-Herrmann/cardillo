@@ -30,7 +30,12 @@ def get_omegas():
     return root["omegas"]
 
 
+_omega_items_cache = []
+
+
 def omega_items(self, context):
+    global _omega_items_cache
+
     omegas = get_omegas()
 
     items = []
@@ -41,7 +46,12 @@ def omega_items(self, context):
     if not items:
         items.append(("0", "No Modes", ""))
 
-    return items
+    # Blender does not keep its own reference to the strings in dynamic
+    # enum items, so a module-level cache is needed to prevent the
+    # returned strings from being garbage-collected while still in use.
+    _omega_items_cache = items
+
+    return _omega_items_cache
 
 
 ####################
@@ -336,6 +346,7 @@ def update_animation(context):
 class ANIMATEMODES_OT_update(bpy.types.Operator):
     bl_idname = "animatemodes.update"
     bl_label = "Update"
+    bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         if not update_animation(context):
