@@ -66,6 +66,20 @@ for obj in bpy.context.scene.objects:
             obj.empty_display_type = "CUBE"
         obj.empty_display_size = 1
 
+# give each "_block" arrow empty a default cylinder as its visible shape.
+# Iterate over a snapshot list since this loop adds new objects to the scene.
+for obj in list(bpy.context.scene.objects):
+    if obj.type != "EMPTY" or not obj.name.endswith("_block"):
+        continue
+
+    bpy.ops.mesh.primitive_cylinder_add(location=(0, 0, 0), rotation=(0, 0, 0))
+    cylinder = bpy.context.object
+    cylinder.name = f"{obj.name}_cylinder"
+    cylinder.data.materials.append(material)
+    bpy.ops.object.shade_auto_smooth(angle=np.deg2rad(80))
+    # the empty's own non-uniform scale (thin, thin, long) does the stretching
+    cylinder.parent = obj
+
 # adjust animation frames
 max_frame = 0
 for obj in bpy.data.objects:
