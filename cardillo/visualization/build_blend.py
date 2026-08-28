@@ -157,6 +157,42 @@ if not Path(link_path).exists():
     except:
         print("Couldn't find materials!")
 
+    # world background color, given as sRGB hex (as from a color picker);
+    # shader color inputs expect linear values, hence the conversion
+    def srgb_to_linear(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    hex_color = "54596DFF"
+    r, g, b, a = (int(hex_color[i : i + 2], 16) / 255 for i in (0, 2, 4, 6))
+
+    world = bpy.data.worlds.new(name="World")
+    world.node_tree.nodes["Background"].inputs[0].default_value = (
+        srgb_to_linear(r),
+        srgb_to_linear(g),
+        srgb_to_linear(b),
+        a,
+    )
+    bpy.context.scene.world = world
+
+    # embed the "Animate Modes" addon as a registered text block, so its
+    # panel is available as soon as link_path is opened (requires the user's
+    # Blender to have "Auto Run Python Scripts" enabled, or to click
+    # "Allow" on the trusted-source banner when opening the file)
+    addon_path = Path(__file__).parent / "animate_modes_addOn.py"
+    addon_text = bpy.data.texts.new(name=addon_path.name)
+    addon_text.from_string(addon_path.read_text())
+    addon_text.use_module = True
+
+    # open the N-panel sidebar in every 3D viewport, so the Animate Modes
+    # tab is visible right away instead of needing to press N first
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            for space in area.spaces:
+                if space.type == "VIEW_3D":
+                    space.show_region_ui = True
+
     bpy.context.scene.frame_current = 0
     bpy.context.scene.frame_start = 0
     bpy.context.scene.frame_end = int(np.ceil(max_frame))
