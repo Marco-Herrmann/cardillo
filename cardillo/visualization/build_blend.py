@@ -139,6 +139,24 @@ if not Path(link_path).exists():
     # does not remove the plain link we made above, so drop it ourselves
     bpy.context.scene.collection.children.unlink(linked_collection)
 
+    # link in the "Materials" collection (swatch cubes) from materials.blend,
+    # so every material in the palette is selectable in this file, kept alive
+    # by its swatch cube rather than a fake user; hidden since it's just for
+    # picking colors, not part of the actual scene
+    try:
+        # TODO: add the file to git
+        materials_path = str(Path(__file__).parent / "materials.blend")
+        with bpy.data.libraries.load(materials_path, link=True) as (data_from, data_to):
+            data_to.collections = ["Materials"]
+
+        materials_collection = data_to.collections[0]
+        bpy.context.scene.collection.children.link(materials_collection)
+        bpy.context.view_layer.layer_collection.children[
+            materials_collection.name
+        ].exclude = True
+    except:
+        print("Couldn't find materials!")
+
     bpy.context.scene.frame_current = 0
     bpy.context.scene.frame_start = 0
     bpy.context.scene.frame_end = int(np.ceil(max_frame))
