@@ -16,10 +16,12 @@ previous, simpler one:
     1: point mass (sphere) on the spring/gravity "pendulum", no cable.
     2: like 1, plus a slender cable clamped at xi=0 with the sphere
        rigidly attached at its tip (xi=1).
-    3: like 2, plus a horizontal ground plane with `Sphere2Plane`
-       contacts along the rod (and the tip sphere), so active/inactive
-       `nla_N`/`nla_F` are exercised in `Eigenmodes` and
-       `FrequencyResponseFunction`.
+    3: like 2, plus a horizontal ground plane with frictionless
+       (mu=0) `Sphere2Plane` contacts along the rod (and the tip
+       sphere), so active/inactive `nla_N` is exercised in
+       `Eigenmodes` and `FrequencyResponseFunction`.
+    4: like 3, but with friction (mu=0.5), so `nla_F` is exercised
+       as well.
 """
 
 from dataclasses import dataclass
@@ -350,10 +352,9 @@ def main(level, make_plot=True, blender_export=True):
 
 
 if __name__ == "__main__":
-    main(0)
     # build up the model level by level and compare the tip FRF of each
     # against the previous, simpler one
-    results = {level: main(level=level, make_plot=False) for level in (0, 1, 2, 3)}
+    results = {level: main(level=level, make_plot=False) for level in (0, 1, 2, 3, 4)}
 
     iom = results[0].iom
 
