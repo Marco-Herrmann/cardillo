@@ -55,7 +55,8 @@ LEVEL_LABELS = {
     0: "linear pendulum",
     1: "mass only",
     2: "cable",
-    3: "cable + ground",
+    3: "cable + ground (normal contact)",
+    4: "cable + ground (frictional contact)",
 }
 
 
@@ -112,7 +113,7 @@ def _plot_frf(result, title):
 
 
 def main(level, make_plot=True, blender_export=True):
-    assert level in (0, 1, 2, 3), f"level must be 0, 1, 2 or 3, got {level}"
+    assert level in (0, 1, 2, 3, 4), f"level must be 0, 1, 2, 3 or 4, got {level}"
     print(f"level: {level}")
 
     g = 9.81  # gravity [m/s^2]
@@ -219,7 +220,7 @@ def main(level, make_plot=True, blender_export=True):
         # geometry & material
         #####################
         radius = 5e-3  # cable radius [m]
-        nelement = 10
+        nelement = 40
 
         E = 2.0e11  # Young's modulus [Pa] (steel)
         G = 8.0e10  # shear modulus [Pa]
@@ -266,14 +267,14 @@ def main(level, make_plot=True, blender_export=True):
     ########
     # ground
     ########
-    if level == 3:
+    if level >= 3:
         z_ground = -0.7
         dimensions = np.array([L + 2, 2, 1])
         r_OP_frame = np.array([L / 2, 0.0, z_ground - dimensions[2] / 2])
         ground = Box(Frame)(dimensions=dimensions, r_OP=r_OP_frame, name="ground")
         system.add(ground)
 
-        mu = 0.5
+        mu = 0.0 if level == 3 else 0.5
 
         # point contacts along the rod (skip node 0, it is clamped and
         # never moves, so a contact there would be permanently inert)
