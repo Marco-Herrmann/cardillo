@@ -174,6 +174,15 @@ if not Path(link_path).exists():
     )
     bpy.context.scene.world = world
 
+    # enable EEVEE raytracing
+    bpy.context.scene.eevee.use_raytracing = True
+
+    # output to a sibling "output" folder next to link_path, as a video
+    output_dir = Path(link_path).parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bpy.context.scene.render.filepath = f"{output_dir}/"
+    bpy.context.scene.render.image_settings.media_type = "VIDEO"
+
     # embed the "Animate Modes" addon as a registered text block, so its
     # panel is available as soon as link_path is opened (requires the user's
     # Blender to have "Auto Run Python Scripts" enabled, or to click
