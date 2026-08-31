@@ -102,7 +102,7 @@ def _plot_frf(result, title):
         for j in range(3):
             # small floor avoids log-scale warnings on exactly-zero
             # (out-of-plane) entries, e.g. y-response for x-z loading
-            ax[i, j].loglog(iom.imag, np.abs(result.frfs[:, i, j]) + 1e-30)
+            ax[i, j].loglog(iom.imag, np.abs(result.frfs[:, i, j]))
             ax[i, j].grid()
             if i == 0:
                 ax[i, j].set_title(f"F: {labels_in[j]}")
@@ -114,7 +114,7 @@ def _plot_frf(result, title):
     fig.suptitle(title)
 
 
-def main(level, make_plot=True, blender_export=True):
+def main(level, nelement=10, make_plot=True, blender_export=True, compute_frf=True):
     assert level in (0, 1, 2, 3, 4), f"level must be 0, 1, 2, 3 or 4, got {level}"
     print(f"level: {level}")
 
@@ -222,7 +222,6 @@ def main(level, make_plot=True, blender_export=True):
         # geometry & material
         #####################
         radius = 5e-3  # cable radius [m]
-        nelement = 40
 
         E = 2.0e11  # Young's modulus [Pa] (steel)
         G = 8.0e10  # shear modulus [Pa]
@@ -329,6 +328,9 @@ def main(level, make_plot=True, blender_export=True):
             dir_name, f"blender_eigenmodes{suffix}", sol_eig, create_blend=True
         )
 
+    if not compute_frf:
+        return True
+
     ############################
     # frequency response function
     ############################
@@ -352,10 +354,19 @@ def main(level, make_plot=True, blender_export=True):
 
 
 if __name__ == "__main__":
-    # build up the model level by level and compare the tip FRF of each
-    # against the previous, simpler one
-    results = {level: main(level=level, make_plot=False) for level in (0, 1, 2, 3, 4)}
+    # build up the model level by level
+    levels = np.arange(5)
 
+    # make blender files with 40 elements
+    {
+        level: main(level=level, nelement=40, make_plot=False, compute_frf=False)
+        for level in levels
+    }
+
+    # compare the tip FRF
+    results = {
+        level: main(level=level, nelement=10, make_plot=False) for level in levels
+    }
     iom = results[0].iom
 
     fig, ax = plt.subplots(3, 3, sharex=True)
@@ -368,7 +379,7 @@ if __name__ == "__main__":
                 # (out-of-plane) entries, e.g. y-response for x-z loading
                 ax[i, j].loglog(
                     iom.imag,
-                    np.abs(result.frfs[:, i, j]) + 1e-30,
+                    np.abs(result.frfs[:, i, j]),
                     label=LEVEL_LABELS[level],
                 )
             ax[i, j].grid()
