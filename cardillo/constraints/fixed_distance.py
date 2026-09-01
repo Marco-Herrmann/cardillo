@@ -97,6 +97,34 @@ class FixedDistance:
             ).T
         )
 
+    def KN_g(self, t, q, la_g):
+        # analytic K = -d/du(W_g * la_g), same u-space recipe used for
+        # ProjectedPositionOrientationBase.KN_g (see cardillo/constraints/_base.py):
+        # differentiate each term of W_g using d/du_own(F @ J_X) = einsum(F, J2_X)
+        # for F constant w.r.t. u_own, plus the ordinary product rule for r_J1J2,
+        # which varies with both u1 and u2. Verified numerically in
+        # test/test_constraints_linearization.py against
+        # B.T @ d2(g * la_g)/dq2 @ B.
+        nu1 = self._nu1
+        r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
+        J_J1 = self.J_J1(t, q)
+        J_J2 = self.J_J2(t, q)
+        J2_J1 = self.J2_J1(t, q)
+        J2_J2 = self.J2_J2(t, q)
+
+        DW_g = np.zeros((self._nu, self._nu), dtype=q.dtype)
+        DW_g[:nu1, :nu1] = (
+            2 * la_g * (J_J1.T @ J_J1 - np.einsum("i,ijk->jk", r_J1J2, J2_J1))
+        )
+        DW_g[:nu1, nu1:] = -2 * la_g * J_J1.T @ J_J2
+        DW_g[nu1:, :nu1] = -2 * la_g * J_J2.T @ J_J1
+        DW_g[nu1:, nu1:] = (
+            2 * la_g * (J_J2.T @ J_J2 + np.einsum("i,ijk->jk", r_J1J2, J2_J2))
+        )
+
+        N = np.zeros((self._nu, self._nu), dtype=q.dtype)
+        return -DW_g, N
+
     def Wla_g_q(self, t, q, la_g):
         nq1 = self._nq1
         nu1 = self._nu1

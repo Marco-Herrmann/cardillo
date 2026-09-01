@@ -889,16 +889,12 @@ class ProjectedPositionOrientationBase:
         # return Wla_g_q_num
 
     def KN_g(self, t, q, la_g):
-        print(
-            "TODO: update KN_g in ProjectedPositionOrientationBase, according to the implementation in PositionOrientationBase"
-        )
         nu1 = self._nu1
-        K = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
-        N = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
+        DW_g = np.zeros((self._nu, self._nu), dtype=np.common_type(q, la_g))
 
         A_IJ1 = self.A_IJ1(t, q)
         J_R1 = self.J_R1(t, q)
-        J2_R1 = -self.J2_R1(t, q)  # TODO
+        J2_R1 = self.J2_R1(t, q)
         if self.constrain_translation:
             r_J1J2 = self.r_OJ2(t, q) - self.r_OJ1(t, q)
             J_J1 = self.J_J1(t, q)
@@ -906,42 +902,46 @@ class ProjectedPositionOrientationBase:
             J2_J1 = self.J2_J1(t, q)
             J2_J2 = self.J2_J2(t, q)
             for i, ax in enumerate(self.constrained_axes_displacement):
-                axis_tilde = ax2skew(A_IJ1[:, ax]) * la_g[i]
-                n = cross3(A_IJ1[:, ax], r_J1J2) * la_g[i]
-                off_diag_term = J_R1.T @ axis_tilde @ J_J2
-                K[:nu1, :nu1] -= (
-                    -np.einsum("i,ijk->jk", la_g[i] * A_IJ1[:, ax], J2_J1)
-                    + J_J1.T @ axis_tilde @ J_R1
-                    - J_R1.T @ axis_tilde @ J_J1
-                    - np.einsum("i,ijk->jk", n, J2_R1)
-                    + J_R1.T @ axis_tilde @ ax2skew(r_J1J2) @ J_R1
-                )
-                K[:nu1, nu1:] -= off_diag_term
-                K[nu1:, :nu1] -= off_diag_term.T
-                K[nu1:, nu1:] -= np.einsum("i,ijk->jk", la_g[i] * A_IJ1[:, ax], J2_J2)
+                la = la_g[i]
+                e = A_IJ1[:, ax]
+                e_tilde = ax2skew(e)
+                m = cross3(e, r_J1J2)
 
-        nla_g_trans = self.nla_g_trans
+                DW_g[:nu1, :nu1] += la * (
+                    J_J1.T @ e_tilde @ J_R1
+                    - np.einsum("i,ijk->jk", e, J2_J1)
+                    + J_R1.T @ ax2skew(r_J1J2) @ e_tilde @ J_R1
+                    - J_R1.T @ e_tilde @ J_J1
+                    + np.einsum("i,ijk->jk", m, J2_R1)
+                )
+                DW_g[:nu1, nu1:] += la * (J_R1.T @ e_tilde @ J_J2)
+                DW_g[nu1:, :nu1] += la * (-J_J2.T @ e_tilde @ J_R1)
+                DW_g[nu1:, nu1:] += la * np.einsum("i,ijk->jk", e, J2_J2)
+
         if self.constrain_orientation:
             A_IJ2 = self.A_IJ2(t, q)
             J_R2 = self.J_R2(t, q)
-            J2_R2 = -self.J2_R2(t, q)  # TODO
+            J2_R2 = self.J2_R2(t, q)
+            nla_g_trans = self.nla_g_trans
             for i, (a, b) in enumerate(self.projection_pairs_rotation):
+                la = la_g[nla_g_trans + i]
                 e_a, e_b = A_IJ1[:, a], A_IJ2[:, b]
+                e_a_tilde, e_b_tilde = ax2skew(e_a), ax2skew(e_b)
                 n = cross3(e_a, e_b)
-                double_tilde = ax2skew(e_a) @ ax2skew(e_b) * la_g[nla_g_trans + i]
-                off_diag_term = J_R1.T @ double_tilde @ J_R2
-                K[:nu1, :nu1] += (
-                    np.einsum("i,ijk->jk", la_g[nla_g_trans + i] * n, J2_R1)
-                    + J_R1.T @ double_tilde @ J_R1
+
+                DW_g[:nu1, :nu1] += la * (
+                    J_R1.T @ e_b_tilde @ e_a_tilde @ J_R1
+                    + np.einsum("i,ijk->jk", n, J2_R1)
                 )
-                K[:nu1, nu1:] -= off_diag_term
-                K[nu1:, :nu1] -= off_diag_term.T
-                K[nu1:, nu1:] += (
-                    -np.einsum("i,ijk->jk", la_g[nla_g_trans + i] * n, J2_R2)
-                    + J_R2.T @ double_tilde.T @ J_R2
+                DW_g[:nu1, nu1:] += la * (-J_R1.T @ e_a_tilde @ e_b_tilde @ J_R2)
+                DW_g[nu1:, :nu1] += la * (-J_R2.T @ e_b_tilde @ e_a_tilde @ J_R1)
+                DW_g[nu1:, nu1:] += la * (
+                    J_R2.T @ e_a_tilde @ e_b_tilde @ J_R2
+                    - np.einsum("i,ijk->jk", n, J2_R2)
                 )
 
-        return K, N
+        N_g = np.zeros((self._nu, self._nu), dtype=q.dtype)
+        return -DW_g, N_g
 
     def g_q_T_mu_q(self, t, q, mu):
         warnings.warn(

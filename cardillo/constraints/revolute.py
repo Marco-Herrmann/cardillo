@@ -1,5 +1,7 @@
 import numpy as np
+
 from cardillo.constraints._base import PositionOrientationBase
+from cardillo.math import cross3, ax2skew
 
 
 class Revolute(PositionOrientationBase):
@@ -188,6 +190,67 @@ class Revolute(PositionOrientationBase):
         W_angle_q[nu1:, 0, nq1:] = np.einsum("i,ijk->jk", e_c1, J_R2_q2)
 
         return W_angle_q
+
+    def KN_l__(self, t, q, la_l):
+        """Similarly to the one from PositionOrientationBase.KN_g"""
+        nu1 = self._nu1
+        DW_l = np.zeros((self._nu, self._nu), dtype=q.dtype)
+
+        A_IJ1 = self.A_IJ1(t, q)
+        A_IJ2 = self.A_IJ2(t, q)
+
+        J_R1 = self.J_R1(t, q)
+        J_R2 = self.J_R2(t, q)
+
+        DJ_R1 = self.J2_R1(t, q)
+        DJ_R2 = self.J2_R2(t, q)
+
+        a, b = self.plane_axes
+        ea, eb = A_IJ1[:, a], A_IJ2[:, b]
+        n = cross3(ea, eb)
+
+        ea_tilde = ax2skew(ea)
+        eb_tilde = ax2skew(eb)
+        Dea = -ea_tilde @ J_R1
+        Deb = -eb_tilde @ J_R2
+        Dn1 = -eb_tilde @ Dea
+        Dn2 = ea_tilde @ Deb
+
+        DW_l[:nu1, :nu1] += la_l * (J_R1.T @ Dn1 + np.einsum("i,ijk->jk", n, DJ_R1))
+        DW_l[:nu1, nu1:] += la_l * J_R1.T @ Dn2
+        DW_l[nu1:, :nu1] += -la_l * J_R2.T @ Dn1
+        DW_l[nu1:, nu1:] += -la_l * (J_R2.T @ Dn2 + np.einsum("i,ijk->jk", n, DJ_R2))
+
+        return -DW_l, np.zeros_like(DW_l)
+
+    def KN_l(self, t, q, la_l):
+        "Implementation based on second variation. Somehow, the sign is the opposite to the one in KN_l__. However, for that constraint, the projection into the space of admissible variations is 0 anyways."
+        from warnings import warn
+
+        warn("Revolute.KN_l not tested yet!")
+        A_IJ2 = self.A_IJ2(t, q)
+
+        J_R1 = self.J_R1(t, q)
+        J_R2 = self.J_R2(t, q)
+
+        a, b = self.plane_axes
+        e_a2 = A_IJ2[:, a]
+        e_b2 = A_IJ2[:, b]
+        e_c2 = A_IJ2[:, self.axis]
+
+        # projections
+        mtx_11 = np.outer(e_b2, e_a2) - 0.5 * ax2skew(e_c2)
+        mtx_12 = np.outer(-e_a2, e_b2)
+        mtx_21 = np.outer(-e_b2, e_a2)
+        mtx_22 = np.outer(e_a2, e_b2) + 0.5 * ax2skew(e_c2)
+
+        K = np.zeros((self._nu, self._nu))
+        K[: self._nu1, : self._nu1] = J_R1.T @ mtx_11 @ J_R1 * la_l
+        K[: self._nu1, self._nu1 :] = J_R1.T @ mtx_12 @ J_R2 * la_l
+        K[self._nu1 :, : self._nu1] = J_R2.T @ mtx_21 @ J_R1 * la_l
+        K[self._nu1 :, self._nu1 :] = J_R2.T @ mtx_22 @ J_R2 * la_l
+
+        return K, np.zeros_like(K)
 
     def reset(self):
         self.n_full_rotations = 0
