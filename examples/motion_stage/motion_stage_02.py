@@ -464,7 +464,7 @@ def motion_stage(l_x0, l_y0):
     solver_FRF = FrequencyResponseFunction(system, sol_stat2)
     sol_FRF = solver_FRF.solve(-1, iom)
 
-    # Inpu-output of interest
+    # Input-output of interest
     outDOF_long = long_stroke.outDOF[0]
     outDOF_short = short_stroke.outDOF[1]
 
