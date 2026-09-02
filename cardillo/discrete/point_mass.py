@@ -82,6 +82,9 @@ class PointMass:
     def J_P_q(self, t, q, xi=None, B_r_CP=None):
         return np.zeros((3, self.nu, self.nq))
 
+    def J2_P(self, t, q, xi=None, B_r_CP=None):
+        return np.zeros((3, self.nu, self.nu))
+
     def v_P(self, t, q, u, xi=None, B_r_CP=None):
         v_P = np.zeros(3, dtype=np.common_type(q, u))
         v_P[: self.nq] = u
