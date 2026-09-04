@@ -15,6 +15,7 @@ from cardillo.constraints import (
 )
 from cardillo.math import ax2skew
 from cardillo.math.approx_fprime import approx_fprime
+from cardillo.math.rotations import Exp_SO3, Spurrier
 
 
 def _random_rigid_body(rng):
@@ -88,10 +89,9 @@ def test_rigid_body_rotational():
 
 
 def _setup(make_constraint, seed):
-    rng1 = np.random.default_rng(seed)
-    rng2 = np.random.default_rng(seed + 1)
-    rb1 = _random_rigid_body(rng1)
-    rb2 = _random_rigid_body(rng2)
+    rng = np.random.default_rng(seed)
+    rb1 = _random_rigid_body(rng)
+    rb2 = _random_rigid_body(rng)
     constraint = make_constraint(rb1, rb2)
 
     system = System()
@@ -101,7 +101,7 @@ def _setup(make_constraint, seed):
     t0 = 0.0
     q0 = system.q0
     B0 = system.q_dot_u(t0, q0)
-    return rng1, rng2, constraint, t0, q0, B0
+    return rng, constraint, t0, q0, B0
 
 
 # (name, constraint factory, seed)
@@ -127,11 +127,9 @@ KN_g_cases = [
 ]
 
 
-@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
-@pytest.mark.parametrize("name, make_constraint, seed", KN_g_cases)
-def test_KN_g(name, make_constraint, seed):
-    rng1, rng2, constraint, t0, q0, B0 = _setup(make_constraint, seed)
-
+def _check_KN_g(name, constraint, t0, q0, B0, la_g):
+    """K + N must equal -B.T @ Hess_q(g @ la_g) @ B, checked both via the
+    first variation (g_q @ B == W_g.T) and the second (KN_g itself)."""
     # g_dot_u = W_g.T = g_q @ B, directly from the chain rule
     # g_dot = g_q @ q_dot = g_q @ B @ u -- no la_g involved here at all
     g_q = np.atleast_2d(constraint.g_q(t0, q0))
@@ -139,7 +137,6 @@ def test_KN_g(name, make_constraint, seed):
         np.isclose(g_q @ B0, constraint.W_g(t0, q0).T, atol=1e-6)
     ), f"{name}: g_q @ B != W_g.T"
 
-    la_g = rng1.random(constraint.nla_g)
     # np.atleast_1d: FixedDistance.g returns a bare scalar (nla_g=1), unlike
     # the array-valued g of the PositionOrientationBase-derived joints
     V = lambda q: np.atleast_1d(constraint.g(t0, q)) @ la_g
@@ -156,12 +153,19 @@ def test_KN_g(name, make_constraint, seed):
         np.isclose(lhs1, rhs1, atol=1e-4)
     ), f"{name}: B.T @ dV/dq != W_g @ la_g\n{lhs1}\n{rhs1}"
 
-    # K + N must equal -B.T @ d2V/dq2 @ B
     K, N = constraint.KN_g(t0, q0, la_g)
     lhs2 = B0.T @ d2V_dq2 @ B0
     assert np.all(
         np.isclose(lhs2, -(K + N), atol=1e-4)
     ), f"{name}: B.T @ d2V/dq2 @ B != -(K + N)\n{lhs2}\n{-(K + N)}"
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, make_constraint, seed", KN_g_cases)
+def test_KN_g(name, make_constraint, seed):
+    rng, constraint, t0, q0, B0 = _setup(make_constraint, seed)
+    la_g = rng.random(constraint.nla_g)
+    _check_KN_g(name, constraint, t0, q0, B0, la_g)
 
 
 KN_l_cases = [
@@ -174,11 +178,11 @@ KN_l_cases = [
 ]
 
 
-@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
-@pytest.mark.parametrize("name, make_constraint, seed", KN_l_cases)
-def test_KN_l(name, make_constraint, seed):
-    rng1, rng2, constraint, t0, q0, B0 = _setup(make_constraint, seed)
-
+def _check_KN_l(name, constraint, t0, q0, B0, la_l):
+    """K + N must equal -B.T @ Hess_q(l * la_l) @ B, checked both via the
+    first variation (l_q @ B == W_l) and the second (KN_l itself) -- the
+    latter both unprojected and restricted to admissible generalized
+    virtual displacements delta_s = T_adm @ delta_z, W_g.T @ T_adm == 0."""
     # l_dot_u = W_l = l_q @ B, directly from the chain rule; l is scalar, so
     # both sides are already flat (nu,) vectors -- no transpose needed
     l_q = constraint.l_q(t0, q0).flatten()
@@ -186,7 +190,6 @@ def test_KN_l(name, make_constraint, seed):
         np.isclose(l_q @ B0, constraint.W_l(t0, q0).flatten(), atol=1e-6)
     ), f"{name}: l_q @ B != W_l"
 
-    la_l = rng1.random()
     V = lambda q: constraint.l(t0, q) * la_l
 
     dV_dq = approx_fprime(q0, V, eps=1e-5)
@@ -205,19 +208,234 @@ def test_KN_l(name, make_constraint, seed):
     K, N = constraint.KN_l(t0, q0, la_l)
     lhs2 = B0.T @ d2V_dq2 @ B0
 
-    if not np.all(np.isclose(lhs2, -(K + N), atol=1e-4)):
-        print(f"{name}: Unprojected! (K+N)_num != (K+N)")
+    assert np.all(
+        np.isclose(lhs2, -(K + N), atol=1e-4)
+    ), f"{name}: B.T @ d2V/dq2 @ B != -(K + N)\n{lhs2}\n{-(K + N)}"
 
-    # check only with admissible gen. virtual displacements:  delta_s = T_adm @ delta_z, where W_g.T @ T_adm = 0
     T_adm = null_space(constraint.W_g(t0, q0).T)
-
     lhs3 = T_adm.T @ lhs2 @ T_adm
     rhs3 = T_adm.T @ (K + N) @ T_adm
-
     assert np.all(
         np.isclose(lhs3, -rhs3, atol=1e-4)
     ), f"{name}: Projected one! (K+N)_num != (K+N)"
-    print(np.linalg.norm(rhs3))
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, make_constraint, seed", KN_l_cases)
+def test_KN_l(name, make_constraint, seed):
+    rng, constraint, t0, q0, B0 = _setup(make_constraint, seed)
+    la_l = rng.random()
+    _check_KN_l(name, constraint, t0, q0, B0, la_l)
+
+
+def _revolute_q_with_angle(rb1, rb2, rev, angle, rng):
+    """Build q = (q1, q2) with body 1's pose fully random and body 2's pose
+    chosen so that the joint's constraint g == 0 holds exactly, with the
+    relative joint angle set to `angle`.
+
+    This matters because the q0 that `System.assemble()` itself produces
+    always has angle == 0: its reference frames (r_OJ0, A_IJ0) are picked
+    from the bodies' pose at assembly time, which forces l(t0, q0) == 0 by
+    construction (see examples/revolute_kn_l_debug/quaternion_only.py).
+    That makes q0 a poor stand-in for "a generic point on the constraint
+    manifold" -- every other joint angle is just as valid a configuration
+    with g == 0, and KN_l has to be correct there too. This reuses the
+    joint's *own* fixed attachment offsets (recovered from the original
+    assembly-time poses of rb1, rb2) to place body 2 at an arbitrary,
+    explicitly chosen angle instead of the trivial one.
+    """
+    t0 = 0.0
+
+    # recover the joint's fixed, assembly-time attachment offsets
+    q1_0, q2_0 = rb1.q0, rb2.q0
+    A_IB1_0, A_IB2_0 = rb1.A_IB(t0, q1_0), rb2.A_IB(t0, q2_0)
+    r_OP1_0, r_OP2_0 = rb1.r_OP(t0, q1_0), rb2.r_OP(t0, q2_0)
+
+    B1_r_P1J0 = A_IB1_0.T @ (rev.r_OJ0 - r_OP1_0)
+    B2_r_P2J0 = A_IB2_0.T @ (rev.r_OJ0 - r_OP2_0)
+    A_K1J0 = A_IB1_0.T @ rev.A_IJ0
+    A_K2J0 = A_IB2_0.T @ rev.A_IJ0
+
+    # body 1: fully random pose
+    r_OP1 = rng.random(3)
+    p1 = rng.random(4)
+    p1 /= np.linalg.norm(p1)
+    q1 = np.concatenate([r_OP1, p1])
+
+    A_IB1 = rb1.A_IB(t0, q1)
+    r_OJ1 = r_OP1 + A_IB1 @ B1_r_P1J0
+    A_IJ1 = A_IB1 @ A_K1J0
+
+    # body 2: chosen so the joint point coincides (position constraint) and
+    # the shared axis is aligned (rotation constraint), with the relative
+    # rotation about that axis equal to `angle` -- the joint's own free DOF
+    e_c1 = A_IJ1[:, rev.axis]
+    A_IJ2 = Exp_SO3(angle * e_c1) @ A_IJ1
+    A_IB2 = A_IJ2 @ A_K2J0.T
+    r_OP2 = r_OJ1 - A_IB2 @ B2_r_P2J0
+    p2 = Spurrier(A_IB2)
+    q2 = np.concatenate([r_OP2, p2])
+
+    return np.concatenate([q1, q2])
+
+
+Revolute_random_angle_cases = [
+    ("Revolute axis=0", 0, 0),
+    ("Revolute axis=1", 1, 1),
+    ("Revolute axis=2", 2, 2),
+]
+
+
+def _setup_revolute_random_angle(axis, seed):
+    """Same shape as `_setup`, but for an explicitly constructed, generic
+    point on the constraint manifold (random body 1 pose, random nonzero
+    joint angle) rather than the assembler's always-angle-0 q0."""
+    rng = np.random.default_rng(seed)
+    rb1 = _random_rigid_body(rng)
+    rb2 = _random_rigid_body(rng)
+    rev = Revolute(rb1, rb2, axis=axis)
+
+    system = System()
+    system.add(rb1, rb2, rev)
+    system.assemble()
+
+    t0 = 0.0
+    angle = rng.uniform(-np.pi, np.pi)
+    q0 = _revolute_q_with_angle(rb1, rb2, rev, angle, rng)
+    B0 = system.q_dot_u(t0, q0)
+
+    # sanity: the constructed configuration really is on the manifold, at
+    # the intended angle
+    assert np.all(
+        np.isclose(rev.g(t0, q0), 0.0, atol=1e-10)
+    ), "constructed q0 does not satisfy g == 0"
+    # rev.l is a stateful quadrant-unwrapping angle (see Revolute.l): a
+    # single fresh evaluation only reports the geometric angle up to a
+    # multiple of 2*pi (its hardcoded initial `previous_quadrant = 1`
+    # bookkeeping doesn't know our `angle` was negative), so compare
+    # modulo 2*pi rather than exactly.
+    angle_diff = rev.l(t0, q0) - angle
+    assert np.isclose(
+        angle_diff, 2 * np.pi * np.round(angle_diff / (2 * np.pi)), atol=1e-10
+    ), "constructed q0 does not have the intended joint angle (mod 2*pi)"
+
+    return rng, rev, t0, q0, B0
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, axis, seed", Revolute_random_angle_cases)
+def test_KN_l_revolute_random_angle(name, axis, seed):
+    rng, rev, t0, q0, B0 = _setup_revolute_random_angle(axis, seed)
+    la_l = rng.random()
+    _check_KN_l(name, rev, t0, q0, B0, la_l)
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, axis, seed", Revolute_random_angle_cases)
+def test_KN_g_revolute_random_angle(name, axis, seed):
+    rng, rev, t0, q0, B0 = _setup_revolute_random_angle(axis, seed)
+    la_g = rng.random(rev.nla_g)
+    _check_KN_g(name, rev, t0, q0, B0, la_g)
+
+
+def _prismatic_q_with_displacement(rb1, rb2, pris, displacement, rng):
+    """Build q = (q1, q2) with body 1's pose fully random and body 2's pose
+    chosen so that the joint's constraint g == 0 holds exactly, with the
+    relative displacement along the free axis set to `displacement`.
+
+    Same idea as `_revolute_q_with_angle`: `System.assemble()`'s own q0
+    always has displacement == 0 (its reference frames are picked from the
+    bodies' pose at assembly time), which is just as special a case here
+    as angle == 0 was for the revolute joint. A Prismatic constrains ALL
+    three relative orientations (A_IJ2 must equal A_IJ1 exactly -- there is
+    no rotational freedom at all) and the two displacement axes orthogonal
+    to `axis`; only the displacement along `axis` is free.
+    """
+    t0 = 0.0
+
+    q1_0, q2_0 = rb1.q0, rb2.q0
+    A_IB1_0, A_IB2_0 = rb1.A_IB(t0, q1_0), rb2.A_IB(t0, q2_0)
+    r_OP1_0, r_OP2_0 = rb1.r_OP(t0, q1_0), rb2.r_OP(t0, q2_0)
+
+    B1_r_P1J0 = A_IB1_0.T @ (pris.r_OJ0 - r_OP1_0)
+    B2_r_P2J0 = A_IB2_0.T @ (pris.r_OJ0 - r_OP2_0)
+    A_K1J0 = A_IB1_0.T @ pris.A_IJ0
+    A_K2J0 = A_IB2_0.T @ pris.A_IJ0
+
+    # body 1: fully random pose
+    r_OP1 = rng.random(3)
+    p1 = rng.random(4)
+    p1 /= np.linalg.norm(p1)
+    q1 = np.concatenate([r_OP1, p1])
+
+    A_IB1 = rb1.A_IB(t0, q1)
+    r_OJ1 = r_OP1 + A_IB1 @ B1_r_P1J0
+    A_IJ1 = A_IB1 @ A_K1J0
+
+    # body 2: no rotational freedom (A_IJ2 == A_IJ1 exactly), and the joint
+    # point displaced from J1 by exactly `displacement` along the free axis
+    A_IJ2 = A_IJ1
+    A_IB2 = A_IJ2 @ A_K2J0.T
+    r_OJ2 = r_OJ1 + displacement * A_IJ1[:, pris.axis]
+    r_OP2 = r_OJ2 - A_IB2 @ B2_r_P2J0
+    p2 = Spurrier(A_IB2)
+    q2 = np.concatenate([r_OP2, p2])
+
+    return np.concatenate([q1, q2])
+
+
+Prismatic_random_displacement_cases = [
+    ("Prismatic axis=0", 0, 0),
+    ("Prismatic axis=1", 1, 1),
+    ("Prismatic axis=2", 2, 2),
+]
+
+
+def _setup_prismatic_random_displacement(axis, seed):
+    """Same shape as `_setup`, but for an explicitly constructed, generic
+    point on the constraint manifold (random body 1 pose, random nonzero
+    displacement along the free axis) rather than the assembler's
+    always-displacement-0 q0."""
+    rng = np.random.default_rng(seed)
+    rb1 = _random_rigid_body(rng)
+    rb2 = _random_rigid_body(rng)
+    pris = Prismatic(rb1, rb2, axis=axis)
+
+    system = System()
+    system.add(rb1, rb2, pris)
+    system.assemble()
+
+    t0 = 0.0
+    displacement = rng.uniform(-2.0, 2.0)
+    q0 = _prismatic_q_with_displacement(rb1, rb2, pris, displacement, rng)
+    B0 = system.q_dot_u(t0, q0)
+
+    # sanity: the constructed configuration really is on the manifold, at
+    # the intended displacement
+    assert np.all(
+        np.isclose(pris.g(t0, q0), 0.0, atol=1e-10)
+    ), "constructed q0 does not satisfy g == 0"
+    assert np.isclose(
+        pris.l(t0, q0), displacement, atol=1e-10
+    ), "constructed q0 does not have the intended displacement"
+
+    return rng, pris, t0, q0, B0
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, axis, seed", Prismatic_random_displacement_cases)
+def test_KN_l_prismatic_random_displacement(name, axis, seed):
+    rng, pris, t0, q0, B0 = _setup_prismatic_random_displacement(axis, seed)
+    la_l = rng.random()
+    _check_KN_l(name, pris, t0, q0, B0, la_l)
+
+
+@pytest.mark.filterwarnings("ignore: 'approx_fprime' is used")
+@pytest.mark.parametrize("name, axis, seed", Prismatic_random_displacement_cases)
+def test_KN_g_prismatic_random_displacement(name, axis, seed):
+    rng, pris, t0, q0, B0 = _setup_prismatic_random_displacement(axis, seed)
+    la_g = rng.random(pris.nla_g)
+    _check_KN_g(name, pris, t0, q0, B0, la_g)
 
 
 if __name__ == "__main__":
@@ -227,4 +445,10 @@ if __name__ == "__main__":
         test_KN_g(*case)
     for case in KN_l_cases:
         test_KN_l(*case)
+    for case in Revolute_random_angle_cases:
+        test_KN_l_revolute_random_angle(*case)
+        test_KN_g_revolute_random_angle(*case)
+    for case in Prismatic_random_displacement_cases:
+        test_KN_l_prismatic_random_displacement(*case)
+        test_KN_g_prismatic_random_displacement(*case)
     print("all checks passed")
