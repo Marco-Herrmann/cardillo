@@ -42,10 +42,19 @@ def pose_velocity(
     return vO.reshape(-1)
 
 COMPUTE_FRF = True
-COMPUTE_FRF = False
+# COMPUTE_FRF = False
 
-ANGLE = 0.0
-ANGLE = np.pi/2
+ANGLE_MULTIPLIER = 0
+ANGLE_MULTIPLIER = 1 # THIS
+# ANGLE_MULTIPLIER = 2
+ANGLE_MULTIPLIER = 3 # THIS
+# ANGLE_MULTIPLIER = 4
+ANGLE_MULTIPLIER = 5 # THIS
+# ANGLE_MULTIPLIER = 6
+
+# angle = np.pi/8 * ANGLE_MULTIPLIER
+print(f"{ANGLE_MULTIPLIER = }")
+
 
 r = 0.01
 L = 1.0
@@ -87,11 +96,10 @@ u1_z = u1_x
 
 r_OL = lambda t: np.array([-0.025, 0.0, 0.0])
 A_IL = lambda t: A_IB_basic(-np.pi / 6 * t).z
-# A_IL = lambda t: A_IB_basic(-np.pi / 6 * 0.0).z
 r_OR = lambda t: L * np.array(
     [(1 + u1_x) - u1_x * np.cos(t * np.pi / 2) + 0.025, t * u1_y, t * u1_z]
 )
-A_IR = lambda t: A_IB_basic(ANGLE * t).z @ A_IB_basic(5.5 * np.pi * t).x
+A_IR = lambda t: A_IB_basic(np.pi/8 * ANGLE_MULTIPLIER * t).z @ A_IB_basic(5.5 * np.pi * t).x
 
 frame_left = Frame(name="frame_left", r_OP=r_OL, A_IB=A_IL)
 frame_right = Frame(name="frame_right", r_OP=r_OR, A_IB=A_IR)
@@ -100,7 +108,7 @@ connection_left = RigidConnection(rod, frame_left, xi1=0, name="connection_left"
 connection_right = Prismatic(frame_right, rod, axis=2, xi2=1, name="connection_right")
 actuation_right = ActuatedConstraint(connection_right, lambda t: 0.0)
 
-the_ratio = 0.05
+the_ratio = 0.1
 mass_RB = L * A_rho0 * the_ratio * 1e-2
 stiffness_RB = 2 * the_ratio
 D = 0.02  # Lehr'sche Daempfung
@@ -174,23 +182,42 @@ sol_eig = solver_eig.solve(-1)
 print(f"omegas: {sol_eig.omegas[:15]}")
 
 if COMPUTE_FRF:
-    iom = 1j * np.logspace(0.5, 2.5, 500)
+    omegas = np.logspace(0.75, 2, 500)
     solver_frf = FrequencyResponseFunction(system, sol_stat2)
-    sol_frf = solver_frf.solve(-1, iom)
+    sol_frf = solver_frf.solve(-1, 1j * omegas, cheap_damp=1e-6)
     frf_zz = sol_frf[:, the_body.outDOF[2], actuation_right.inDOF[0]]
 
+    amplitudes = np.abs(frf_zz)
+    angles = np.angle(frf_zz, deg=True)
+
+    csv_dir = Path(__file__).parent / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = csv_dir / f"FRF_zz_angle_multiplier_{ANGLE_MULTIPLIER}.csv"
+    with open(csv_path, "w") as f:
+        f.write(f"# mass_RB={mass_RB},stiffness_RB={stiffness_RB},damping_RB={d}\n")
+        np.savetxt(
+            f,
+            np.column_stack([omegas, amplitudes, angles]),
+            delimiter=",",
+            header="omega,amplitude,angle_deg",
+            comments="",
+        )
+
     fig, ax = plt.subplots(2, 1)
-    ax[0].loglog(np.imag(iom), np.abs(frf_zz))
-    ax[1].semilogx(np.imag(iom), 180 / np.pi * np.angle(frf_zz))
+    ax[0].loglog(omegas, amplitudes)
+    ax[1].semilogx(omegas, angles)
+
+    ax[0].grid()
+    ax[1].grid()
 
     plt.show()
 
 
 dir_name = Path(__file__).parent
-print("Export static solution (single)")
-system.export_blender(dir_name, "cable_single", sol, create_blend=True)
-print("Export eigenmodes (single)")
-system.export_blender(dir_name, "cable_single_eig", sol_eig, create_blend=True)
+# print("Export static solution (single)")
+# system.export_blender(dir_name, "cable_single", sol, create_blend=True)
+# print("Export eigenmodes (single)")
+# system.export_blender(dir_name, "cable_single_eig", sol_eig, create_blend=True)
 
 # make nice visuals with 3 individual cables
 ny = 10
