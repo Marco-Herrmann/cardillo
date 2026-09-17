@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-
+import matplotlib.pyplot as plt
 
 from cardillo import System
 from cardillo.math import A_IB_basic
@@ -13,7 +13,15 @@ from cardillo.rods_new import (
     make_CosseratRod,
     CrossSectionInertias,
 )
-from cardillo.solver import Newton, Solution, SolverOptions, Eigenmodes
+from cardillo.interactions import TwoPointInteraction
+from cardillo.force_laws import KelvinVoigtElement
+from cardillo.solver import (
+    Newton,
+    Solution,
+    SolverOptions,
+    Eigenmodes,
+    FrequencyResponseFunction,
+)
 
 
 def pose_velocity(
@@ -33,11 +41,19 @@ def pose_velocity(
 
     return vO.reshape(-1)
 
+COMPUTE_FRF = True
+COMPUTE_FRF = False
+
+ANGLE = 0.0
+ANGLE = np.pi/2
 
 r = 0.01
 L = 1.0
 
-nelement = 128
+if COMPUTE_FRF:
+    nelement = 15
+else:
+    nelement = 128
 
 A_rho0 = 1.0
 cross_section = CircularCrossSection(r)
@@ -65,8 +81,6 @@ rod = Rod(
     name="Rod",
 )
 
-alpha0 = np.pi / 2
-
 u1_x = -0.6
 u1_y = -0.1
 u1_z = u1_x
@@ -77,24 +91,38 @@ A_IL = lambda t: A_IB_basic(-np.pi / 6 * t).z
 r_OR = lambda t: L * np.array(
     [(1 + u1_x) - u1_x * np.cos(t * np.pi / 2) + 0.025, t * u1_y, t * u1_z]
 )
-A_IR = lambda t: A_IB_basic(alpha0 * t).z @ A_IB_basic(5.5 * np.pi * t).x
+A_IR = lambda t: A_IB_basic(ANGLE * t).z @ A_IB_basic(5.5 * np.pi * t).x
 
 frame_left = Frame(name="frame_left", r_OP=r_OL, A_IB=A_IL)
 frame_right = Frame(name="frame_right", r_OP=r_OR, A_IB=A_IR)
 
 connection_left = RigidConnection(rod, frame_left, xi1=0, name="connection_left")
-connection_right = Prismatic(rod, frame_right, axis=2, xi1=1, name="connection_right")
+connection_right = Prismatic(frame_right, rod, axis=2, xi2=1, name="connection_right")
 actuation_right = ActuatedConstraint(connection_right, lambda t: 0.0)
 
+the_ratio = 0.05
+mass_RB = L * A_rho0 * the_ratio * 1e-2
+stiffness_RB = 2 * the_ratio
+D = 0.02  # Lehr'sche Daempfung
+omega0 = np.sqrt(stiffness_RB / mass_RB)
+d = 2 * mass_RB * (omega0 * D)
+
+print(f"Rigidbody-mode at omega={omega0:.5f}")
 the_body = RigidBody(
-    mass=10.0 * L * A_rho0,
-    B_Theta_C=np.eye(3),
+    mass=mass_RB,
+    B_Theta_C=np.eye(3) * mass_RB,
     q0=RigidBody.pose2q(r_OR(0), A_IB_basic(np.pi).z),
     name="Body_Right",
 )
 the_clamping = RigidConnection(rod, the_body, xi1=1, name="the_clamping")
 
 system = System()
+the_interaction = TwoPointInteraction(
+    system.origin, the_body, B_r_CP1=r_OR(1.0) * np.array([1, 1, 0])
+)
+the_spring = KelvinVoigtElement(
+    the_interaction, k=stiffness_RB, d=d, compliance_form=False
+)
 system.add(
     rod,
     frame_left,
@@ -104,6 +132,8 @@ system.add(
     actuation_right,
     the_body,
     the_clamping,
+    the_interaction,
+    the_spring,
 )
 system.assemble(options=SolverOptions(compute_consistent_initial_conditions=False))
 
@@ -141,6 +171,20 @@ sol_stat2 = Solution(
 
 solver_eig = Eigenmodes(system, sol_stat2)
 sol_eig = solver_eig.solve(-1)
+print(f"omegas: {sol_eig.omegas[:15]}")
+
+if COMPUTE_FRF:
+    iom = 1j * np.logspace(0.5, 2.5, 500)
+    solver_frf = FrequencyResponseFunction(system, sol_stat2)
+    sol_frf = solver_frf.solve(-1, iom)
+    frf_zz = sol_frf[:, the_body.outDOF[2], actuation_right.inDOF[0]]
+
+    fig, ax = plt.subplots(2, 1)
+    ax[0].loglog(np.imag(iom), np.abs(frf_zz))
+    ax[1].semilogx(np.imag(iom), 180 / np.pi * np.angle(frf_zz))
+
+    plt.show()
+
 
 dir_name = Path(__file__).parent
 print("Export static solution (single)")
