@@ -1138,7 +1138,7 @@ class FrequencyResponseFunction:
         self.W_N_coo = None
         self.W_F_coo = None
 
-    def solve(self, index=-1, s_val=None):
+    def solve(self, index=-1, s_val=None, compliance_as_damping=0.0, full_output=False):
         # TODO: check for static equilibrium
 
         # extract values
@@ -1214,6 +1214,9 @@ class FrequencyResponseFunction:
 
         # compliance
         self.A_coo["WcT", self.slices[2], self.slices[0]] = self.W_c_coo.T
+        self.A_coo["WcT_vel", self.slices[2], self.slices[1]] = (
+            compliance_as_damping * self.C @ self.W_c_coo.tocsc().T
+        )
 
         # constraint
         self.A_coo["W_gT", self.slices[3], self.slices[0]] = self.W_g_coo.T
@@ -1267,8 +1270,19 @@ class FrequencyResponseFunction:
         C = self.C_coo.asformat("csc")
         D = self.D_coo.asformat("csc")
 
-        H = lambda s: C @ sparse_inv(E * s - A)[: 2 * self.nu, : 2 * self.nu] @ B + D
+        # TODO: make use of first order system!
+        # TODO: use omega instead of s_val?
+        if full_output:
+            H = lambda s: sparse_inv(E * s - A)
+        else:
+            H = (
+                lambda s: C @ sparse_inv(E * s - A)[: 2 * self.nu, : 2 * self.nu] @ B
+                + D
+            )
         if s_val is None:
             return H
 
-        return np.array([H(si).todense() for si in s_val])
+        H_val = []
+        for si in tqdm(s_val, leave=True):
+            H_val.append(H(si).todense())
+        return np.array(H_val)

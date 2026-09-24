@@ -41,15 +41,19 @@ def pose_velocity(
 
     return vO.reshape(-1)
 
+
 COMPUTE_FRF = True
-# COMPUTE_FRF = False
+COMPUTE_FRF = False
+
+COMPUTE_FRF_DF = True
+# COMPUTE_FRF_DF = False
 
 ANGLE_MULTIPLIER = 0
-ANGLE_MULTIPLIER = 1 # THIS
+ANGLE_MULTIPLIER = 1  # THIS
 # ANGLE_MULTIPLIER = 2
-ANGLE_MULTIPLIER = 3 # THIS
+ANGLE_MULTIPLIER = 3  # THIS
 # ANGLE_MULTIPLIER = 4
-ANGLE_MULTIPLIER = 5 # THIS
+ANGLE_MULTIPLIER = 5  # THIS
 # ANGLE_MULTIPLIER = 6
 
 # angle = np.pi/8 * ANGLE_MULTIPLIER
@@ -59,7 +63,7 @@ print(f"{ANGLE_MULTIPLIER = }")
 r = 0.01
 L = 1.0
 
-if COMPUTE_FRF:
+if COMPUTE_FRF or COMPUTE_FRF_DF:
     nelement = 15
 else:
     nelement = 128
@@ -99,7 +103,10 @@ A_IL = lambda t: A_IB_basic(-np.pi / 6 * t).z
 r_OR = lambda t: L * np.array(
     [(1 + u1_x) - u1_x * np.cos(t * np.pi / 2) + 0.025, t * u1_y, t * u1_z]
 )
-A_IR = lambda t: A_IB_basic(np.pi/8 * ANGLE_MULTIPLIER * t).z @ A_IB_basic(5.5 * np.pi * t).x
+A_IR = (
+    lambda t: A_IB_basic(np.pi / 8 * ANGLE_MULTIPLIER * t).z
+    @ A_IB_basic(5.5 * np.pi * t).x
+)
 
 frame_left = Frame(name="frame_left", r_OP=r_OL, A_IB=A_IL)
 frame_right = Frame(name="frame_right", r_OP=r_OR, A_IB=A_IR)
@@ -193,6 +200,39 @@ if COMPUTE_FRF:
     csv_dir = Path(__file__).parent / "csv"
     csv_dir.mkdir(parents=True, exist_ok=True)
     csv_path = csv_dir / f"FRF_zz_angle_multiplier_{ANGLE_MULTIPLIER}.csv"
+    with open(csv_path, "w") as f:
+        f.write(f"# mass_RB={mass_RB},stiffness_RB={stiffness_RB},damping_RB={d}\n")
+        np.savetxt(
+            f,
+            np.column_stack([omegas, amplitudes, angles]),
+            delimiter=",",
+            header="omega,amplitude,angle_deg",
+            comments="",
+        )
+
+    fig, ax = plt.subplots(2, 1)
+    ax[0].loglog(omegas, amplitudes)
+    ax[1].semilogx(omegas, angles)
+
+    ax[0].grid()
+    ax[1].grid()
+
+    plt.show()
+
+if COMPUTE_FRF_DF:
+    omegas = np.logspace(0.75, 2, 500)
+    solver_frf = FrequencyResponseFunction(system, sol_stat2)
+    sol_frf = solver_frf.solve(-1, 1j * omegas, cheap_damp=1e-6, full_output=True)
+    frf_DF = sol_frf[
+        :, the_body.uDOF[2], 2 * system.nu + system.nla_c + connection_left.la_gDOF[2]
+    ]
+
+    amplitudes = np.abs(frf_DF)
+    angles = np.angle(frf_DF, deg=True)
+
+    csv_dir = Path(__file__).parent / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = csv_dir / f"FRF_DF_angle_multiplier_{ANGLE_MULTIPLIER}.csv"
     with open(csv_path, "w") as f:
         f.write(f"# mass_RB={mass_RB},stiffness_RB={stiffness_RB},damping_RB={d}\n")
         np.savetxt(
