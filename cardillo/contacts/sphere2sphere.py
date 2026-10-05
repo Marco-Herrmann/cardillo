@@ -2,6 +2,7 @@ import numpy as np
 from cachetools import LRUCache, cachedmethod
 from cachetools.keys import hashkey
 
+from cardillo.discrete.discrete_export_base import make_glTF, make_glTF_arrow
 from cardillo.math import ax2skew, ax2skew_a, cross3, norm, smallest_rotation
 from cardillo.math.prox import Sphere
 
@@ -513,3 +514,46 @@ class Sphere2Sphere:
             la_F[0] * t1_q2 + la_F[1] * t2_q2
         ) + np.einsum("ijk, i->jk", J_P2_q2, la_F[0] * t1 + la_F[1] * t2)
         return Wla_F_q
+
+    def export_blender(self, path, solution):
+        nt = len(solution.t)
+        r_OC1 = np.zeros((nt, 3))
+        r_OC2 = np.zeros((nt, 3))
+        v_C1 = np.zeros((nt, 3))
+        v_C2 = np.zeros((nt, 3))
+        for i in range(nt):
+            t = solution.t[i]
+            q = solution.q[i, self.qDOF]
+            u = solution.u[i, self.uDOF]
+            P_N = solution.P_N[i, self.la_NDOF] if hasattr(solution, "P_N") else 0.0
+
+            # positions and orientation
+            # A_IJ1 = self.A_IJ1(t, q)
+            # t1, t2, n = A_IJ1.T
+            n = self.n(t, q)
+            r_OJ1 = self.r_OC1(t, q)
+            r_OJ2 = self.r_OC2(t, q)
+            r_J1C1 = self.radius1 * n
+            r_J2C2 = -self.radius2 * n
+
+            # velocities
+            v_J1 = self.v_C1(t, q, u)
+            v_J2 = self.v_C2(t, q, u)
+            Omega1 = self.Omega1(t, q, u)
+            Omega2 = self.Omega2(t, q, u)
+            v_C1[i] = v_J1 + cross3(Omega1, r_J1C1)
+            v_C2[i] = v_J2 + cross3(Omega2, r_J2C2)
+
+            r_OC1[i] = r_OJ1 + r_J1C1
+            r_OC2[i] = r_OJ2 + r_J2C2
+
+            F2 = n * P_N
+            # if hasattr(solution, f"P_F"):
+            #     P_F = solution.P_F[i, self.la_FDOF]
+            #     F2 += t1 * P_F[0] + t2 * P_F[1]
+
+        make_glTF(path, f"{self.name}_C1", solution.t, r_OC1, v_C1)
+        make_glTF(path, f"{self.name}_C2", solution.t, r_OC2, v_C2)
+        make_glTF_arrow(path, f"{self.name}_F1", solution.t, r_OC1, r_OC1 - F2)
+        make_glTF_arrow(path, f"{self.name}_F2", solution.t, r_OC2, r_OC2 + F2)
+        make_glTF_arrow(path, f"{self.name}_g_N", solution.t, r_OC1, r_OC2)
