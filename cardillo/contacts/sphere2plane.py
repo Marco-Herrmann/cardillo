@@ -534,7 +534,7 @@ class Sphere2Plane:
             r_OC2[i] = r_OJ2 + r_J2C2
 
             F2 = n * P_N
-            if hasattr(solution, f"P_F"):
+            if hasattr(solution, f"P_F") and hasattr(self, f"la_FDOF"):
                 P_F = solution.P_F[i, self.la_FDOF]
                 F2 += t1 * P_F[0] + t2 * P_F[1]
 
