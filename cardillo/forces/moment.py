@@ -65,7 +65,10 @@ class B_Moment:
 
     def export_blender(self, path, solution):
         r_OP = np.array(
-            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+            [
+                self.subsystem.r_OP(ti, qi[self.qDOF], xi=self.xi)
+                for ti, qi in zip(solution.t, solution.q)
+            ]
         )
         arrow = np.array(
             [
@@ -133,7 +136,7 @@ class Moment:
 
     def export_blender(self, path, solution):
         r_OP = np.array(
-            [self.r_OP(ti, qi[self.qDOF]) for ti, qi in zip(solution.t, solution.q)]
+            [self.subsystem.r_OP(ti, qi[self.qDOF], xi=self.xi) for ti, qi in zip(solution.t, solution.q)]
         )
         arrow = np.array([self.moment(ti) for ti in solution.t])
         make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
