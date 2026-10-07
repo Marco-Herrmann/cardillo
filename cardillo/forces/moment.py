@@ -2,6 +2,7 @@ import numpy as np
 from numpy import einsum, zeros
 from vtk import VTK_VERTEX
 
+from cardillo.math import ax2skew
 from cardillo.discrete.discrete_export_base import (
     make_glTF_arrow,
     make_glTF_arrow_modes,
@@ -33,7 +34,6 @@ class B_Moment:
 
         self.B_J_R = lambda t, q: subsystem.B_J_R(t, q, xi=xi)
         self.B_J_R_q = lambda t, q: subsystem.B_J_R_q(t, q, xi=xi)
-        self.B_J2_R = lambda t, q: subsystem.B_J2_R(t, q, xi=xi)
 
     def assembler_callback(self):
         self.qDOF = self.subsystem.qDOF[self.subsystem.local_qDOF_P(self.xi)]
@@ -46,12 +46,9 @@ class B_Moment:
         return einsum("i,ijk->jk", self.moment(t), self.B_J_R_q(t, q))
 
     def KN_h(self, t, q, u):
-        KN = einsum("i, ijk -> jk", self.moment(t), self.B_J2_R(t, q))
-        # TODO: figure out if it is always skew-symmetric
-        isskew = np.linalg.norm(KN + KN.T) < 1e-12
-        if not isskew:
-            print(f"B_moment {self.name}: N of KN_h is not skew-symmetric!")
-        return None, KN
+        B_J_R = self.B_J_R(t, q)
+        N = B_J_R.T @ ax2skew(self.moment(t) / 2) @ B_J_R
+        return None, N
 
     def export(self, sol_i, **kwargs):
         r_OP = self.subsystem.r_OP(sol_i.t, sol_i.q[self.qDOF], xi=self.xi)
@@ -125,6 +122,12 @@ class Moment:
             "i,ijl,jk->kl", I_M, self.A_IB_q(t, q), self.B_J_R(t, q)
         ) + einsum("i,ijk->jk", I_M @ self.A_IB(t, q), self.B_J_R_q(t, q))
 
+    def KN_h(self, t, q, u):
+        B_M = self.A_IB(t, q).T @ self.moment(t)
+        B_J_R = self.B_J_R(t, q)
+        N = B_J_R.T @ ax2skew(-B_M / 2) @ B_J_R
+        return None, N
+
     def export(self, sol_i, **kwargs):
         r_OP = self.subsystem.r_OP(sol_i.t, sol_i.q[self.qDOF], xi=self.xi)
         I_M = self.moment(sol_i.t)
@@ -136,7 +139,10 @@ class Moment:
 
     def export_blender(self, path, solution):
         r_OP = np.array(
-            [self.subsystem.r_OP(ti, qi[self.qDOF], xi=self.xi) for ti, qi in zip(solution.t, solution.q)]
+            [
+                self.subsystem.r_OP(ti, qi[self.qDOF], xi=self.xi)
+                for ti, qi in zip(solution.t, solution.q)
+            ]
         )
         arrow = np.array([self.moment(ti) for ti in solution.t])
         make_glTF_arrow(path, self.name, solution.t, r_OP, r_OP + arrow)
