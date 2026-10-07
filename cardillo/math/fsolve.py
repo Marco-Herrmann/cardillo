@@ -136,7 +136,6 @@ def fsolve(
     jac_args=(),
     inexact=False,
     update_rule=None,
-    update_callback=None,
     update_args=(),
     options=SolverOptions(),
 ) -> tuple[np.ndarray, bool, float, int, np.ndarray]:
@@ -246,7 +245,7 @@ def fsolve(
             return options.linear_solver(jacobian(x, *jac_args), rhs)
 
     if update_rule is None:
-        update_rule = lambda x, Delta_x_bar, *update_args: Delta_x_bar
+        update_rule = lambda x, Delta_x_bar, *update_args: x + Delta_x_bar
         nx_bar = x0.size
     else:
         assert callable(update_rule), "update_rule must be callable"
@@ -254,13 +253,9 @@ def fsolve(
         jac0 = jac(x0, *jac_args)
         assert jac0.shape[0] == jac0.shape[1] == nx_bar, "size of jacobian do not match"
 
-    if update_callback is None:
-        update_callback = lambda x, *update_args: x
-
     # eliminate round-off errors
     Delta_x_bar = np.zeros(nx_bar, dtype=x0.dtype)
-    Delta_x = update_rule(x0, Delta_x_bar, *update_args)
-    x = update_callback(x0 + Delta_x, *update_args)
+    x = update_rule(x0, Delta_x_bar, *update_args)
 
     # create list for all x-iterates
     all_x = [x]
@@ -280,8 +275,7 @@ def fsolve(
         for i in range(options.newton_max_iter):
             # Newton update
             dx_bar = solve(x, f)
-            Delta_x -= update_rule(x, dx_bar, *update_args)
-            x = update_callback(x0 + Delta_x, *update_args)
+            x = update_rule(x, -dx_bar, *update_args)
 
             all_x.append(x)
 

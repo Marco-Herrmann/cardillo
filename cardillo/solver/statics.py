@@ -67,19 +67,19 @@ class Newton:
             def update_rule(x, Delta_x_bar, t):
                 q, la_g, la_c, la_N = np.array_split(x, self.split_x)
                 ds, dla_g, dla_c, dla_N, _ = np.array_split(Delta_x_bar, self.split_f)
-                dq = self.system.q_dot(t, q, ds)
-                dx = np.zeros_like(x)
-                dx[: self.split_x[0]] = dq
-                dx[self.split_x[0] : self.split_x[1]] = dla_g
-                dx[self.split_x[1] : self.split_x[2]] = dla_c
-                dx[self.split_x[2] :] = dla_N
-                return dx
+
+                x_new = np.zeros_like(x)
+                x_new[: self.split_x[0]] = self.system.Lie_update(t, q, ds)
+                x_new[self.split_x[0] : self.split_x[1]] = la_g + dla_g
+                x_new[self.split_x[1] : self.split_x[2]] = la_c + dla_c
+                x_new[self.split_x[2] :] = la_N + dla_N
+                return x_new
 
             self.update_rule = update_rule
 
         else:
             self.nx_bar = system.nq + system.nla_g + system.nla_c + system.nla_N
-            self.update_rule = None
+            self.update_rule = lambda x, Delta_x_bar, t: x + Delta_x_bar
 
         # initial conditions
         x0 = np.concatenate((system.q0, system.la_g0, system.la_c0, system.la_N0))
@@ -102,27 +102,19 @@ class Newton:
         self.W_g_coo = system.W_g(self.load_steps[0], system.q0, format="Coo")
         self.W_c_coo = system.W_c(self.load_steps[0], system.q0, format="Coo")
         self.W_N_coo = system.W_N(self.load_steps[0], system.q0, format="Coo")
-        self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format="Coo")
-        self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format="Coo")
-        self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format="Coo")
-        self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format="Coo")
-        self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format="Coo")
-        self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format="Coo")
-        self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format="Coo")
-        self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format="Coo")
+        if not self.updated:
+            self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format="Coo")
+            self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format="Coo")
+            self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format="Coo")
+            self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format="Coo")
+            self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format="Coo")
+            self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format="Coo")
+            self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format="Coo")
+            self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format="Coo")
         # fmt: on
 
         self.all_x = np.zeros([len(self.x[:, 0])], dtype=object)
         self.all_x[0] = np.array([self.x[0]])
-
-        # step callback
-        def update_callback(x, t):
-            x[: self.split_x[0]], _ = self.system.step_callback(
-                t, x[: self.split_x[0]], self.u0
-            )
-            return x
-
-        self.update_callback = update_callback
 
     def fun(self, x, t):
         # unpack unknowns
@@ -166,6 +158,7 @@ class Newton:
         ]
         K = np.sum([KN[0] for KN in KNs])
         N = np.sum([KN[1] for KN in KNs])
+        # TODO: test only with symmetric part (also in non-conservative load cases (i.e., quasi Newton))
 
         # note: csr_matrix is best for row slicing, see
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
@@ -263,7 +256,6 @@ class Newton:
                 fun_args=(self.load_steps[i],),
                 jac_args=(self.load_steps[i],),
                 update_rule=self.update_rule,
-                # update_callback=self.update_callback if self.updated else None,
                 update_args=(self.load_steps[i],),
                 options=self.options,
             )
@@ -304,9 +296,7 @@ class Newton:
                     solver_summary=self.solver_summary,
                 )
 
-            # # solver step callback
-            # self.x[i] = self.update_callback(self.x[i], self.load_steps[i])
-
+            # solver step callback
             self.x[i, : self.split_x[0]], _ = self.system.step_callback(
                 self.load_steps[i], self.x[i, : self.split_x[0]], self.u0
             )
