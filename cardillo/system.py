@@ -452,6 +452,17 @@ class System:
             )
         return q, u
 
+    def Lie_update(self, t, q, Delta_s):
+        for contr in self.__q_dot_contr:
+            if hasattr(contr, "Lie_update"):
+                q[contr.qDOF] = contr.Lie_update(t, q[contr.qDOF], Delta_s[contr.uDOF])
+            else:
+                q[contr.qDOF] += contr.q_dot(t, q[contr.qDOF], Delta_s[contr.uDOF])
+                if hasattr(contr, "q_dot_q"):
+                    warnings.warn(f"Implement contr.Lie_update for contr: {contr}")
+
+        return q
+
     ################
     # total energies
     ################
