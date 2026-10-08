@@ -472,6 +472,28 @@ class CosseratRod_PetrovGalerkin(RodExportBase, ABC):
             q[self.nodalDOF_p[node]] = p / norm(p)
         return q, u
 
+    def Lie_update(self, t, q, Delta_s):
+        from cardillo.math.rotations import Exp_SO3, Log_SO3_quat, quatprod
+
+        # centerline part
+        q_new = np.zeros_like(q, dtype=np.common_type(q, Delta_s))
+
+        # centerline time derivative from centerline velocities
+        for node in range(self.nnodes_r):
+            nodalDOF_r = self.nodalDOF_r[node]
+            q_new[nodalDOF_r] = q[nodalDOF_r] + Delta_s[nodalDOF_r]
+
+        # quaternion time derivative from angular velocities
+        for node in range(self.nnodes_p):
+            nodalDOF_p = self.nodalDOF_p[node]
+            nodalDOF_p_u = self.nodalDOF_p_u[node]
+            p = q[nodalDOF_p]
+            B_omega_IB = Delta_s[nodalDOF_p_u]
+            q_new[nodalDOF_p] = quatprod(p, Log_SO3_quat(Exp_SO3(B_omega_IB)))
+            # print(np.linalg.norm(q_new[nodalDOF_p]))
+
+        return q_new
+
     ############################
     # total energies and momenta
     ############################

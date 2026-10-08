@@ -13,6 +13,11 @@ from cardillo.math.rotations import (
     Exp_SO3_R9_R9,
     T_SO3_R9,
     T_SO3_R9_R9,
+    Exp_SE3,
+    T_SE3,
+    SE3inv,
+    Log_SE3,
+    SE3_from_rP,
 )
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
@@ -51,15 +56,19 @@ class Rod_Kinematics(ABC):
     # TODO: this belongs to CosseratRod_Kinematics
     @classmethod
     def straight_configuration(cls, nelement, L, r_OP0=zeros3, A_IB0=eye3):
-        if cls._parametrization == "Quaternion":
+        if cls._parametrization in ["Quaternion", "SE3"]:
             P = Log_SO3_quat(A_IB0)
             nq_node = 7
+
         else:
             P = Log_SO3_R9(A_IB0)
             nq_node = 12
 
         mesh = cls._mesh_kin(None, nelement)
         nnodes = mesh.nnodes
+
+        if cls._parametrization == "SE3":
+            assert mesh.polynomial_degree == 1
 
         r_OP = np.zeros((3, nnodes))
         r_OP[0] = np.linspace(0, L, num=nnodes)
@@ -78,7 +87,7 @@ class Rod_Kinematics(ABC):
         assert callable(r_OP), "r_OP must be callable!"
         assert callable(A_IB), "A_IB must be callable!"
 
-        if cls._parametrization == "Quaternion":
+        if cls._parametrization in ["Quaternion", "SE3"]:
             Log_fct = Log_SO3_quat
             nq_node = 7
         else:
@@ -171,8 +180,16 @@ class CosseratRod_Kinematics(ABC):
         self.parent = parent
         self.mesh = mesh
 
+        self.parent.step_callback = self.step_callback
+
+        # export and visualization
+        self.parent.nodes = self.nodes
+        self.parent.nodalFrames = self.nodalFrames
+        self.parent.centerline = self.centerline
+        self.parent.frames = self.frames
+
     @abstractmethod
-    def _eval(point_dict, q, deval=False):
+    def _eval(self, point_dict, q, deval=False):
         """if deval==0: returns (r_OP, A_IB),
         if deval==1: returns (r_OP, A_IB), (r_OP_q, A_IB_q),
         if deval==2: returns (r_OP, A_IB), (r_OP_q, A_IB_q), (r_OP_qq, A_IB_qq)"""
@@ -200,14 +217,6 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
             self._A_IB_P = Exp_SO3_R9_R9
             self._T_IB = T_SO3_R9
             self._T_IB_P = T_SO3_R9_R9
-
-        self.parent.step_callback = self.step_callback
-
-        # export and visualization
-        self.parent.nodes = self.nodes
-        self.parent.nodalFrames = self.nodalFrames
-        self.parent.centerline = self.centerline
-        self.parent.frames = self.frames
 
     def step_callback(self, t, q, u):
         """Restore orthonormality of the nodal frame parametrization after
@@ -330,3 +339,96 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         )
 
         return np.linspace(0, 1, num_bones), data, delta
+
+
+class CosseratRod_SE3(CosseratRod_Quaternion_R12):
+    def __init__(self, parent, mesh, parametrization):
+        assert (
+            parametrization == "SE3"
+        ), "We should never be here without parametrization=='SE3'!"
+        assert (
+            mesh.polynomial_degree == 1
+        ), "SE3 interpolation requires linear elements!"
+        super().__init__(parent, mesh, "Quaternion")
+
+    def _eval(self, point_dict, qi, deval=0):
+        assert deval == 0
+        assert point_dict["nnodes"] in [1, 2]
+        if point_dict["nnodes"] == 1:
+            H_IB = SE3_from_rP(qi)
+        else:
+            H_IBs = SE3_from_rP(qi.reshape(2, 7))
+            h = Log_SE3(SE3inv(H_IBs[0]) @ H_IBs[1])
+            H_IB = H_IBs[0] @ Exp_SE3(point_dict["N"][1] * h)
+
+        _eval = (H_IB[:3, 3], H_IB[:3, :3])
+        return _eval
+
+    def els_from_N(self, N):
+        n_qp = N.shape[0]
+        els = np.zeros(n_qp, dtype=int)
+        for qp in range(n_qp):
+            el = np.where(N[qp].toarray())[0][0]  # first time with no 0
+            els[qp] = min(el, self.parent.nelement - 1)  # case xi=1.0
+        return els
+
+    def _eval_vec(self, N, q):
+        els = self.els_from_N(N)
+        q_nodes = q.reshape(-1, 7)
+
+        # evaluate at nodes and get elements twist
+        H_IB_nodes = SE3_from_rP(q_nodes)
+        H_IB_nodes_inv = SE3inv(H_IB_nodes[:-1])  # no need to invert the last
+        h_element = Log_SE3(H_IB_nodes_inv @ H_IB_nodes[1:])
+
+        # map to the quadrature points
+        N_linear = N[np.arange(N.shape[0]), els + 1]
+        h_element_qp = h_element[els]
+        H_IB0_qp = H_IB_nodes[els]
+        H_B0B_qp = Exp_SE3(N_linear[:, None] * h_element_qp)
+
+        # compose
+        H_IB_qp = H_IB0_qp @ H_B0B_qp
+        return H_IB_qp[:, :3, 3], H_IB_qp[:, :3, :3]
+
+    def _eval_internal_vec(self, N, N_xi, q, deval=0):
+        els = self.els_from_N(N)
+        q_nodes = q.reshape(-1, 7)
+
+        # evaluate at nodes and get element twist
+        H_IB_nodes = SE3_from_rP(q_nodes)
+        H_IB_nodes_inv = SE3inv(H_IB_nodes[:-1])  # no need to invert the last
+        h_element = Log_SE3(H_IB_nodes_inv @ H_IB_nodes[1:])
+
+        # map to the quadrature points
+        arange = np.arange(N.shape[0])
+        N_linear = N[arange, els + 1]
+        N_linear_xi = N_xi[arange, els + 1]
+        h_element_qp = h_element[els]
+        H_IB0_qp = H_IB_nodes[els]
+        H_B0B_qp = Exp_SE3(N_linear[:, None] * h_element_qp)
+
+        # compose
+        H_IB_qp = H_IB0_qp @ H_B0B_qp
+        epsilon_bar_qp = N_linear_xi[:, None] * h_element_qp
+
+        if deval == 0:
+            _eval = (H_IB_qp[:, :3, :3], epsilon_bar_qp[:, :3], epsilon_bar_qp[:, 3:])
+            return _eval
+
+        raise NotImplementedError
+
+    # TODO: which class/where to generalize?
+    ############################
+    # export of centerline nodes
+    ############################
+    def centerline(self, q, num=100):
+        xis = np.linspace(0, 1, num)
+
+        r_OCs = np.zeros((3, num))
+        for i in range(num):
+            xi = xis[i]
+            qDOF = self.parent.local_qDOF_P(xi)
+            r_OCs[:, i] = self.parent.r_OP(0.0, q[qDOF], xi)
+
+        return r_OCs

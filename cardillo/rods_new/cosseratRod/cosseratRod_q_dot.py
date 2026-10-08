@@ -3,10 +3,19 @@ import numpy as np
 from scipy.sparse import block_diag, csr_array
 
 from cardillo.math.rotations import (
+    Exp_SO3_quat,
+    Log_SO3_quat,
     T_SO3_inv_quat,
     T_SO3_inv_quat_P,
+    Exp_SO3_R9,
+    Log_SO3_R9,
     T_SO3_inv_R9,
     T_SO3_inv_R9_R9,
+    quatprod,
+    axis_angle2quat,
+    Exp_SO3,
+    Exp_SE3,
+    SE3_from_rP,
 )
 from cardillo.utility.coo_matrix import CooMatrix
 
@@ -20,11 +29,14 @@ class CosseratRod_kin_constraints(ABC):
         self.nnodes = self.parent.nnodes
 
         # TODO: move T_IB_inv and T_IB_inv_P to rP_dot_from_vO_IB class!, as it is only relevant there!
-        assert parametrization in ["Quaternion", "R12"]
-        if parametrization == "Quaternion":
+        assert parametrization in ["Quaternion", "R12", "SE3"]
+
+        if parametrization in ["Quaternion", "SE3"]:
             self.nq_node = 7
             self.nla_g = self.nnodes
 
+            self._Exp_SO3 = Exp_SO3_quat
+            self._Log_SO3 = Log_SO3_quat
             self._T_IB_inv = T_SO3_inv_quat
             self._T_IB_inv_P = T_SO3_inv_quat_P(None)  # evaluate as it is constant
 
@@ -42,6 +54,8 @@ class CosseratRod_kin_constraints(ABC):
             self.nq_node = 12
             self.nla_g = self.nnodes * 6
 
+            self._Exp_SO3 = Exp_SO3_R9
+            self._Log_SO3 = Log_SO3_R9
             self._T_IB_inv = T_SO3_inv_R9
             self._T_IB_inv_P = T_SO3_inv_R9_R9(None)  # evaluate as it is constant
 
@@ -186,6 +200,7 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         self.parent.q_dot = self.q_dot
         self.parent.q_dot_u = self.q_dot_u
         self.parent.q_dot_q = self.q_dot_q
+        self.parent.Lie_update = self.Lie_update
 
     def q_dot(self, t, q, u):
         qnodes = q.reshape(self.nnodes, self.nq_node)
@@ -224,3 +239,87 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         blocks[:, 3:, 3:] = self._T_IB_inv(qnodes[:, 3:])
 
         return csr_array(block_diag(blocks))  # this keeps the 0's
+
+    def Lie_update(self, t, q, Delta_s):
+        # return self.Lie_update_R3xSO3_B(t, q, Delta_s)
+        # return self.Lie_update_R3xSO3_I(t, q, Delta_s)
+        return self.Lie_update_SE3_B(t, q, Delta_s)
+        # return self.Lie_update_SE3_I(t, q, Delta_s)
+
+    def Lie_update_R3xSO3_B(self, t, q, Delta_s):
+        q_nodes = q.reshape(self.nnodes, self.nq_node)
+        Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
+
+        # positional update
+        q_nodes[:, :3] += Delta_s_nodes[:, :3]
+
+        # rotational update
+        # TODO: figure out direct relation
+        # Delta_phi = Delta_s_nodes[:, 3:]
+        # # TODO: avoid division by 0, make new function: psi_to_quat
+        # quat_rel = axis_angle2quat(Delta_phi_i / Delta_phi, Delta_phi)
+        quat_rel = Log_SO3_quat(Exp_SO3(Delta_s_nodes[:, 3:]))
+
+        q_nodes[:, 3:] = quatprod(q_nodes[:, 3:], quat_rel)
+        return q_nodes.reshape(-1)
+
+    def Lie_update_R3xSO3_I(self, t, q, Delta_s):
+        q_nodes = q.reshape(self.nnodes, self.nq_node)
+        Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
+
+        # positional update
+        q_nodes[:, :3] += Delta_s_nodes[:, :3]
+
+        # bring rotation update to I-system
+        A_IB = self._Exp_SO3(q_nodes[:, 3:])
+        Delta_s_nodes[:, 3:] = np.einsum("ijk,ik->ij", A_IB, Delta_s_nodes[:, 3:])
+
+        # rotational update
+        # TODO: figure out direct relation
+        # Delta_phi = Delta_s_nodes[:, 3:]
+        # # TODO: avoid division by 0, make new function: psi_to_quat
+        # quat_rel = axis_angle2quat(Delta_phi_i / Delta_phi, Delta_phi)
+        quat_rel = Log_SO3_quat(Exp_SO3(Delta_s_nodes[:, 3:]))
+
+        q_nodes[:, 3:] = quatprod(quat_rel, q_nodes[:, 3:])
+        return q_nodes.reshape(-1)
+
+    def Lie_update_SE3_B(self, t, q, Delta_s):
+        q_nodes = q.reshape(self.nnodes, self.nq_node)
+        Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
+
+        # bring position update to B-system
+        H_IB0 = SE3_from_rP(q_nodes)  # TODO: R9 rotation parametrization
+        Delta_s_nodes[:, :3] = np.einsum(
+            "ijk,ij->ik", H_IB0[:, :3, :3], Delta_s_nodes[:, :3]
+        )
+
+        # SE3 update
+        H_B0B1 = Exp_SE3(Delta_s_nodes)
+        H_IB1 = H_IB0 @ H_B0B1
+
+        # extract new q
+        q_nodes[:, :3] = H_IB1[:, :3, 3]
+        q_nodes[:, 3:] = self._Log_SO3(H_IB1[:, :3, :3])
+
+        return q_nodes.reshape(-1)
+
+    def Lie_update_SE3_I(self, t, q, Delta_s):
+        q_nodes = q.reshape(self.nnodes, self.nq_node)
+        Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
+
+        # bring rotation update to I-system
+        H_IB = SE3_from_rP(q_nodes)  # TODO: R9 rotation parametrization
+        Delta_s_nodes[:, 3:] = np.einsum(
+            "ijk,ik->ij", H_IB[:, :3, :3], Delta_s_nodes[:, 3:]
+        )
+
+        # SE3 update
+        H_I2I = Exp_SE3(Delta_s_nodes)
+        H_I2B = H_I2I @ H_IB
+
+        # extract new q
+        q_nodes[:, :3] = H_I2B[:, :3, 3]
+        q_nodes[:, 3:] = self._Log_SO3(H_I2B[:, :3, :3])
+
+        return q_nodes.reshape(-1)

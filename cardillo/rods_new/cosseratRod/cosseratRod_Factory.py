@@ -6,6 +6,7 @@ from .cosseratRod_Blender import RodBlenderExport
 from .cosseratRod_Kinematics import (
     Rod_Kinematics,
     CosseratRod_Quaternion_R12,
+    CosseratRod_SE3,
 )
 from .cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG
 from .cosseratRod_Interaction import CosseratRod_Interaction
@@ -459,13 +460,15 @@ def make_CosseratRod(
     ----------
         - "Quaternion" : quaternion parametrization and interpolation
         - "R12" : R12 parametrization and interpolation
+        - "SE3" : quaternion parametrization with SE(3) interpolation
 
     Returns
     -------
     CosseratRod
         Constructed rod class.
     """
-    # polynomila degree
+    # polynomial degree
+    polynomial_degree_arg = polynomial_degree
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 
     # constraints
@@ -540,7 +543,19 @@ def make_CosseratRod(
     assert parametrization in [
         "Quaternion",
         "R12",
+        "SE3",
     ], f"parametrization {parametrization} is not supported!"
+
+    if parametrization in ["Quaternion", "R12"]:
+        Kinematics = CosseratRod_Quaternion_R12
+    elif parametrization in ["SE3"]:
+        if polynomial_degree == polynomial_degree_arg:
+            assert (
+                polynomial_degree == 1
+            ), "Polynomial degree for SE(3) interpolation must be 1!"
+        else:
+            polynomial_degree = 1
+        Kinematics = CosseratRod_SE3
 
     if continuity is None:
         mesh_kin = lambda _, nelement: Mesh1D_equidistant(
@@ -559,7 +574,6 @@ def make_CosseratRod(
 
     # classes for virtual work contributions
     projection = "PG" if projection is None else projection
-    Kinematics = CosseratRod_Quaternion_R12
     assert projection in [
         "PG",
         "BG",

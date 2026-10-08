@@ -335,8 +335,8 @@ class CosseratRod_Internal:
 
         # strains from compliance
         if self._nla_c > 0:
-            Nc = self.Nc(xis, els)
-            la_c_nodes = la_c[self.la_cDOF].reshape(self.nnodes_sigma, -1)
+            Nc = self.parent.Nc(xis, els)
+            la_c_nodes = la_c[self.parent.la_cDOF].reshape(self.nnodes_sigma, -1)
             la_sigma = Nc @ la_c_nodes
 
             prepare = self.material_model.prepare(xis)
@@ -429,8 +429,9 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         )
 
         # TODO: np.cross
-        r_xi__phi = -np.einsum("ijk,ikl->ijl", A_IB, ax2skew(sigma_qp[:, :3]))
-        phi_xi__phi = -0.5 * ax2skew(sigma_qp[:, 3:])
+        # TODO: keep checking of the sign. for the moment, no minus is correct, as shown by the updated Helix experiment
+        r_xi__phi = np.einsum("ijk,ikl->ijl", A_IB, ax2skew(sigma_qp[:, :3]))
+        phi_xi__phi = 0.5 * ax2skew(sigma_qp[:, 3:])
 
         phi__phi = np.einsum(
             "ijk,ikl->ijl", ax2skew(B_gamma_bar), ax2skew(sigma_qp[:, :3])
