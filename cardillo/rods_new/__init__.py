@@ -5,5 +5,6 @@ from ._cross_section import (
     CrossSectionInertias,
 )
 from ._material_models import *
+from ._material_models_3D import Elasticity
 
 from .cosseratRod import make_CosseratRod
