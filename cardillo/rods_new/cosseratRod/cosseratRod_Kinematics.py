@@ -17,7 +17,7 @@ from cardillo.math.rotations import (
     T_SE3,
     SE3inv,
     Log_SE3,
-    SE3_from_rP,
+    # SE3_from_rP,
 )
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 

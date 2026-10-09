@@ -15,7 +15,7 @@ from cardillo.math.rotations import (
     axis_angle2quat,
     Exp_SO3,
     Exp_SE3,
-    SE3_from_rP,
+    # SE3_from_rP,
 )
 from cardillo.utility.coo_matrix import CooMatrix
 
