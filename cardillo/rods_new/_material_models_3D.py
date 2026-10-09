@@ -1,4 +1,5 @@
 from collections import namedtuple
+import numpy as np
 
 from cardillo.rods.discretization.gauss import gauss
 from cardillo.math.algebra import ax2skew
@@ -82,7 +83,9 @@ class Elasticity(RodMaterialModel):
         for i, epsiloni in enumerate(epsilon):
             sigma_epsilon_num[i] = approx_fprime(
                 np.atleast_2d(epsiloni),
-                lambda epsilon_: self.sigma(epsilon_, np.atleast_2d(epsilon0[i]), prepare),
+                lambda epsilon_: self.sigma(
+                    epsilon_, np.atleast_2d(epsilon0[i]), prepare
+                ),
             )
         error = np.linalg.norm(sigma_epsilon_num - sigma_epsilon)
         max_val = np.max(np.abs(sigma_epsilon_num))
