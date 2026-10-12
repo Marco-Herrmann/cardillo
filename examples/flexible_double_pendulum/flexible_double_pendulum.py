@@ -107,9 +107,9 @@ def flexible_double_pendulum(Rod, show_plots, name):
                 Sphere2Plane(
                     floor,
                     rods[i],
-                    xi=xi,
+                    xi2=xi,
                     mu=mu,
-                    r=width_z,
+                    radius=width_z,
                     e_N=0.0,
                     e_F=0.0,
                     name="floor2",

@@ -9,7 +9,7 @@ from cardillo.solver import load_solution
 ###############
 path = Path(__file__)
 sols = [
-    load_solution(Path(path.parent, "sol_boosted.pkl")),
+    load_solution(Path(path.parent, "sol_new.pkl")),
     load_solution(Path(path.parent, "sol_default.pkl")),
 ]
 
@@ -20,7 +20,7 @@ ax = np.array([ax])
 
 
 styles = ["-", "--"]
-names = ["boosted", "default"]
+names = ["new", "default"]
 
 for i, sol in enumerate(sols):
 
@@ -33,7 +33,7 @@ for i, sol in enumerate(sols):
     r_OE = np.array(
         [rods[1].r_OP(ti, qi[qDOF_end], 1.0) for (ti, qi) in zip(sol.t, sol.q)]
     )
-    qDOF_middle = rods[0].qDOF[rods[0].elDOF[-1]]
+    qDOF_middle = rods[0].qDOF[rods[0].local_qDOF_P(1.0)]
     r_OM = np.array(
         [rods[0].r_OP(ti, qi[qDOF_middle], 1.0) for (ti, qi) in zip(sol.t, sol.q)]
     )
