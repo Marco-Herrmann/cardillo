@@ -54,6 +54,7 @@ jupyter_execute/
 
 # results
 examples/results
+examples_WIP/
 
 # virtual environment
 myvenv
