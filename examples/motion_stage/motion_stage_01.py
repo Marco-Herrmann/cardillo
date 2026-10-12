@@ -37,7 +37,7 @@ from cardillo.solver import (
 # https://pure.tue.nl/admin/files/317778356/1722107-ThesisProjectReport.pdf
 
 
-def motion_stage():
+def motion_stage(export=False):
     # geometry
     length = 1.5
     height = 0.3
@@ -175,8 +175,8 @@ def motion_stage():
             system.origin,
             cable,
             mu=0.0,
-            r=0.0,
-            xi=node / (cable.nnodes - 1),
+            radius=0.0,
+            xi2=node / (cable.nnodes - 1),
             name=f"contact_node{node:0>2d}_lower",
         )
         system.add(contact_lower)
@@ -188,8 +188,8 @@ def motion_stage():
                 c[0],
                 cable,
                 mu=0.0,
-                r=0.0,
-                xi=node / (cable.nnodes - 1),
+                radius=0.0,
+                xi2=node / (cable.nnodes - 1),
                 name=f"contact_node{node:0>2d}_upper_{stat_dyn}",
             )
             c.append(contact_upper)
@@ -224,6 +224,9 @@ def motion_stage():
 
     # visualize dynamic result
     animate_beam(sol_dyn.t, sol_dyn.q, [cable], scale=1.0, scale_di=0.1)
+
+    if not export:
+        return
 
     # vtk-export
     dir_name = Path(__file__).parent
@@ -282,4 +285,4 @@ def motion_stage():
 
 
 if __name__ == "__main__":
-    motion_stage()
+    motion_stage(export=False)
