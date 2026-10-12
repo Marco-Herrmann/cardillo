@@ -14,8 +14,8 @@ from cardillo.math.rotations import (
     quatprod,
     axis_angle2quat,
     Exp_SO3,
+    SE3,
     Exp_SE3,
-    SE3_from_rP,
 )
 from cardillo.utility.coo_matrix import CooMatrix
 
@@ -289,9 +289,10 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
 
         # bring position update to B-system
-        H_IB0 = SE3_from_rP(q_nodes)  # TODO: R9 rotation parametrization
+        A_IB0 = self._Exp_SO3(q_nodes[:, 3:])
+        H_IB0 = SE3(A_IB0, q_nodes[:, :3])
         Delta_s_nodes[:, :3] = np.einsum(
-            "ijk,ij->ik", H_IB0[:, :3, :3], Delta_s_nodes[:, :3]
+            "ijk,ij->ik", A_IB0, Delta_s_nodes[:, :3]
         )
 
         # SE3 update
@@ -309,9 +310,10 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         Delta_s_nodes = Delta_s.reshape(self.nnodes, 6)
 
         # bring rotation update to I-system
-        H_IB = SE3_from_rP(q_nodes)  # TODO: R9 rotation parametrization
+        A_IB = self._Exp_SO3(q_nodes[:, 3:])
+        H_IB = SE3(A_IB, q_nodes[:, :3])
         Delta_s_nodes[:, 3:] = np.einsum(
-            "ijk,ik->ij", H_IB[:, :3, :3], Delta_s_nodes[:, 3:]
+            "ijk,ik->ij", A_IB, Delta_s_nodes[:, 3:]
         )
 
         # SE3 update

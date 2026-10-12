@@ -13,11 +13,10 @@ from cardillo.math.rotations import (
     Exp_SO3_R9_R9,
     T_SO3_R9,
     T_SO3_R9_R9,
+    SE3,
     Exp_SE3,
-    T_SE3,
     SE3inv,
     Log_SE3,
-    SE3_from_rP,
 )
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
@@ -355,9 +354,12 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         assert deval == 0
         assert point_dict["nnodes"] in [1, 2]
         if point_dict["nnodes"] == 1:
-            H_IB = SE3_from_rP(qi)
+            A_IB = Exp_SO3_quat(qi[3:])
+            H_IB = SE3(A_IB, qi[:3])
         else:
-            H_IBs = SE3_from_rP(qi.reshape(2, 7))
+            qnodes = qi.reshape(2, 7)
+            A_IBs = Exp_SO3_quat(qnodes[:, 3:])
+            H_IBs = SE3(A_IBs, qnodes[:, :3])
             h = Log_SE3(SE3inv(H_IBs[0]) @ H_IBs[1])
             H_IB = H_IBs[0] @ Exp_SE3(point_dict["N"][1] * h)
 
@@ -377,7 +379,8 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         q_nodes = q.reshape(-1, 7)
 
         # evaluate at nodes and get elements twist
-        H_IB_nodes = SE3_from_rP(q_nodes)
+        A_IB_nodes = Exp_SO3_quat(q_nodes[:, 3:])
+        H_IB_nodes = SE3(A_IB_nodes, q_nodes[:, :3])
         H_IB_nodes_inv = SE3inv(H_IB_nodes[:-1])  # no need to invert the last
         h_element = Log_SE3(H_IB_nodes_inv @ H_IB_nodes[1:])
 
@@ -396,7 +399,8 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         q_nodes = q.reshape(-1, 7)
 
         # evaluate at nodes and get element twist
-        H_IB_nodes = SE3_from_rP(q_nodes)
+        A_IB_nodes = Exp_SO3_quat(q_nodes[:, 3:])
+        H_IB_nodes = SE3(A_IB_nodes, q_nodes[:, :3])
         H_IB_nodes_inv = SE3inv(H_IB_nodes[:-1])  # no need to invert the last
         h_element = Log_SE3(H_IB_nodes_inv @ H_IB_nodes[1:])
 
