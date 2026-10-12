@@ -214,3 +214,4 @@ if __name__ == "__main__":
 
     # vtk-export
     system.export(dir_name, "vtk", sol)
+    system.export_blender(dir_name, "double_pendulum", sol, True)

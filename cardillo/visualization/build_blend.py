@@ -207,3 +207,14 @@ if not Path(link_path).exists():
     bpy.context.scene.frame_end = int(np.ceil(max_frame))
 
     bpy.ops.wm.save_as_mainfile(filepath=link_path)
+else:
+    # link_path already exists (with the user's local additions), so only
+    # update its frame range to match the freshly built source_path. This may
+    # fail, e.g., if link_path is locked by another program; then keep the
+    # old file untouched.
+    try:
+        bpy.ops.wm.open_mainfile(filepath=link_path)
+        bpy.context.scene.frame_end = int(np.ceil(max_frame))
+        bpy.ops.wm.save_mainfile(filepath=link_path)
+    except Exception as e:
+        print(f"Couldn't update frame_end in {link_path}: {e}")
