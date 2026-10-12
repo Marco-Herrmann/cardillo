@@ -260,8 +260,8 @@ def rotating_shaft(
     # look at eigenmodes
     ###
     solver_eig = Eigenmodes(system, sol)
-    sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=False)
-    # sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=True)
+    # sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=False)
+    sol_eig = solver_eig.solve(0, n_eig=11, compute_dense=True)
     print(sol_eig.omegas)
 
     dir_name = Path(__file__).parent
