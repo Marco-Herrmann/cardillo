@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 from cardillo.urdf import system_from_urdf
 from cardillo.math import A_IB_basic
@@ -15,7 +16,7 @@ velocities = {
 
 # Build the system from URDF
 system = system_from_urdf(
-    "examples/urdf_double_pendulum/urdf/double_pendulum.urdf",
+    Path(__file__).parent / "urdf" / "double_pendulum.urdf",
     r_OR=np.array([0.05, 0, 0.1]),
     A_IR=A_IB_basic(np.pi / 4).x,
     configuration=configuration,

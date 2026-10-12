@@ -589,8 +589,10 @@ def ribbon(
         for i, (ti, qi, la_ci, la_gi) in enumerate(
             zip(sol.t, sol.q, sol.la_c, sol.la_g)
         ):
-            _, _, eps_ka = cantilever._eval_internal_vec(
-                cantilever.N_int, cantilever.N_xi_int, qi[cantilever.qDOF]
+            _, _, eps_ka = cantilever.kinematics._eval_internal_vec(
+                cantilever.internal.N_int,
+                cantilever.internal.N_xi_int,
+                qi[cantilever.qDOF],
             )
             eps_b = eps_ka[:, material_model.bendable_axis]
             if np.any(np.abs(eps_b) <= material_model.bend_switch):

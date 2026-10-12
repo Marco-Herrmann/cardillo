@@ -150,15 +150,38 @@ class RigidBody:
         return h_u
 
     def DG_h(self, t, q, u):
-        # TODO: Can we split this up earlier? OR just do it simple
-        G1 = self.h_u(t, np.zeros(self.nq), u)
-        G2 = self.__M @ np.hstack(
-            [np.zeros((6, 3)), np.vstack([np.zeros((3, 3)), ax2skew(u[3:])])]
+        G = np.zeros((self.nu, self.nu), dtype=np.common_type(q, u))
+        omega = u[3:]
+        Theta_omega_tilde = self.B_Theta_C @ ax2skew(omega)
+        G[3:, 3:] = (
+            Theta_omega_tilde - Theta_omega_tilde.T - ax2skew(self.B_Theta_C @ omega)
         )
-        G = G1 + G2
-        return np.zeros((self.nu, self.nu)), 0.5 * (G - G.T)
+        return np.zeros_like(G), G
 
-    def KN_M(self, t, q, u, u_dot): ...
+    def KN_h(self, t, q, u):
+        return None, None
+
+    def KN_M(self, t, q, u, u_dot):
+        omega = u[3:]
+        omega_dot = u_dot[3:]
+
+        omega_tilde = ax2skew(omega)
+        Theta = self.B_Theta_C
+
+        f_gyr = cross3(omega, Theta @ omega)  # = -h[3:]
+
+        KN = np.zeros((self.nu, self.nu), np.common_type(q, u, u_dot))
+        KN[3:, 3:] = (
+            Theta @ ax2skew(omega_dot)
+            - 0.5 * ax2skew(Theta @ omega_dot)
+            - 0.5 * ax2skew(f_gyr)
+            - omega_tilde @ ax2skew(Theta @ omega)
+            + omega_tilde @ Theta @ omega_tilde
+        )
+        K = 0.5 * (KN + KN.T)
+        N = 0.5 * (KN - KN.T)
+        # print(f"K: {K}, \nN: {N}")
+        return K, N
 
     #####################################################
     # stabilization conditions for the kinematic equation
