@@ -1066,7 +1066,18 @@ class System:
             coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
-    def KN_F(self, t, q, la_F, format="coo"): ...
+    def KN_F(self, t, q, la_F, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+
+        for i, contr in enumerate(self.__gamma_F_contr):
+            K, N = contr.KN_F(t, q[contr.qDOF], la_F[contr.la_FDOF])
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
 
     def DG_c(self, t, q, u, format="coo", coo=None):
         if coo is None:
