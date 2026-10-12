@@ -1030,7 +1030,135 @@ class CosseratRodDisplacementBased(CosseratRod_PetrovGalerkin):
         return coo
 
     def KN_h(self, t, q, u):
-        raise NotImplementedError("Use mixed Cosserat rod instead!")
+        coo_K = CooMatrix((self.nu, self.nu))
+        coo_N = CooMatrix((self.nu, self.nu))
+        for el in range(self.nelement):
+            elDOF = self.elDOF[el]
+            elDOF_u = self.elDOF_u[el]
+            K_el, N_el = self.KN_h_el(q[elDOF], el)
+            coo_K[elDOF_u, elDOF_u] = K_el
+            coo_N[elDOF_u, elDOF_u] = N_el
+        return coo_K, coo_N
+
+    def KN_h_el(self, qe, el):
+        K_el = np.zeros((self.nu_element, self.nu_element), dtype=qe.dtype)
+        N_el = np.zeros((self.nu_element, self.nu_element), dtype=qe.dtype)
+
+        for i in range(self.nquadrature):
+            # extract reference state variables
+            qpi = self.qp[el, i]
+            qwi = self.qw[el, i]
+            Ji = self.J[el, i]
+            B_Gamma0 = self.B_Gamma0[el, i]
+            B_Kappa0 = self.B_Kappa0[el, i]
+
+            # evaluate required quantities
+            _, A_IB, B_Gamma_bar, B_Kappa_bar = self._eval(
+                qe, qpi, N=self.N_r[el, i], N_xi=self.N_r_xi[el, i]
+            )
+
+            # axial and shear strains
+            B_Gamma = B_Gamma_bar / Ji
+
+            # torsional and flexural strains
+            B_Kappa = B_Kappa_bar / Ji
+
+            # contact forces and couples and their derivatives w.r.t. strains
+            B_n = self.material_model.B_n(B_Gamma, B_Gamma0, B_Kappa, B_Kappa0)
+            B_m = self.material_model.B_m(B_Gamma, B_Gamma0, B_Kappa, B_Kappa0)
+            C = np.zeros((6, 6), dtype=qe.dtype)
+            C[:3, :3] = self.material_model.B_n_B_Gamma(
+                B_Gamma, B_Gamma0, B_Kappa, B_Kappa0
+            )
+            C[:3, 3:] = self.material_model.B_n_B_Kappa(
+                B_Gamma, B_Gamma0, B_Kappa, B_Kappa0
+            )
+            C[3:, :3] = self.material_model.B_m_B_Gamma(
+                B_Gamma, B_Gamma0, B_Kappa, B_Kappa0
+            )
+            C[3:, 3:] = self.material_model.B_m_B_Kappa(
+                B_Gamma, B_Gamma0, B_Kappa, B_Kappa0
+            )
+
+            #################
+            # material part #
+            #################
+            # variation of the strains w.r.t. nodal virtual displacements and
+            # rotations, i.e., [delta B_Gamma_bar, delta B_Kappa_bar] = B @ delta s
+            B = np.zeros((6, self.nu_element), dtype=qe.dtype)
+            for node in range(self.nnodes_element_r):
+                B[:3, self.nodalDOF_element_r_u[node]] += (
+                    self.N_r_xi[el, i, node] * A_IB.T
+                )
+            B_Gamma_bar_tilde = ax2skew(B_Gamma_bar)
+            B_Kappa_bar_tilde = ax2skew(B_Kappa_bar)
+            for node in range(self.nnodes_element_p):
+                nodalDOF_p_u = self.nodalDOF_element_p_u[node]
+                B[:3, nodalDOF_p_u] += self.N_p[el, i, node] * B_Gamma_bar_tilde
+                B[3:, nodalDOF_p_u] += (
+                    self.N_p_xi[el, i, node] * eye3
+                    + self.N_p[el, i, node] * B_Kappa_bar_tilde
+                )
+
+            # strains are B_Gamma = B_Gamma_bar / J, hence the factor 1 / J
+            K_el += B.T @ C @ B * (qwi / Ji)
+
+            ##################
+            # geometric part #
+            ##################
+            part_r_xi_phi = A_IB @ ax2skew(B_n)
+            part_phi_xi_phi = ax2skew(B_m)
+            part_phi_phi = B_Gamma_bar_tilde @ ax2skew(
+                B_n
+            ) + B_Kappa_bar_tilde @ ax2skew(B_m)
+            part_phi_phi = 0.5 * (part_phi_phi + part_phi_phi.T)
+
+            for node_A in range(self.nnodes_element_r):
+                DOF_A = self.nodalDOF_element_r_u[node_A]
+                for node_B in range(self.nnodes_element_p):
+                    DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                    K_el[DOF_A[:, None], DOF_B] -= (
+                        self.N_r_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_r_xi_phi
+                    )
+                    K_el[DOF_B[:, None], DOF_A] -= (
+                        self.N_r_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_r_xi_phi.T
+                    )
+
+            for node_A in range(self.nnodes_element_p):
+                DOF_A = self.nodalDOF_element_p_u[node_A]
+                for node_B in range(self.nnodes_element_p):
+                    DOF_B = self.nodalDOF_element_p_u[node_B]
+
+                    K_el[DOF_A[:, None], DOF_B] += (
+                        0.5
+                        * self.N_p_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_xi_phi
+                    )
+                    K_el[DOF_B[:, None], DOF_A] += (
+                        0.5
+                        * self.N_p_xi[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_xi_phi.T
+                    )
+
+                    K_el[DOF_A[:, None], DOF_B] += (
+                        self.N_p[el, i, node_A]
+                        * self.N_p[el, i, node_B]
+                        * qwi
+                        * part_phi_phi
+                    )
+
+        return K_el, N_el
 
     def DG_h(self, t, q, u):
         raise NotImplementedError("Use mixed Cosserat rod instead!")
