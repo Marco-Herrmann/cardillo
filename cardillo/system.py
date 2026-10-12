@@ -830,24 +830,6 @@ class System:
             )
         return gamma_dot
 
-    def gamma_dot_q(self, t, q, u, u_dot, format="coo", coo=None):
-        if coo is None:
-            coo = CooMatrix((self.nla_gamma, self.nq))
-        for i, contr in enumerate(self.__gamma_contr):
-            coo[i, contr.la_gammaDOF, contr.qDOF] = contr.gamma_dot_q(
-                t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF]
-            )
-        return coo.asformat(format)
-
-    def gamma_dot_u(self, t, q, u, u_dot, format="coo", coo=None):
-        if coo is None:
-            coo = CooMatrix((self.nla_gamma, self.nu))
-        for i, contr in enumerate(self.__gamma_contr):
-            coo[i, contr.la_gammaDOF, contr.uDOF] = contr.gamma_dot_u(
-                t, q[contr.qDOF], u[contr.uDOF], u_dot[contr.uDOF]
-            )
-        return coo.asformat(format)
-
     # TODO: Assemble zeta_gamma for efficency
     def zeta_gamma(self, t, q, u):
         return self.gamma_dot(t, q, u, np.zeros(self.nu))
