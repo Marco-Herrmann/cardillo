@@ -362,6 +362,7 @@ def test_implementation():
     assert np.all(np.isclose(N_F, -N_F.T)), f"N_F-skew symmetry"  #: {N_F} != {N_F_num}"
     # assert np.all(np.isclose(N_F, N_F_num)), f"N_F" #: {N_F} != {N_F_num}" # TODO: what is this?
 
+
 def test_rotating_plate_kin(show_plot=False):
     A_rig = Exp_SO3(np.random.rand(3))
     r_rig = np.random.rand(3)

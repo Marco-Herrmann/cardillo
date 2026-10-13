@@ -291,9 +291,7 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         # bring position update to B-system
         A_IB0 = self._Exp_SO3(q_nodes[:, 3:])
         H_IB0 = SE3(A_IB0, q_nodes[:, :3])
-        Delta_s_nodes[:, :3] = np.einsum(
-            "ijk,ij->ik", A_IB0, Delta_s_nodes[:, :3]
-        )
+        Delta_s_nodes[:, :3] = np.einsum("ijk,ij->ik", A_IB0, Delta_s_nodes[:, :3])
 
         # SE3 update
         H_B0B1 = Exp_SE3(Delta_s_nodes)
@@ -312,9 +310,7 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         # bring rotation update to I-system
         A_IB = self._Exp_SO3(q_nodes[:, 3:])
         H_IB = SE3(A_IB, q_nodes[:, :3])
-        Delta_s_nodes[:, 3:] = np.einsum(
-            "ijk,ik->ij", A_IB, Delta_s_nodes[:, 3:]
-        )
+        Delta_s_nodes[:, 3:] = np.einsum("ijk,ik->ij", A_IB, Delta_s_nodes[:, 3:])
 
         # SE3 update
         H_I2I = Exp_SE3(Delta_s_nodes)
