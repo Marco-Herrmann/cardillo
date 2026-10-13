@@ -851,7 +851,10 @@ T_IB_inv_R9[3:6, 0, 6:] = eye3
 T_IB_inv_R9[3:6, 2, :3] = -eye3
 T_IB_inv_R9[6:, 0, 3:6] = -eye3
 T_IB_inv_R9[6:, 1, :3] = eye3
-def T_SO3_inv_R9_R9(R9):
+def T_SO3_inv_R9_R9(R9=None):
+    # constant derivative: R9=None returns the single (9, 3, 9) array
+    if R9 is None:
+        return T_IB_inv_R9
     R9, single = _stack(R9, 1)
     assert R9.shape[1] == 9
     return T_IB_inv_R9 if single else np.broadcast_to(T_IB_inv_R9, (R9.shape[0], 9, 3, 9))

@@ -55,7 +55,7 @@ class Ribbon(RodMaterialModel):
             pot[i] = self.potential_old(Gamma, Gamma0, Kappa, Kappa0)
         return pot
 
-    def sigma(self, epsilon, epsilon0, prepare):
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         sigma = np.zeros((nxi, 6))
         for i in range(nxi):
@@ -67,7 +67,7 @@ class Ribbon(RodMaterialModel):
             sigma[i, 3:] = self.B_m(Gamma, Gamma0, Kappa, Kappa0)
         return sigma
 
-    def sigma_epsilon(self, epsilon, epsilon0, prepare):
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         n_Ga = np.empty((nxi, 3, 3))
         n_Ka = np.empty((nxi, 3, 3))

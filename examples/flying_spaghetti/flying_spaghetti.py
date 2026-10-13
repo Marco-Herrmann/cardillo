@@ -34,10 +34,12 @@ def flying_spaghetti(
     VTK_export=True,
     Blender_export=True,
 ):
-
     Ei = np.array([1e4, 1e4, 1e4])
     Fi = np.array([2e2, 1e2, 1e2])
+    dEi = 0.001 * Ei
+    dFi = 0.001 * Fi
     constitutive_law = Simo1986(Ei, Fi)
+    constitutive_law = Simo1986(Ei, Fi, dEi, dFi)
     cross_section_inertias = CrossSectionInertias(
         A_rho0=1.0, B_I_rho0=np.diag([10.0, 10.0, 10.0])
     )
@@ -110,9 +112,9 @@ def flying_spaghetti(
 
     # VTK export
     dir_name = Path(__file__).parent
-    name = f"vtk_{'planar' if planar else 'spatial'}"
+    name = f"{'planar' if planar else 'spatial'}"
     if VTK_export:
-        system.export(dir_name, name, sol, fps=50)
+        system.export(dir_name, f"vtk_{name}", sol, fps=50)
 
     if Blender_export:
         system.export_blender(dir_name, name, sol, create_blend=True)
@@ -196,6 +198,6 @@ def flying_spaghetti(
 
 
 if __name__ == "__main__":
-    Rod = make_CosseratRod()
+    Rod = make_CosseratRod(idx_displacement_based=np.arange(6))
 
     flying_spaghetti(Rod, 10, False, False, True)

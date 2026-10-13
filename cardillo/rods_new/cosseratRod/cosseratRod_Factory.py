@@ -1,5 +1,7 @@
 import numpy as np
 
+from cardillo.utility.coo_matrix import CooMatrix
+
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
 from .cosseratRod_Blender import RodBlenderExport
@@ -253,7 +255,9 @@ class CosseratRod(RodBlenderExport):
         if len(KN_h_functions) == 1:
             self.KN_h = KN_h_functions[0]
         elif len(KN_h_functions) > 1:
-            raise NotImplementedError
+            self.KN_h = lambda t, q, u: self._sum_matrix_pairs(
+                [KN_h_i(t, q, u) for KN_h_i in KN_h_functions]
+            )
         elif hasattr(self, "KN_h"):
             delattr(self, "KN_h")
 
@@ -261,9 +265,23 @@ class CosseratRod(RodBlenderExport):
         if len(DG_h_functions) == 1:
             self.DG_h = DG_h_functions[0]
         elif len(DG_h_functions) > 1:
-            raise NotImplementedError
+            self.DG_h = lambda t, q, u: self._sum_matrix_pairs(
+                [DG_h_i(t, q, u) for DG_h_i in DG_h_functions]
+            )
         elif hasattr(self, "DG_h"):
             delattr(self, "DG_h")
+
+    def _sum_matrix_pairs(self, pairs):
+        result = []
+        for matrices in zip(*pairs):
+            if all(matrix is None for matrix in matrices):
+                result.append(None)
+                continue
+            coo = CooMatrix((self.nu, self.nu))
+            for matrix in matrices:
+                coo[:, :] = matrix
+            result.append(coo)
+        return tuple(result)
 
     def compose_g(self):
         # 1) collect functions

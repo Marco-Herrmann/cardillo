@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
+from warnings import warn
 from scipy.sparse.linalg import spsolve
 
 from cardillo.math.rotations import (
@@ -211,6 +212,17 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
 
         else:
             self.nq_node = 12
+
+            # TODO: compute B_gamma_bar_P (and the derivatives of A_IB.T @ v_xi in
+            # the viscous forces) via Exp_SO3_R9_R9 instead of the magic property
+            msg = (
+                "R12: B_gamma_bar_P (and hence f_pot_q, Wla_sigma_q, l_sigma_q) uses "
+                "the 'magic property' B_gamma_bar_P = B_gamma_bar x T, which only holds "
+                "for orthonormal directors. The interpolated directors at the "
+                "quadrature points are in general not orthonormal (curved rods), "
+                "so these derivatives are only approximate."
+            )
+            warn(msg)
 
             self._A_IB = Exp_SO3_R9
             self._A_IB_P = Exp_SO3_R9_R9

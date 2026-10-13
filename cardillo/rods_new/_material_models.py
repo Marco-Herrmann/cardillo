@@ -26,10 +26,10 @@ class RodMaterialModel(ABC):
         ...
 
     @abstractmethod
-    def sigma(self, epsilon, epsilon0, prepare): ...
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare): ...
 
     @abstractmethod
-    def sigma_epsilon(self, epsilon, epsilon0, prepare): ...
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare): ...
 
 
 class RodMaterialModel_compliance(RodMaterialModel):
@@ -40,7 +40,7 @@ class RodMaterialModel_compliance(RodMaterialModel):
 
 
 class Simo1986(RodMaterialModel_compliance):
-    def __init__(self, Ei, Fi):
+    def __init__(self, Ei, Fi, DEi=np.zeros(3), DFi=np.zeros(3)):
         """
         Material model for shear deformable rod with quadratic strain energy
         function found in Simo1986 (2.8), (2.9) and (2.10).
@@ -55,13 +55,18 @@ class Simo1986(RodMaterialModel_compliance):
             F0: torsional stiffness
             F1: flexural stiffness around e_y^B-direction.
             F2: flexural stiffness around e_z^B-direction.
-
+        DEi : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
+            Damping for dilataion and shear
+        DFi : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
+            Damping for torsion and bending
         References
         ----------
         Simo1986 : https://doi.org/10.1016/0045-7825(86)90079-4
         """
         self.Ei = parametrize(Ei)
         self.Fi = parametrize(Fi)
+        self.DEi = parametrize(DEi)
+        self.DFi = parametrize(DFi)
 
     def prepare(self, xi):
         Ei = self.Ei(xi)
@@ -72,9 +77,18 @@ class Simo1986(RodMaterialModel_compliance):
         zeros = np.zeros((len(xi), 3, 3))
         C_inv = np.apply_along_axis(np.diag, 1, 1 / EiFi)
 
+        # viscous part
+        DEi = self.DEi(xi)
+        DFi = self.DFi(xi)
+        DEiDFi = np.hstack([DEi, DFi])
+        D_Ga = np.apply_along_axis(np.diag, 1, DEi)
+        D_Ka = np.apply_along_axis(np.diag, 1, DFi)
+
         return dict(
             EiFi=EiFi,
+            DEiDFi=DEiDFi,
             sigma_epsilon=(C_Ga, zeros, zeros, C_Ka),
+            sigma_epsilon_dot=(D_Ga, zeros, zeros, D_Ka),
             C_inv=C_inv,
         )
 
@@ -83,12 +97,15 @@ class Simo1986(RodMaterialModel_compliance):
         sig = prepare["EiFi"] * d_epsilon
         return 0.5 * np.sum(sig * d_epsilon, axis=1)
 
-    def sigma(self, epsilon, epsilon0, prepare):
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
         d_epsilon = epsilon - epsilon0
-        return prepare["EiFi"] * d_epsilon
+        return prepare["EiFi"] * d_epsilon + prepare["DEiDFi"] * epsilon_dot
 
-    def sigma_epsilon(self, epsilon, epsilon0, prepare):
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
         return prepare["sigma_epsilon"]
+
+    def sigma_epsilon_dot(self, epsilon, epsilon0, epsilon_dot, prepare):
+        return prepare["sigma_epsilon_dot"]
 
     def C_inv(self, prepare):
         return prepare["C_inv"]
@@ -134,7 +151,7 @@ class Harsch2021(RodMaterialModel):
             pot[i] = self.old.potential(Gamma, Gamma0, Kappa, Kappa0)
         return pot
 
-    def sigma(self, epsilon, epsilon0, prepare):
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         sigma = np.empty((nxi, 6))
         for i in range(nxi):
@@ -146,7 +163,7 @@ class Harsch2021(RodMaterialModel):
             sigma[i, 3:] = self.old.B_m(Gamma, Gamma0, Kappa, Kappa0)
         return sigma
 
-    def sigma_epsilon(self, epsilon, epsilon0, prepare):
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         n_Ga = np.empty((nxi, 3, 3))
         n_Ka = np.empty((nxi, 3, 3))
