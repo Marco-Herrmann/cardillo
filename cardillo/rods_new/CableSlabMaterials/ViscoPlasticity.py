@@ -11,12 +11,7 @@ to the overstress.
 """
 
 from .BaseMaterial import BaseMaterial
-from .MatUtils import (
-    vonMisesStress,
-    hydrostaticStress,
-    transform3To2,
-    transform2To3,
-)
+from .MatUtils import vonMisesStress, hydrostaticStress, transform3To2, transform2To3
 from numpy import zeros, ones, dot, outer, array, sqrt
 from typing import Tuple
 

@@ -61,14 +61,14 @@ def bent_45(
 
     # material model
     E = 1e7
-    G = E / 2
+    nu = 0.3  # original experiment uses nu=0.0
+    G = E / (2 * (1 + nu))
     Ei = np.array([E * A, G * A, G * A])
     Fi = np.array([G * I1, E * I2, E * I3])
     material_model1 = Simo1986(Ei, Fi)
 
     cross_section_quadrature = Rectangle_Quadrature(5, 10, w, w)
-    material_model2 = Elasticity(E, 0.0, cross_section_quadrature)
-    material_model2 = Elasticity(E, 0.3, cross_section_quadrature)
+    material_model2 = Elasticity(E, nu, cross_section_quadrature)
 
     # initialize system
     system = System()

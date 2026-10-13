@@ -4,7 +4,7 @@ import numpy as np
 from cardillo.rods.discretization.gauss import gauss
 from cardillo.math.algebra import ax2skew
 
-from .CableSlabMaterials.Elasticity import Elasticity as Elasticity3D
+from .CableSlabMaterials.ElasticityReduced import Elasticity as Elasticity3D
 from ._material_models import RodMaterialModel
 
 pyfem_point = namedtuple("pyfem_point", ["strain", "dstrain"])
@@ -47,8 +47,8 @@ class Elasticity(RodMaterialModel):
                 # TODO: this is constant per quadrature point!
                 r_tilde = ax2skew(B_r_CPj)
                 P_bar = np.zeros((6, 6))
-                P_bar[[0, 3, 4], :3] = np.eye(3)
-                P_bar[[0, 3, 4], 3:] = -r_tilde
+                P_bar[[0, 5, 4], :3] = np.eye(3)
+                P_bar[[0, 5, 4], 3:] = -r_tilde
 
                 # project (B_gamma, B_kappa) to 3D strain
                 eps6 = P_bar @ d_epsilon[i]
