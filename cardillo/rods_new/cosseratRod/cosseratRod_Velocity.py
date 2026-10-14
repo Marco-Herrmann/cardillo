@@ -6,6 +6,8 @@ from cardillo.math.algebra import ax2skew, ax2skew_a, skew2ax
 from cardillo.math.approx_fprime import approx_fprime
 from scipy.sparse import csr_array
 
+from .cosseratRod_MatrixUtils import dense_block_diag
+
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
 
@@ -243,9 +245,9 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
     #################
     # external load #
     #################
-    def E_ext(self, t, q):
-        qnodes = q.reshape(self.nnodes, -1)
-        r_OC = self.N_ext @ qnodes[:, :3]
+    def E_pot_ext(self, t, q):
+        # potential of the distributed force, distributed moments have none
+        r_OC, _ = self.parent.kinematics._eval_vec(self.N_ext, q)
         b_qp = self.distributed_load[0](t, self.qp_ext_vec)
         return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
 
@@ -258,73 +260,90 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
         f_ext[:, 3:] = self.N_ext.T @ (B_c_qp * self.weights_ext[:, None])
         return f_ext.reshape(-1)
 
-    # TODO: KN_h
-    def KN_h(self, t, q, u): ...
+
+def _B_J_R(A_IB, A_IB_q):
+    """Body-fixed angular velocity Jacobian, i.e., A_IB.T @ A_IB_q = skew(B_J_R)."""
+    return skew2ax(np.einsum("ji,jkc->cik", A_IB, A_IB_q)).T
 
 
-def _ax(S):
-    """Axial vector of the skew-symmetric part of S (3, 3, ...), cf. skew2ax."""
-    return 0.5 * np.array([S[2, 1] - S[1, 2], S[0, 2] - S[2, 0], S[1, 0] - S[0, 1]])
+def _B_J_R_q(A_IB, A_IB_q, A_IB_qq):
+    """Derivative of _B_J_R w.r.t. q."""
+    return skew2ax(
+        np.einsum("jid,jkc->cdik", A_IB_q, A_IB_q)
+        + np.einsum("ji,jkcd->cdik", A_IB, A_IB_qq)
+    ).transpose(2, 0, 1)
 
 
-class _PointDerivatives:
-    """Derivatives of r_OP and A_IB w.r.t. the local coordinates qi."""
+class _BubnovGalerkinLoad:
+    """Distributed loads for the Bubnov-Galerkin formulation, i.e., the virtual
+    work of b @ delta r + B_c @ delta phi with delta phi = Psi_q @ delta q,
+    which results in the generalized forces f_BG = _f_ext_BG(t, q)."""
 
-    def _Psi_q(self, t, qi, xi, deval=1):
-        """Body-fixed angular derivative Psi_q, i.e., A_IB.T @ A_IB_q = skew(Psi_q),
-        and for deval=2 also its derivative Psi_qq."""
-        point_dict = self.parent.get_interaction_point(xi)
-        evals = self.parent.kinematics._eval(point_dict, qi, deval=deval)
-        A_IB, A_IB_q = evals[0][1], evals[1][1]
-        Psi_q = _ax(np.einsum("ji,jkc->ikc", A_IB, A_IB_q))
-        if deval == 1:
-            return Psi_q
-
-        A_IB_qq = evals[2][1]
-        Psi_qq = _ax(
-            np.einsum("jid,jkc->ikcd", A_IB_q, A_IB_q)
-            + np.einsum("ji,jkcd->ikcd", A_IB, A_IB_qq)
+    def set_distributed_load(self, distributed_load):
+        # distributed moments and the SE3 interpolation of the centerline make
+        # f_ext dependent on q
+        self.include_distributed_moment = distributed_load[1] is not None
+        self.f_ext_depends_on_q = (
+            self.include_distributed_moment or self.parent._parametrization == "SE3"
         )
-        return Psi_q, Psi_qq
+        super().set_distributed_load(distributed_load)
 
-    def _r_OP_q(self, t, qi, xi, B_r_CP, deval=1):
-        point_dict = self.parent.get_interaction_point(xi)
-        evals = self.parent.kinematics._eval(point_dict, qi, deval=deval)
-        r_OP_q = evals[1][0] + np.einsum("ijk,j->ik", evals[1][1], B_r_CP)
-        if deval == 1:
-            return r_OP_q
+    def E_pot_ext(self, t, q):
+        # potential of the distributed force, distributed moments have none
+        r_OC, _ = self.parent.kinematics._eval_vec(self.N_ext, q)
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        return -np.einsum("ij,ij", r_OC, b_qp * self.weights_ext[:, None])
 
-        r_OP_qq = evals[2][0] + np.einsum("ijkl,j->ikl", evals[2][1], B_r_CP)
-        return r_OP_q, r_OP_qq
+    def _f_ext_BG(self, t, q):
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)
+        _eval, _deval = self.parent.kinematics._eval_internal_vec(
+            self.N_ext, self.N_xi_ext, q, deval=1
+        )
+        _, A_IB_qbar, r_OC_qbar = _deval
+
+        # f_qp[N/N_xi, qpi, qDOF]: b @ r_OC_q (+ B_c @ Psi_q)
+        f_qp = np.einsum("apik,pi->apk", r_OC_qbar, b_qp)
+        if self.include_distributed_moment:
+            # Psi_qbar[N/N_xi, qpi, qDOF, 3]
+            Psi_qbar = skew2ax(np.einsum("pji,apjkc->apcik", _eval[0], A_IB_qbar))
+            f_qp += np.einsum("apci,pi->apc", Psi_qbar, B_c_qp)
+        f_qp *= self.weights_ext[None, :, None]
+        f_BG = self.N_ext.T @ f_qp[0] + self.N_xi_ext.T @ f_qp[1]
+        return f_BG.reshape(-1)
+
+    def f_ext_q(self, t, q, u):
+        if not self.f_ext_depends_on_q:
+            return csr_array((self.parent.nu, self.parent.nq))
+        # TODO: analytic derivative
+        return approx_fprime(q, lambda q_: self.f_ext(t, q_, u))
 
 
-class CosseratRod_DBG(_PointDerivatives, CosseratRod_PG_IB):
+class CosseratRod_DBG(_BubnovGalerkinLoad, CosseratRod_PG_IB):
     """Bubnov-Galerkin formulation with discrete nullspace projection, i.e.,
     the velocities are projected with the nodal kinematic equation
     q_dot = B(q) @ u. At the nodes, this coincides with CosseratRod_PG_IB."""
 
     def _B(self, qi, nnodes):
         """Local projection B (nqi, nui) of the kinematic equation q_dot = B @ u."""
-        nq_node = self.parent.kinematics.nq_node
-        qnodes = qi.reshape(nnodes, nq_node)
-        T_IB_inv = self.parent.kin_eq._T_IB_inv(qnodes[:, 3:])
-        B = np.zeros((nnodes, nq_node, nnodes, 6), dtype=qi.dtype)
-        for i in range(nnodes):
-            B[i, :3, i, :3] = eye3
-            B[i, 3:, i, 3:] = T_IB_inv[i]
-        return B.reshape(nnodes * nq_node, nnodes * 6)
+        return dense_block_diag(self.parent.kin_eq.B_blocks(qi))
 
     def _B_q(self, qi, nnodes):
         """Derivative of _B w.r.t. qi, i.e., B_q (nqi, nui, nqi)."""
-        nq_node = self.parent.kinematics.nq_node
-        T_IB_inv_P = self.parent.kin_eq._T_IB_inv_P
-        B_q = np.zeros((nnodes, nq_node, nnodes, 6, nnodes, nq_node))
-        for i in range(nnodes):
-            B_q[i, 3:, i, 3:, i, 3:] = T_IB_inv_P
-        return B_q.reshape(nnodes * nq_node, nnodes * 6, nnodes * nq_node)
+        return dense_block_diag(self.parent.kin_eq.B_q_blocks(qi))
 
     def _nnodes(self, xi):
         return self.parent.get_interaction_point(xi)["nnodes"]
+
+    def f_ext(self, t, q, u):
+        return self.parent.kin_eq.BT_f(q, self._f_ext_BG(t, q))
+
+    def KN_f_ext(self, t, q, u):
+        if not self.f_ext_depends_on_q:
+            return None, None
+        # K + N = -f_ext_q @ B, split into symmetric and skew-symmetric part
+        f_ext_q_u = -self.f_ext_q(t, q, u) @ self.parent.q_dot_u(t, q)
+        return 0.5 * (f_ext_q_u + f_ext_q_u.T), 0.5 * (f_ext_q_u - f_ext_q_u.T)
 
     ################################
     # velocity and its derivatives #
@@ -332,12 +351,13 @@ class CosseratRod_DBG(_PointDerivatives, CosseratRod_PG_IB):
     def J_P(self, t, qi, xi, B_r_CP=zeros3):
         if (nnodes := self._nnodes(xi)) == 1:
             return super().J_P(t, qi, xi, B_r_CP)
-        return self._r_OP_q(t, qi, xi, B_r_CP) @ self._B(qi, nnodes)
+        return self.parent.r_OP_q(t, qi, xi, B_r_CP) @ self._B(qi, nnodes)
 
     def J_P_q(self, t, qi, xi, B_r_CP=zeros3):
         if (nnodes := self._nnodes(xi)) == 1:
             return super().J_P_q(t, qi, xi, B_r_CP)
-        r_OP_q, r_OP_qq = self._r_OP_q(t, qi, xi, B_r_CP, deval=2)
+        r_OP_q = self.parent.r_OP_q(t, qi, xi, B_r_CP)
+        r_OP_qq = self.parent._r_OP_qq(t, qi, xi, B_r_CP)
         return np.einsum("ikl,km->iml", r_OP_qq, self._B(qi, nnodes)) + np.einsum(
             "ik,kml->iml", r_OP_q, self._B_q(qi, nnodes)
         )
@@ -381,12 +401,15 @@ class CosseratRod_DBG(_PointDerivatives, CosseratRod_PG_IB):
     def B_J_R(self, t, qi, xi):
         if (nnodes := self._nnodes(xi)) == 1:
             return super().B_J_R(t, qi, xi)
-        return self._Psi_q(t, qi, xi) @ self._B(qi, nnodes)
+        A_IB, A_IB_q = self.parent.A_IB(t, qi, xi), self.parent.A_IB_q(t, qi, xi)
+        return _B_J_R(A_IB, A_IB_q) @ self._B(qi, nnodes)
 
     def B_J_R_q(self, t, qi, xi):
         if (nnodes := self._nnodes(xi)) == 1:
             return super().B_J_R_q(t, qi, xi)
-        Psi_q, Psi_qq = self._Psi_q(t, qi, xi, deval=2)
+        A_IB, A_IB_q = self.parent.A_IB(t, qi, xi), self.parent.A_IB_q(t, qi, xi)
+        Psi_q = _B_J_R(A_IB, A_IB_q)
+        Psi_qq = _B_J_R_q(A_IB, A_IB_q, self.parent._A_IB_qq(t, qi, xi))
         return np.einsum("ikl,km->iml", Psi_qq, self._B(qi, nnodes)) + np.einsum(
             "ik,kml->iml", Psi_q, self._B_q(qi, nnodes)
         )
@@ -424,41 +447,8 @@ class CosseratRod_DBG(_PointDerivatives, CosseratRod_PG_IB):
             return super().B_Psi_u(t, qi, ui, ui_dot, xi)
         return approx_fprime(ui, lambda ui_: self.B_Psi(t, qi, ui_, ui_dot, xi))
 
-    #################
-    # external load #
-    #################
-    def set_distributed_load(self, distributed_load):
-        # distributed moments make f_ext dependent on q
-        self.include_distributed_moment = distributed_load[1] is not None
-        super().set_distributed_load(distributed_load)
 
-    def f_ext(self, t, q, u):
-        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
-        B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)
-        nq_node = self.parent.kinematics.nq_node
-
-        # Bubnov-Galerkin, i.e., virtual work of b @ delta r + B_c @ delta phi
-        f_BG = np.zeros((self.parent.nnodes, nq_node))
-        f_BG[:, :3] = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
-        if self.include_distributed_moment:
-            _eval, (_, A_IB_qbar) = self.parent.kinematics._eval_internal_vec(
-                self.N_ext, self.N_xi_ext, q, deval=1
-            )
-            # Psi_qbar[N/N_xi, qpi, 3, qDOF]
-            Psi_qbar = _ax(np.einsum("pji,apjkc->ikapc", _eval[0], A_IB_qbar))
-            c_qp = np.einsum("iapc,pi->apc", Psi_qbar, B_c_qp)
-            c_qp *= self.weights_ext[None, :, None]
-            f_BG += self.N_ext.T @ c_qp[0] + self.N_xi_ext.T @ c_qp[1]
-
-        return self.parent.q_dot_u(t, q).T @ f_BG.reshape(-1)
-
-    def f_ext_q(self, t, q, u):
-        if not self.include_distributed_moment:
-            return csr_array((self.parent.nu, self.parent.nq))
-        return approx_fprime(q, lambda q_: self.f_ext(t, q_, u))
-
-
-class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
+class CosseratRod_BG(_BubnovGalerkinLoad, CosseratRod_Velocity):
     """Bubnov-Galerkin formulation, i.e., u = q_dot. All point quantities follow
     from the partial derivatives of r_OP and A_IB w.r.t. q."""
 
@@ -466,14 +456,27 @@ class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
         super().__init__(parent, mesh, quadrature_ext)
         self.nu_node = self.parent.kinematics.nq_node
 
+    #################
+    # external load #
+    #################
+    def f_ext(self, t, q, u):
+        return self._f_ext_BG(t, q)
+
+    def KN_f_ext(self, t, q, u):
+        if not self.f_ext_depends_on_q:
+            return None, None
+        # u = q_dot: K + N = -f_ext_q, split into symmetric and skew-symmetric part
+        f_ext_q_u = -self.f_ext_q(t, q, u)
+        return 0.5 * (f_ext_q_u + f_ext_q_u.T), 0.5 * (f_ext_q_u - f_ext_q_u.T)
+
     ################################
     # velocity and its derivatives #
     ################################
     def J_P(self, t, qi, xi, B_r_CP=zeros3):
-        return self._r_OP_q(t, qi, xi, B_r_CP)
+        return self.parent.r_OP_q(t, qi, xi, B_r_CP)
 
     def J_P_q(self, t, qi, xi, B_r_CP=zeros3):
-        return self._r_OP_q(t, qi, xi, B_r_CP, deval=2)[1]
+        return self.parent._r_OP_qq(t, qi, xi, B_r_CP)
 
     def J2_P(self, t, qi, xi, B_r_CP=zeros3):
         raise NotImplementedError("J2_P is not implemented for BG.")
@@ -485,7 +488,8 @@ class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
         return np.einsum("ijk,j->ik", self.J_P_q(t, qi, xi, B_r_CP), ui)
 
     def a_P(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
-        r_OP_q, r_OP_qq = self._r_OP_q(t, qi, xi, B_r_CP, deval=2)
+        r_OP_q = self.parent.r_OP_q(t, qi, xi, B_r_CP)
+        r_OP_qq = self.parent._r_OP_qq(t, qi, xi, B_r_CP)
         return r_OP_q @ ui_dot + np.einsum("ijk,j,k->i", r_OP_qq, ui, ui)
 
     def a_P_q(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
@@ -500,10 +504,11 @@ class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
     # angular velocity and its derivatives #
     ########################################
     def B_J_R(self, t, qi, xi):
-        return self._Psi_q(t, qi, xi)
+        return _B_J_R(self.parent.A_IB(t, qi, xi), self.parent.A_IB_q(t, qi, xi))
 
     def B_J_R_q(self, t, qi, xi):
-        return self._Psi_q(t, qi, xi, deval=2)[1]
+        A_IB, A_IB_q = self.parent.A_IB(t, qi, xi), self.parent.A_IB_q(t, qi, xi)
+        return _B_J_R_q(A_IB, A_IB_q, self.parent._A_IB_qq(t, qi, xi))
 
     def B_J2_R(self, t, qi, xi):
         raise NotImplementedError("B_J2_R is not implemented for BG.")
@@ -515,7 +520,9 @@ class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
         return np.einsum("ijk,j->ik", self.B_J_R_q(t, qi, xi), ui)
 
     def B_Psi(self, t, qi, ui, ui_dot, xi):
-        Psi_q, Psi_qq = self._Psi_q(t, qi, xi, deval=2)
+        A_IB, A_IB_q = self.parent.A_IB(t, qi, xi), self.parent.A_IB_q(t, qi, xi)
+        Psi_q = _B_J_R(A_IB, A_IB_q)
+        Psi_qq = _B_J_R_q(A_IB, A_IB_q, self.parent._A_IB_qq(t, qi, xi))
         return Psi_q @ ui_dot + np.einsum("ijk,j,k->i", Psi_qq, ui, ui)
 
     def B_Psi_q(self, t, qi, ui, ui_dot, xi):

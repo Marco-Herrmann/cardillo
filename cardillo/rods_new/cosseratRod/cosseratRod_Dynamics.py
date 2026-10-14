@@ -4,6 +4,7 @@ from cardillo.math.algebra import ax2skew
 from cardillo.rods_new._cross_section import CrossSectionInertias
 from cardillo.utility.coo_matrix import CooMatrix
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
+from .cosseratRod_MatrixUtils import bsr_sym_skew
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -29,8 +30,9 @@ class CosseratRod_Inertia:
 
         # pairs for Mass matrix
         M_pairs = [(self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec)]
-        self.M_h_u_SAB = SparseArrayBlocks(
-            (self.parent.nu, self.parent.nu), (6, 6), M_pairs
+        nu_node = self.parent.velocity.nu_node
+        self.M_SAB = SparseArrayBlocks(
+            (self.parent.nu, self.parent.nu), (nu_node, nu_node), M_pairs
         )
 
     def set_cross_section_inertias(self, cross_section_inertias):
@@ -116,7 +118,7 @@ class CosseratRod_dynamics_PG_IB(CosseratRod_Inertia):
         M_qp[0, :, 3:, :3] = 0.0
         M_qp[0, :, 3:, 3:] = self.B_I_rho0_qp
 
-        self.__M = self.M_h_u_SAB.add_blocks(M_qp)
+        self.__M = self.M_SAB.add_blocks(M_qp)
         return self.__M
 
     def f_gyr(self, t, q, u):
@@ -147,13 +149,11 @@ class CosseratRod_dynamics_PG_IB(CosseratRod_Inertia):
             self.B_I_rho0_qp, B_Omega[:, :, None], axisa=1, axisb=1, axisc=1
         ) + ax2skew(B_L_qp)
 
-        return self.M_h_u_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
+        return self.M_SAB.add_blocks(np.array([f_gyr_qp_ubar]))
 
     def DG_f_gyr(self, t, q, u):
-        if u @ u > 0.0:
-            print("DG_f_gyr not implemented for non-zero u!")
-        D = CooMatrix((self.parent.nu, self.parent.nu))
-        return D, D
+        # D + G = -f_gyr_u, split into symmetric and skew-symmetric part
+        return bsr_sym_skew(-self.f_gyr_u(t, q, u))
 
 
 class CosseratRod_dynamics_BG(CosseratRod_Inertia):
@@ -169,13 +169,15 @@ class CosseratRod_dynamics_BG(CosseratRod_Inertia):
     def __init__(self, parent, mesh_kin, quadrature, projection):
         super().__init__(parent, mesh_kin, quadrature, projection)
 
-        # quaternions would require a configuration dependent mass matrix and
-        # gyroscopic forces
+        # constant mass matrix only for R12, quaternions would require a
+        # configuration dependent mass matrix and gyroscopic forces
+        if self.parent.kinematics.nq_node == 12:
+            self.parent.constant_mass_matrix = True
+
         self.statics_only = self.parent.kinematics.nq_node != 12
         if self.statics_only:
             return
 
-        self.parent.constant_mass_matrix = True
         self.parent.linear_momentum = self.linear_momentum
         self.parent.angular_momentum = self.angular_momentum
         self.parent.E_kin = self.E_kin
@@ -186,17 +188,7 @@ class CosseratRod_dynamics_BG(CosseratRod_Inertia):
     def set_reference_strains(self, Q):
         if self.statics_only:
             return
-
-        _, B_gamma_bar, _ = self.parent.kinematics._eval_internal_vec(
-            self.N_dyn, self.N_xi_dyn, Q
-        )
-        self.J_dyn_vec = np.linalg.norm(B_gamma_bar, axis=1)
-
-        # pairs for Mass matrix
-        M_pairs = [(self.N_dyn, self.N_dyn, self.qw_dyn_vec * self.J_dyn_vec)]
-        self.M_SAB = SparseArrayBlocks(
-            (self.parent.nu, self.parent.nu), (12, 12), M_pairs
-        )
+        super().set_reference_strains(Q)
 
     def set_cross_section_inertias(self, cross_section_inertias):
         if self.statics_only:

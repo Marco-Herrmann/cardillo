@@ -59,6 +59,16 @@ class Rod_Kinematics(ABC):
         _eval, _deval = self.kinematics._eval(point_dict, qi, 1)
         return _deval[1]
 
+    def _r_OP_qq(self, t, qi, xi, B_r_CP=zeros3):
+        point_dict = self.get_interaction_point(xi)
+        _, _, _ddeval = self.kinematics._eval(point_dict, qi, 2)
+        return _ddeval[0] + np.einsum("ijkl,j->ikl", _ddeval[1], B_r_CP)
+
+    def _A_IB_qq(self, t, qi, xi):
+        point_dict = self.get_interaction_point(xi)
+        _, _, _ddeval = self.kinematics._eval(point_dict, qi, 2)
+        return _ddeval[1]
+
     # TODO: this belongs to CosseratRod_Kinematics
     @classmethod
     def straight_configuration(cls, nelement, L, r_OP0=zeros3, A_IB0=eye3):
@@ -319,7 +329,10 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         A_IB_qbar = np.zeros((2, nqp, 3, 3, self.nq_node))
         A_IB_qbar[0, ..., 3:] = A_IB_P
 
-        _deval = (epsilon_bar_qbar, A_IB_qbar)
+        r_OC_qbar = np.zeros((2, nqp, 3, self.nq_node))
+        r_OC_qbar[0, :, :, :3] = eye3
+
+        _deval = (epsilon_bar_qbar, A_IB_qbar, r_OC_qbar)
         if deval == 1:
             return _eval, _deval
 
@@ -553,9 +566,14 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
             Y = (N_0[expand] * d_q1 - N_linear[expand] * d_q0) / det[expand]
             return np.stack([X, Y])
 
+        # r_OC_q = A_IB @ s_q[:3]
+        r_OC_q0 = A_IB_qp @ s_q0[:, :3]
+        r_OC_q1 = A_IB_qp @ s_q1[:, :3]
+
         _deval = (
             to_qbar(epsilon_bar_q0, epsilon_bar_q1),
             to_qbar(A_IB_q0, A_IB_q1),
+            to_qbar(r_OC_q0, r_OC_q1),
         )
         if deval == 1:
             return _eval, _deval

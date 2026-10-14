@@ -1,33 +1,13 @@
 import numpy as np
-from scipy.sparse import coo_array, hstack, vstack
+from scipy.sparse import hstack, vstack
 
 from cardillo.utility.coo_matrix import CooMatrix
-
-
-def _sparse(A):
-    """scipy sparse array of A (CooMatrix, sparse or dense array)."""
-    return A.tocoo() if isinstance(A, CooMatrix) else A
-
-
-def _sum_sparse(matrices):
-    """Sum of sparse arrays in coo format, where duplicate entries are not summed
-    up, i.e., the sparsity pattern is kept, including zeros."""
-    coos = [_sparse(A).tocoo() for A in matrices]
-    return coo_array(
-        (
-            np.concatenate([A.data for A in coos]),
-            (
-                np.concatenate([A.row for A in coos]),
-                np.concatenate([A.col for A in coos]),
-            ),
-        ),
-        shape=coos[0].shape,
-    )
 
 
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
 from .cosseratRod_Blender import RodBlenderExport
+from .cosseratRod_MatrixUtils import to_sparse, sum_sparse, sum_matrix_pairs
 from .cosseratRod_Kinematics import (
     Rod_Kinematics,
     CosseratRod_Quaternion_R12,
@@ -282,8 +262,8 @@ class CosseratRod(RodBlenderExport):
         if len(KN_h_functions) == 1:
             self.KN_h = KN_h_functions[0]
         elif len(KN_h_functions) > 1:
-            self.KN_h = lambda t, q, u: self._sum_matrix_pairs(
-                [KN_h_i(t, q, u) for KN_h_i in KN_h_functions]
+            self.KN_h = lambda t, q, u: sum_matrix_pairs(
+                [KN_h_i(t, q, u) for KN_h_i in KN_h_functions], (self.nu, self.nu)
             )
         elif hasattr(self, "KN_h"):
             delattr(self, "KN_h")
@@ -292,23 +272,11 @@ class CosseratRod(RodBlenderExport):
         if len(DG_h_functions) == 1:
             self.DG_h = DG_h_functions[0]
         elif len(DG_h_functions) > 1:
-            self.DG_h = lambda t, q, u: self._sum_matrix_pairs(
-                [DG_h_i(t, q, u) for DG_h_i in DG_h_functions]
+            self.DG_h = lambda t, q, u: sum_matrix_pairs(
+                [DG_h_i(t, q, u) for DG_h_i in DG_h_functions], (self.nu, self.nu)
             )
         elif hasattr(self, "DG_h"):
             delattr(self, "DG_h")
-
-    def _sum_matrix_pairs(self, pairs):
-        result = []
-        for matrices in zip(*pairs):
-            if all(matrix is None for matrix in matrices):
-                result.append(None)
-                continue
-            coo = CooMatrix((self.nu, self.nu))
-            for matrix in matrices:
-                coo[:, :] = matrix
-            result.append(coo)
-        return tuple(result)
 
     def compose_g(self):
         # 1) collect functions
@@ -385,28 +353,28 @@ class CosseratRod(RodBlenderExport):
             self.g_q = g_q_functions[0]
         elif len(g_q_functions) > 1:
             self.g_q = lambda t, q: vstack(
-                [_sparse(g_q(t, q)) for g_q in g_q_functions]
+                [to_sparse(g_q(t, q)) for g_q in g_q_functions]
             )
 
         if len(W_g_functions) == 1:
             self.W_g = W_g_functions[0]
         elif len(W_g_functions) > 1:
             self.W_g = lambda t, q: hstack(
-                [_sparse(W_g(t, q)) for W_g in W_g_functions]
+                [to_sparse(W_g(t, q)) for W_g in W_g_functions]
             )
 
         if len(Wla_g_q_functions) == 1:
             self.Wla_g_q = Wla_g_q_functions[0]
         elif len(Wla_g_q_functions) > 1:
-            self.Wla_g_q = lambda t, q, la_g: _sum_sparse(
+            self.Wla_g_q = lambda t, q, la_g: sum_sparse(
                 [Wla_g_q(t, q, la_g) for Wla_g_q in Wla_g_q_functions]
             )
 
         if len(KN_g_functions) == 1:
             self.KN_g = KN_g_functions[0]
         elif len(KN_g_functions) > 1:
-            self.KN_g = lambda t, q, la_g: self._sum_matrix_pairs(
-                [KN_g(t, q, la_g) for KN_g in KN_g_functions]
+            self.KN_g = lambda t, q, la_g: sum_matrix_pairs(
+                [KN_g(t, q, la_g) for KN_g in KN_g_functions], (self.nu, self.nu)
             )
 
         if len(g_dot_functions) == 1:
@@ -420,14 +388,14 @@ class CosseratRod(RodBlenderExport):
             self.g_dot_u = g_dot_u_functions[0]
         elif len(g_dot_u_functions) > 1:
             self.g_dot_u = lambda t, q: vstack(
-                [_sparse(g_dot_u(t, q)) for g_dot_u in g_dot_u_functions]
+                [to_sparse(g_dot_u(t, q)) for g_dot_u in g_dot_u_functions]
             )
 
         if len(g_dot_q_functions) == 1:
             self.g_dot_q = g_dot_q_functions[0]
         elif len(g_dot_q_functions) > 1:
             self.g_dot_q = lambda t, q, u: vstack(
-                [_sparse(g_dot_q(t, q, u)) for g_dot_q in g_dot_q_functions]
+                [to_sparse(g_dot_q(t, q, u)) for g_dot_q in g_dot_q_functions]
             )
 
         if len(g_ddot_functions) == 1:
