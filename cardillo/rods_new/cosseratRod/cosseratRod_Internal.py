@@ -244,7 +244,7 @@ class CosseratRod_Internal:
             self.N_int, self.N_xi_int, q, deval=1
         )
         A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
+        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
 
         # TODO: make sparse?
         # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF]
@@ -429,12 +429,9 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
             self.N_int, self.N_xi_int, q, deval=1
         )
         A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
-        )
+        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
+        # -d(A_IB @ B_n)/dP
+        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
 
         # TODO: make sparse?
         # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
@@ -530,8 +527,8 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         sigma_qp, C_qp, D_qp = self.sigma_qp_db(t, _eval, _eval_dot, deval=1)
 
         A_IB, B_gamma_bar, B_kappa_bar = _eval
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-        B_Omega, B_gamma_bar_dot, _ = _eval_dot
+        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
+        B_Omega = _eval_dot[0]
         nq_node = self.parent.kinematics.nq_node
 
         #####################################
@@ -563,11 +560,9 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
             axisb=-2,
             axisc=-2,
         )
-        # derivative of A_IB.T @ v_xi w.r.t. P (same "magic property" as B_gamma_bar_P)
-        B_v_xi = B_gamma_bar_dot + np.cross(B_Omega, B_gamma_bar)
-        epsilon_bar_dot_qbar[0, :, :3, 3:] += np.cross(
-            B_v_xi[:, :, None], T, axisa=1, axisb=1, axisc=1
-        )
+        # derivative of A_IB.T @ I_v_xi w.r.t. P
+        I_v_xi = self.N_xi_int @ u.reshape(self.parent.nnodes, -1)[:, :3]
+        epsilon_bar_dot_qbar[0, :, :3, 3:] += np.einsum("ijkl,ij->ikl", A_IB_P, I_v_xi)
 
         sigma_qbar = (
             C_qp @ epsilon_bar_qbar + D_qp @ epsilon_bar_dot_qbar
@@ -586,12 +581,8 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         ##################
         # geometric part #
         ##################
-        # TODO: can we use this from Wla_sigma_q?
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
-        )
+        # -d(A_IB @ B_n)/dP
+        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
 
         # to be multiplied with N_xi <-> N
         f_pot_qp_qbar[2, :, :3, 3:] += I_n_P
@@ -686,12 +677,9 @@ class CosseratRod_internal_BG(CosseratRod_Internal):
             self.N_int, self.N_xi_int, q, deval=1
         )
         A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
-        )
+        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
+        # -d(A_IB @ B_n)/dP
+        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
 
         # TODO: make sparse?
         # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]

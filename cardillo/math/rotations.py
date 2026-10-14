@@ -642,12 +642,10 @@ def Exp_SO3_quat_P(P_IB, normalize=True):
     matrix_P = np.zeros((n, 3, 3, 4), dtype=np.result_type(P_IB, 1.0))
     # deriv. w.r.t. p0
     matrix_P[:, :, :, 0] = 2.0 * p_tilde
-    # deriv. w.r.t. p
+    # deriv. w.r.t. p: d(p0 * p_tilde + p_tilde @ p_tilde)/dp
     term1 = p0[:, None, None, None] * p_tilde_p[None, :, :, :]
-    term2 = np.transpose(p_tilde_p @ p_tilde[:, None, :, :], (0, 2, 3, 1))
-    term3 = np.transpose(
-        p_tilde[:, None, :, :] @ p_tilde_p[None, :, :, :], (0, 2, 3, 1)
-    )
+    term2 = np.einsum("ilk,nlj->nijk", p_tilde_p, p_tilde)
+    term3 = np.einsum("nil,ljk->nijk", p_tilde, p_tilde_p)
     matrix_P[:, :, :, 1:] = 2.0 * (term1 + term2 + term3)
 
     if normalize:
@@ -655,9 +653,10 @@ def Exp_SO3_quat_P(P_IB, normalize=True):
         matrix_P *= P2_inv[:, None, None, None]
         # inner derivative due to normalization
         matrix = 2.0 * (p0[:, None, None] * p_tilde + ax2skew_squared(p))
-        matrix_P += np.multiply.outer(
-            matrix, -2.0 * (P2_inv**2)[:, None] * P_IB
-        ).reshape(n, 3, 3, 4)
+        matrix_P += (
+            matrix[:, :, :, None]
+            * (-2.0 * (P2_inv**2)[:, None] * P_IB)[:, None, None, :]
+        )
     return matrix_P[0] if was_1d else matrix_P
 
 

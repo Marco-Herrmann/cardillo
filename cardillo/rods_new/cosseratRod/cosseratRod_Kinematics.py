@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from warnings import warn
 from scipy.sparse.linalg import spsolve
 
 from cardillo.math.rotations import (
@@ -213,17 +212,6 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         else:
             self.nq_node = 12
 
-            # TODO: compute B_gamma_bar_P (and the derivatives of A_IB.T @ v_xi in
-            # the viscous forces) via Exp_SO3_R9_R9 instead of the magic property
-            msg = (
-                "R12: B_gamma_bar_P (and hence f_pot_q, Wla_sigma_q, l_sigma_q) uses "
-                "the 'magic property' B_gamma_bar_P = B_gamma_bar x T, which only holds "
-                "for orthonormal directors. The interpolated directors at the "
-                "quadrature points are in general not orthonormal (curved rods), "
-                "so these derivatives are only approximate."
-            )
-            warn(msg)
-
             self._A_IB = Exp_SO3_R9
             self._A_IB_P = Exp_SO3_R9_R9
             self._T_IB = T_SO3_R9
@@ -280,12 +268,12 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         if deval == 0:
             return _eval
 
-        # using my magic property
-        B_gamma_bar_P = np.cross(B_gamma_bar[:, :, None], T, axisa=1, axisb=1, axisc=1)
+        A_IB_P = self._A_IB_P(P_IB)
+        B_gamma_bar_P = np.einsum("ijkl,ij->ikl", A_IB_P, qbar_xi[:, :3])
 
         T_IB_P = self._T_IB_P(P_IB)
         B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
-        _deval = (T, B_gamma_bar_P, B_kappa_bar_P)
+        _deval = (T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P)
         if deval == 1:
             return _eval, _deval
 
