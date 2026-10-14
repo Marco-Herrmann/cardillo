@@ -516,6 +516,7 @@ def make_CosseratRod(
     """
     # polynomial degree
     polynomial_degree_arg = polynomial_degree
+    quadrature_dyn_arg = quadrature_dyn
     polynomial_degree = 2 if polynomial_degree is None else polynomial_degree
 
     # constraints
@@ -649,10 +650,9 @@ def make_CosseratRod(
 
     elif projection == "DBG":
         # TODO: they get very different if not Quaternion/R12 interpolation is used
-        assert parametrization in [
-            "Quaternion",
-            "R12",
-        ], "DBG is only implemented for Quaternion and R12 parametrization!"
+        if quadrature_dyn_arg is None:
+            # polynomial_degree might have changed, e.g., for SE3
+            quadrature_dyn = (polynomial_degree + 1, "Trapezoidal")
         assert (
             continuity is None
         ), "DBG is only implemented for Lagrange polynomials, i.e., continuity=None!"

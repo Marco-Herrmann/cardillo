@@ -412,6 +412,7 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
 
     def _eval(self, point_dict, qi, deval=0):
         assert point_dict["nnodes"] in [1, 2]
+        assert deval < 2, "Second derivatives are not implemented for SE3 points."
         q_nodes = qi.reshape(point_dict["nnodes"], 7)
         A_IB_nodes = Exp_SO3_quat(q_nodes[:, 3:])
         H_IB_nodes = SE3(A_IB_nodes, q_nodes[:, :3])
@@ -495,7 +496,8 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         return H_IB_qp[:, :3, 3], H_IB_qp[:, :3, :3]
 
     def _eval_internal_vec(self, N, N_xi, q, deval=0):
-        els = self.els_from_N(N)
+        # N_xi is non-zero for both nodes of the element, also at the nodes, where N would be ambiguous
+        els = self.els_from_N(N_xi)
         q_nodes = q.reshape(-1, 7)
 
         # evaluate at nodes and get element twist
@@ -555,7 +557,54 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
             to_qbar(epsilon_bar_q0, epsilon_bar_q1),
             to_qbar(A_IB_q0, A_IB_q1),
         )
-        return _eval, _deval
+        if deval == 1:
+            return _eval, _deval
+
+        # second derivatives of epsilon_bar = N_1_xi * h w.r.t. the element nodes
+        # TODO: analytic second derivatives of the element twists
+        h_qq = self._element_twist_qq(q_nodes)
+        epsilon_bar_qq = N_linear_xi[:, None, None, None, None, None] * h_qq[
+            :, :, els
+        ].transpose(2, 0, 1, 3, 4, 5)
+
+        # express as derivatives w.r.t. qbar[N/N_xi] in both slots, i.e.,
+        # epsilon_bar_qbarqbar[a, b] = sum_{alpha, beta} M[a, alpha] M[b, beta] D[alpha, beta]
+        M = np.array([[N_linear_xi, -N_0_xi], [-N_linear, N_0]]) / det
+        epsilon_bar_qbarqbar = np.einsum("aip,bjp,pijklm->abpklm", M, M, epsilon_bar_qq)
+        return _eval, _deval, (epsilon_bar_qbarqbar,)
+
+    def _element_twist_qq(self, q_nodes, eps=1e-6):
+        """Second derivatives of the element twists h w.r.t. the element nodes,
+        h_qq[node_alpha, node_beta, el, 6, 7, 7], by central differences of the
+        analytic first derivatives. As each element has one node with even and
+        one with odd index, all even (odd) nodes are perturbed simultaneously."""
+        nnodes = len(q_nodes)
+        nelement = nnodes - 1
+        h_qq = np.zeros((2, 2, nelement, 6, 7, 7))
+
+        def h_q(q_nodes_):
+            A_IB_nodes = Exp_SO3_quat(q_nodes_[:, 3:])
+            H_IB_nodes = SE3(A_IB_nodes, q_nodes_[:, :3])
+            _, _, h_q0, h_q1 = self._element_derivatives(
+                q_nodes_, A_IB_nodes, H_IB_nodes
+            )
+            return h_q0, h_q1
+
+        el = np.arange(nelement)
+        for parity in [0, 1]:
+            perturbed = np.arange(nnodes) % 2 == parity
+            # perturbed node of element el is its first (0) or second (1) node
+            beta = np.where(el % 2 == parity, 0, 1)
+            for k in range(7):
+                dq = np.zeros_like(q_nodes)
+                dq[perturbed, k] = eps
+                h_q_p = h_q(q_nodes + dq)
+                h_q_m = h_q(q_nodes - dq)
+                for alpha in [0, 1]:
+                    h_qq[alpha, beta, el, :, :, k] = (h_q_p[alpha] - h_q_m[alpha]) / (
+                        2 * eps
+                    )
+        return h_qq
 
     # TODO: which class/where to generalize?
     ############################
