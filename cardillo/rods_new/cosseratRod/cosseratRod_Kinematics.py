@@ -17,7 +17,11 @@ from cardillo.math.rotations import (
     Exp_SE3,
     SE3inv,
     Log_SE3,
+    T_SE3,
+    T_SE3_inv,
+    Ad_SE3,
 )
+from cardillo.math.algebra import ax2skew_a
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
 zeros3 = np.zeros(3, dtype=float)
@@ -269,11 +273,25 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
             return _eval
 
         A_IB_P = self._A_IB_P(P_IB)
-        B_gamma_bar_P = np.einsum("ijkl,ij->ikl", A_IB_P, qbar_xi[:, :3])
-
         T_IB_P = self._T_IB_P(P_IB)
-        B_kappa_bar_P = np.einsum("ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:])
-        _deval = (T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P)
+
+        # derivatives w.r.t. qbar[N/N_xi, qpi, ..., qDOF], i.e., to be
+        # multiplied with N (index 0) or N_xi (index 1) of the respective node
+        nqp = N.shape[0]
+        epsilon_bar_qbar = np.zeros((2, nqp, 6, self.nq_node))
+        epsilon_bar_qbar[0, :, :3, 3:] = np.einsum(
+            "ijkl,ij->ikl", A_IB_P, qbar_xi[:, :3]
+        )
+        epsilon_bar_qbar[0, :, 3:, 3:] = np.einsum(
+            "ijkl,ik->ijl", T_IB_P, qbar_xi[:, 3:]
+        )
+        epsilon_bar_qbar[1, :, :3, :3] = A_IB.transpose(0, 2, 1)
+        epsilon_bar_qbar[1, :, 3:, 3:] = T
+
+        A_IB_qbar = np.zeros((2, nqp, 3, 3, self.nq_node))
+        A_IB_qbar[0, ..., 3:] = A_IB_P
+
+        _deval = (epsilon_bar_qbar, A_IB_qbar)
         if deval == 1:
             return _eval, _deval
 
@@ -351,20 +369,60 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         super().__init__(parent, mesh, "Quaternion")
 
     def _eval(self, point_dict, qi, deval=0):
-        assert deval == 0
         assert point_dict["nnodes"] in [1, 2]
+        q_nodes = qi.reshape(point_dict["nnodes"], 7)
+        A_IB_nodes = Exp_SO3_quat(q_nodes[:, 3:])
+        H_IB_nodes = SE3(A_IB_nodes, q_nodes[:, :3])
         if point_dict["nnodes"] == 1:
-            A_IB = Exp_SO3_quat(qi[3:])
-            H_IB = SE3(A_IB, qi[:3])
+            H_IB = H_IB_nodes[0]
         else:
-            qnodes = qi.reshape(2, 7)
-            A_IBs = Exp_SO3_quat(qnodes[:, 3:])
-            H_IBs = SE3(A_IBs, qnodes[:, :3])
-            h = Log_SE3(SE3inv(H_IBs[0]) @ H_IBs[1])
-            H_IB = H_IBs[0] @ Exp_SE3(point_dict["N"][1] * h)
+            N_1 = point_dict["N"][1]
+            h = Log_SE3(SE3inv(H_IB_nodes[0]) @ H_IB_nodes[1])
+            H_B0B = Exp_SE3(N_1 * h)
+            H_IB = H_IB_nodes[0] @ H_B0B
 
-        _eval = (H_IB[:3, 3], H_IB[:3, :3])
-        return _eval
+        A_IB = H_IB[:3, :3]
+        _eval = (H_IB[:3, 3], A_IB)
+        if deval == 0:
+            return _eval
+
+        # body-fixed derivative s_q, i.e., H_IB^-1 @ H_IB_q = hat(s_q)
+        s_q_nodes, _, h_q0, h_q1 = self._element_derivatives(
+            q_nodes, A_IB_nodes, H_IB_nodes
+        )
+        if point_dict["nnodes"] == 1:
+            s_q = s_q_nodes[0]
+        else:
+            T_N_1 = N_1 * T_SE3(N_1 * h)
+            s_q = np.hstack(
+                [
+                    Ad_SE3(SE3inv(H_B0B)) @ s_q_nodes[0] + T_N_1 @ h_q0[0],
+                    T_N_1 @ h_q1[0],
+                ]
+            )
+
+        # r_OP_q = A_IB @ s_q[:3], A_IB_q = A_IB @ skew(s_q[3:])
+        r_OP_q = A_IB @ s_q[:3]
+        A_IB_q = np.einsum("jl,lkm,mc->jkc", A_IB, ax2skew_a(), s_q[3:])
+        return _eval, (r_OP_q, A_IB_q)
+
+    @staticmethod
+    def _element_derivatives(q_nodes, A_IB_nodes, H_IB_nodes):
+        """Body-fixed derivatives of the nodal frames s_q_i, i.e.,
+        H_IB_i^-1 @ H_IB_i_q_i = hat(s_q_i),
+        and derivatives of the element twists h = Log(H_0^-1 @ H_1) w.r.t. the
+        coordinates of the first (h_q0) and second (h_q1) node of each element."""
+        s_q_nodes = np.zeros((len(q_nodes), 6, 7))
+        s_q_nodes[:, :3, :3] = A_IB_nodes.transpose(0, 2, 1)
+        s_q_nodes[:, 3:, 3:] = T_SO3_quat(q_nodes[:, 3:])
+
+        # h_q = T_SE3(h)^-1 @ (s_q1 - Ad(H_01^-1) @ s_q0)
+        H_01 = SE3inv(H_IB_nodes[:-1]) @ H_IB_nodes[1:]
+        h_element = Log_SE3(H_01)
+        T_inv_h = T_SE3_inv(h_element)
+        h_q0 = -T_inv_h @ Ad_SE3(SE3inv(H_01)) @ s_q_nodes[:-1]
+        h_q1 = T_inv_h @ s_q_nodes[1:]
+        return s_q_nodes, h_element, h_q0, h_q1
 
     def els_from_N(self, N):
         n_qp = N.shape[0]
@@ -416,11 +474,46 @@ class CosseratRod_SE3(CosseratRod_Quaternion_R12):
         H_IB_qp = H_IB0_qp @ H_B0B_qp
         epsilon_bar_qp = N_linear_xi[:, None] * h_element_qp
 
+        A_IB_qp = H_IB_qp[:, :3, :3]
+        _eval = (A_IB_qp, epsilon_bar_qp[:, :3], epsilon_bar_qp[:, 3:])
         if deval == 0:
-            _eval = (H_IB_qp[:, :3, :3], epsilon_bar_qp[:, :3], epsilon_bar_qp[:, 3:])
             return _eval
 
-        raise NotImplementedError
+        s_q_nodes, _, h_q0, h_q1 = self._element_derivatives(
+            q_nodes, A_IB_nodes, H_IB_nodes
+        )
+
+        # H_IB = H_IB0 @ Exp(N_1 h):
+        # s_q = Ad(Exp(N_1 h)^-1) @ s_q0 + N_1 T_SE3(N_1 h) @ h_q
+        h_q0_qp = h_q0[els]
+        h_q1_qp = h_q1[els]
+        T_qp = N_linear[:, None, None] * T_SE3(N_linear[:, None] * h_element_qp)
+        s_q0 = Ad_SE3(SE3inv(H_B0B_qp)) @ s_q_nodes[els] + T_qp @ h_q0_qp
+        s_q1 = T_qp @ h_q1_qp
+
+        # derivatives w.r.t. the nodes of the element; A_IB_q = A_IB @ skew(s_q[3:])
+        epsilon_bar_q0 = N_linear_xi[:, None, None] * h_q0_qp
+        epsilon_bar_q1 = N_linear_xi[:, None, None] * h_q1_qp
+        A_IB_q0 = np.einsum("ijl,lkm,imc->ijkc", A_IB_qp, ax2skew_a(), s_q0[:, 3:])
+        A_IB_q1 = np.einsum("ijl,lkm,imc->ijkc", A_IB_qp, ax2skew_a(), s_q1[:, 3:])
+
+        # express as derivatives w.r.t. qbar[N/N_xi] such that
+        # d_q0 = X N_0 + Y N_0_xi and d_q1 = X N_1 + Y N_1_xi
+        N_0 = np.asarray(N[arange, els]).reshape(-1)
+        N_0_xi = np.asarray(N_xi[arange, els]).reshape(-1)
+        det = N_0 * N_linear_xi - N_linear * N_0_xi
+
+        def to_qbar(d_q0, d_q1):
+            expand = (slice(None),) + (None,) * (d_q0.ndim - 1)
+            X = (N_linear_xi[expand] * d_q0 - N_0_xi[expand] * d_q1) / det[expand]
+            Y = (N_0[expand] * d_q1 - N_linear[expand] * d_q0) / det[expand]
+            return np.stack([X, Y])
+
+        _deval = (
+            to_qbar(epsilon_bar_q0, epsilon_bar_q1),
+            to_qbar(A_IB_q0, A_IB_q1),
+        )
+        return _eval, _deval
 
     # TODO: which class/where to generalize?
     ############################

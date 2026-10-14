@@ -31,6 +31,11 @@ class RodMaterialModel(ABC):
     @abstractmethod
     def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare): ...
 
+    def sigma_epsilon_dot(self, epsilon, epsilon0, epsilon_dot, prepare):
+        """Derivative of sigma w.r.t. epsilon_dot, default: no viscous stresses"""
+        zeros = np.zeros((len(epsilon), 3, 3))
+        return (zeros, zeros, zeros, zeros)
+
 
 class RodMaterialModel_compliance(RodMaterialModel):
     """Abstract class for rod material models in compliance form"""

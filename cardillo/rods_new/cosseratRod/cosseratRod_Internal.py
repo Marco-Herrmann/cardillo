@@ -239,30 +239,44 @@ class CosseratRod_Internal:
         return l_c, l_g
 
     def l_sigma_q(self, q):
-        # compute l_sigma_q
-        _eval, _deval = self.parent.kinematics._eval_internal_vec(
+        # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF] = epsilon_bar_qbar
+        _, (epsilon_bar_qbar, _) = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=1
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
+        return self.c_sigma_q_SAB.add_blocks(epsilon_bar_qbar)
 
-        # TODO: make sparse?
-        # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF]
-        c_sigma_q_qp = np.empty(
-            (2, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
+    def _geometric_stiffness_qp(self, sigma_qp, _eval, _deval):
+        """Derivative of the generalized forces
+        N_xi.T @ (-B_xi.T @ sigma) + N.T @ (-B_0.T @ sigma)
+        w.r.t. q for fixed sigma, as qp_contributions[N/N_xi <-> N/N_xi, qpi, uDOF, qDOF].
+        """
+        _, B_gamma_bar, B_kappa_bar = _eval
+        epsilon_bar_qbar, A_IB_qbar = _deval
+
+        result = np.zeros(
+            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
         )
-        # to be multiplied with N_xi
-        c_sigma_q_qp[1, :, :3, :3] = A_IB.transpose((0, 2, 1))
-        c_sigma_q_qp[1, :, :3, 3:] = 0.0
-        c_sigma_q_qp[1, :, 3:, :3] = 0.0
-        c_sigma_q_qp[1, :, 3:, 3:] = T
-
-        # to be multiplied with N
-        c_sigma_q_qp[0, :, :, :3] = 0.0
-        c_sigma_q_qp[0, :, :3, 3:] = B_gamma_bar_P
-        c_sigma_q_qp[0, :, 3:, 3:] = B_kappa_bar_P
-
-        return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
+        for i in range(2):
+            # to be multiplied with N_xi <-> N/N_xi: -d(A_IB @ B_n)/dq
+            result[2 + i, :, :3] = -np.einsum(
+                "ijkl,ik->ijl", A_IB_qbar[i], sigma_qp[:, :3]
+            )
+            # to be multiplied with N <-> N/N_xi:
+            # d(B_gamma_bar x B_n + B_kappa_bar x B_m)/dq
+            result[i, :, 3:] = -np.cross(
+                sigma_qp[:, :3, None],
+                epsilon_bar_qbar[i, :, :3],
+                axisa=1,
+                axisb=1,
+                axisc=1,
+            ) - np.cross(
+                sigma_qp[:, 3:, None],
+                epsilon_bar_qbar[i, :, 3:],
+                axisa=1,
+                axisb=1,
+                axisc=1,
+            )
+        return result
 
     def l_sigma_dot_q(self, q, u):
         # TODO: do this without approx_fprime
@@ -305,7 +319,7 @@ class CosseratRod_Internal:
 
         return xis, els
 
-    def eval_stresses(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+    def eval_stresses(self, t, q, u, la_c, la_g, n_per_element=None, n_ges=None):
         xis, els = self._eval_logic(n_per_element, n_ges)
 
         # TODO: are there problems, if everything is DB?
@@ -338,22 +352,30 @@ class CosseratRod_Internal:
             epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
             epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
             prepare = self.material_model.prepare(xis)
-            sigma_db = self.material_model.sigma(epsilon, epsilon0, prepare)
+            # TODO: viscous stresses require u, only elastic stresses so far
+            epsilon_dot = np.zeros_like(epsilon)
+            sigma_db = self.material_model.sigma(
+                epsilon, epsilon0, epsilon_dot, prepare
+            )
             sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
 
         return xis, sigma[:, :3], sigma[:, 3:]
 
-    def eval_strains(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+    def eval_strains(self, t, q, u, la_c, la_g, n_per_element=None, n_ges=None):
         xis, els = self._eval_logic(n_per_element, n_ges)
 
         epsilon = np.zeros((len(xis), 6))
         if self._nDB > 0:
-            N, N_xi = self.N(xis, els)
+            N, N_xi = self.parent.N(xis, els)
             # reference strains
-            _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
+            _, B_gamma0_bar, B_kappa0_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, self.parent.Q
+            )
             J = np.linalg.norm(B_gamma0_bar, axis=1)
             # current strains
-            _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
+            _, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, q[self.parent.qDOF]
+            )
 
             epsilon[:, :3] = (B_gamma_bar - B_gamma0_bar) / J[:, None]
             epsilon[:, 3:] = (B_kappa_bar - B_kappa0_bar) / J[:, None]
@@ -428,32 +450,7 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         _eval, _deval = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=1
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
-        # -d(A_IB @ B_n)/dP
-        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
-
-        # TODO: make sparse?
-        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
-        )
-        # to be multiplied with N_xi <-> N
-        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
-
-        # to be multiplied with N <-> N_xi
-        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
-        )
-
-        # to be multiplied with N <-> N
-        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
-            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
-            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
-        )
+        Wla_sigma_qp_qbar = self._geometric_stiffness_qp(sigma_qp, _eval, _deval)
         return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
     def K_sigma(self, q, la_c, la_g):
@@ -527,23 +524,13 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         sigma_qp, C_qp, D_qp = self.sigma_qp_db(t, _eval, _eval_dot, deval=1)
 
         A_IB, B_gamma_bar, B_kappa_bar = _eval
-        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
+        epsilon_bar_qbar, A_IB_qbar = _deval
         B_Omega = _eval_dot[0]
-        nq_node = self.parent.kinematics.nq_node
 
-        #####################################
+        ######################################
         # material stiffness (incl. viscous) #
-        #####################################
-        # epsilon_bar_qbar[N/N_xi, qpi, epsilonDOF, qDOF]
-        epsilon_bar_qbar = np.zeros((2, self.nquadrature_int_total, 6, nq_node))
-        # to be multiplied with N_xi
-        epsilon_bar_qbar[1, :, :3, :3] = A_IB.transpose(0, 2, 1)
-        epsilon_bar_qbar[1, :, 3:, 3:] = T
-        # to be multiplied with N
-        epsilon_bar_qbar[0, :, :3, 3:] = B_gamma_bar_P
-        epsilon_bar_qbar[0, :, 3:, 3:] = B_kappa_bar_P
-
-        # B_gamma_bar_dot = A_IB.T @ v_xi - B_Omega x B_gamma_bar
+        ######################################
+        # B_gamma_bar_dot = A_IB.T @ I_v_xi - B_Omega x B_gamma_bar
         # B_kappa_bar_dot = B_Omega_xi - B_Omega x B_kappa_bar
         epsilon_bar_dot_qbar = np.empty_like(epsilon_bar_qbar)
         epsilon_bar_dot_qbar[..., :3, :] = -np.cross(
@@ -560,45 +547,23 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
             axisb=-2,
             axisc=-2,
         )
-        # derivative of A_IB.T @ I_v_xi w.r.t. P
+        # derivative of A_IB.T @ I_v_xi
         I_v_xi = self.N_xi_int @ u.reshape(self.parent.nnodes, -1)[:, :3]
-        epsilon_bar_dot_qbar[0, :, :3, 3:] += np.einsum("ijkl,ij->ikl", A_IB_P, I_v_xi)
+        epsilon_bar_dot_qbar[..., :3, :] += np.einsum(
+            "aijkl,ij->aikl", A_IB_qbar, I_v_xi
+        )
 
         sigma_qbar = (
             C_qp @ epsilon_bar_qbar + D_qp @ epsilon_bar_dot_qbar
         ) / self.J_int_vec[:, None, None]
 
-        # f_pot_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        f_pot_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
-        )
-        # to be multiplied with N_xi <-> N_xi, N_xi <-> N, N <-> N_xi, N <-> N
-        f_pot_qp_qbar[3] = self._B_xi_T_minus(A_IB, sigma_qbar[1])
-        f_pot_qp_qbar[2] = self._B_xi_T_minus(A_IB, sigma_qbar[0])
-        f_pot_qp_qbar[1] = self._B_0_T_minus(B_gamma_bar, B_kappa_bar, sigma_qbar[1])
-        f_pot_qp_qbar[0] = self._B_0_T_minus(B_gamma_bar, B_kappa_bar, sigma_qbar[0])
-
-        ##################
-        # geometric part #
-        ##################
-        # -d(A_IB @ B_n)/dP
-        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
-
-        # to be multiplied with N_xi <-> N
-        f_pot_qp_qbar[2, :, :3, 3:] += I_n_P
-
-        # to be multiplied with N <-> N_xi
-        f_pot_qp_qbar[1, :, 3:, :3] -= np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        f_pot_qp_qbar[1, :, 3:, 3:] -= np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
-        )
-
-        # to be multiplied with N <-> N
-        f_pot_qp_qbar[0, :, 3:, 3:] -= np.cross(
-            sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1
-        ) + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
+        # f_pot_qp_qbar[N/N_xi <-> N/N_xi, qpi, uDOF, qDOF]
+        f_pot_qp_qbar = self._geometric_stiffness_qp(sigma_qp, _eval, _deval)
+        for i in range(2):
+            f_pot_qp_qbar[2 + i] += self._B_xi_T_minus(A_IB, sigma_qbar[i])
+            f_pot_qp_qbar[i] += self._B_0_T_minus(
+                B_gamma_bar, B_kappa_bar, sigma_qbar[i]
+            )
 
         return self.h_pot_q_SAB.add_blocks(f_pot_qp_qbar)
 
@@ -676,32 +641,7 @@ class CosseratRod_internal_BG(CosseratRod_Internal):
         _eval, _deval = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=1
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P, A_IB_P = _deval
-        # -d(A_IB @ B_n)/dP
-        I_n_P = -np.einsum("ijkl,ik->ijl", A_IB_P, sigma_qp[:, :3])
-
-        # TODO: make sparse?
-        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
-        )
-        # to be multiplied with N_xi <-> N
-        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
-
-        # to be multiplied with N <-> N_xi
-        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
-        )
-
-        # to be multiplied with N <-> N
-        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
-            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
-            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
-        )
+        Wla_sigma_qp_qbar = self._geometric_stiffness_qp(sigma_qp, _eval, _deval)
         return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
     def K_sigma(self, q, la_c, la_g): ...
