@@ -6,8 +6,11 @@ from cardillo.math.rotations import (
     Log_SO3_quat,
     Exp_SO3_quat,
     Exp_SO3_quat_P,
+    Exp_SO3_quat_PP,
     T_SO3_quat,
     T_SO3_quat_P,
+    T_SO3_quat_PP,
+    T_SO3_inv_quat,
     Log_SO3_R9,
     Exp_SO3_R9,
     Exp_SO3_R9_R9,
@@ -21,7 +24,7 @@ from cardillo.math.rotations import (
     T_SE3_inv,
     Ad_SE3,
 )
-from cardillo.math.algebra import ax2skew_a
+from cardillo.math.algebra import ax2skew, ax2skew_a
 from cardillo.utility.check_time_derivatives import check_time_derivatives
 
 zeros3 = np.zeros(3, dtype=float)
@@ -167,9 +170,22 @@ class Rod_Kinematics(ABC):
         r_OP = r_OP0 + r_OP @ A_IB0.T
 
         I_omega_IB0 = A_IB0 @ B_omega_IB0
-        vO = np.zeros((nnodes, 6), dtype=float)
-        vO[:, :3] = v_P0 + np.cross(I_omega_IB0, r_OP - r_OP0)
-        vO[:, 3:] = B_omega_IB0
+        v_C = v_P0 + np.cross(I_omega_IB0, r_OP - r_OP0)
+        if cls._projection:
+            # nodal velocities v_C and B_omega_IB
+            vO = np.zeros((nnodes, 6), dtype=float)
+            vO[:, :3] = v_C
+            vO[:, 3:] = B_omega_IB0
+        else:
+            # Bubnov-Galerkin, i.e., u = q_dot
+            qnodes = q.reshape(nnodes, -1)
+            vO = np.zeros_like(qnodes)
+            vO[:, :3] = v_C
+            if cls._parametrization == "R12":
+                A_IB0_dot = A_IB0 @ ax2skew(B_omega_IB0)
+                vO[:, 3:] = A_IB0_dot.reshape(-1, order="F")
+            else:
+                vO[:, 3:] = T_SO3_inv_quat(qnodes[:, 3:]) @ B_omega_IB0
 
         if cls._IGA:
             A = mesh.shape_functions(np.linspace(0, 1, nnodes))[0]
@@ -210,8 +226,10 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
 
             self._A_IB = Exp_SO3_quat
             self._A_IB_P = Exp_SO3_quat_P
+            self._A_IB_PP = Exp_SO3_quat_PP
             self._T_IB = T_SO3_quat
             self._T_IB_P = T_SO3_quat_P
+            self._T_IB_PP = T_SO3_quat_PP
 
         else:
             self.nq_node = 12
@@ -220,6 +238,9 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
             self._A_IB_P = Exp_SO3_R9_R9
             self._T_IB = T_SO3_R9
             self._T_IB_P = T_SO3_R9_R9
+            # A_IB and T_IB are linear in R9
+            self._A_IB_PP = lambda R9: np.zeros(np.shape(R9)[:-1] + (3, 3, 9, 9))
+            self._T_IB_PP = lambda R9: np.zeros(np.shape(R9)[:-1] + (3, 9, 9, 9))
 
     def step_callback(self, t, q, u):
         """Restore orthonormality of the nodal frame parametrization after
@@ -247,11 +268,18 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         if deval == 0:
             return _eval
 
+        Nq_P = point_dict["Nq"][3:]
         A_IB_P = self._A_IB_P(rP[3:])
-        A_IB_q = np.einsum("ijk,kl->ijl", A_IB_P, point_dict["Nq"][3:])
+        A_IB_q = np.einsum("ijk,kl->ijl", A_IB_P, Nq_P)
 
         _deval = (point_dict["Nq"][:3], A_IB_q)
-        return _eval, _deval
+        if deval == 1:
+            return _eval, _deval
+
+        nqi = len(qi)
+        A_IB_qq = np.einsum("ijab,ak,bl->ijkl", self._A_IB_PP(rP[3:]), Nq_P, Nq_P)
+        _ddeval = (np.zeros((3, nqi, nqi)), A_IB_qq)
+        return _eval, _deval, _ddeval
 
     def _eval_vec(self, N, q):
         qnodes = q.reshape(self.parent.nnodes, -1)
@@ -295,9 +323,23 @@ class CosseratRod_Quaternion_R12(CosseratRod_Kinematics):
         if deval == 1:
             return _eval, _deval
 
-        B_gamma_bar_rP = ...
-        _ddeval = (B_gamma_bar_rP, B_gamma_bar_PP, B_kappa_bar_PP)
-        return _eval, _deval, _ddeval
+        # second derivatives
+        # epsilon_bar_qbarqbar[N/N_xi, N/N_xi, qpi, epsilonDOF, qDOF, qDOF]
+        epsilon_bar_qbarqbar = np.zeros((2, 2, nqp, 6, self.nq_node, self.nq_node))
+        # B_gamma_bar = A_IB.T @ r_xi
+        epsilon_bar_qbarqbar[0, 0, :, :3, 3:, 3:] = np.einsum(
+            "ijkab,ij->ikab", self._A_IB_PP(P_IB), qbar_xi[:, :3]
+        )
+        epsilon_bar_qbarqbar[0, 1, :, :3, 3:, :3] = A_IB_P.transpose(0, 2, 3, 1)
+        epsilon_bar_qbarqbar[1, 0, :, :3, :3, 3:] = A_IB_P.transpose(0, 2, 1, 3)
+        # B_kappa_bar = T_IB @ P_xi
+        epsilon_bar_qbarqbar[0, 0, :, 3:, 3:, 3:] = np.einsum(
+            "ijkab,ik->ijab", self._T_IB_PP(P_IB), qbar_xi[:, 3:]
+        )
+        epsilon_bar_qbarqbar[0, 1, :, 3:, 3:, 3:] = T_IB_P.transpose(0, 1, 3, 2)
+        epsilon_bar_qbarqbar[1, 0, :, 3:, 3:, 3:] = T_IB_P
+
+        return _eval, _deval, (epsilon_bar_qbarqbar,)
 
     # TODO: which class/where to generalize?
     ############################

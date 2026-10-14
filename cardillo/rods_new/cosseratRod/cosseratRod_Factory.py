@@ -1,6 +1,29 @@
 import numpy as np
+from scipy.sparse import coo_array, hstack, vstack
 
 from cardillo.utility.coo_matrix import CooMatrix
+
+
+def _sparse(A):
+    """scipy sparse array of A (CooMatrix, sparse or dense array)."""
+    return A.tocoo() if isinstance(A, CooMatrix) else A
+
+
+def _sum_sparse(matrices):
+    """Sum of sparse arrays in coo format, where duplicate entries are not summed
+    up, i.e., the sparsity pattern is kept, including zeros."""
+    coos = [_sparse(A).tocoo() for A in matrices]
+    return coo_array(
+        (
+            np.concatenate([A.data for A in coos]),
+            (
+                np.concatenate([A.row for A in coos]),
+                np.concatenate([A.col for A in coos]),
+            ),
+        ),
+        shape=coos[0].shape,
+    )
+
 
 from cardillo.rods_new.discretization.mesh1D import Mesh1D_equidistant, Mesh1D_IGA
 
@@ -10,7 +33,7 @@ from .cosseratRod_Kinematics import (
     CosseratRod_Quaternion_R12,
     CosseratRod_SE3,
 )
-from .cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG
+from .cosseratRod_Velocity import CosseratRod_PG_IB, CosseratRod_BG, CosseratRod_DBG
 from .cosseratRod_Interaction import CosseratRod_Interaction
 from .cosseratRod_q_dot import (
     CosseratRod_rP_dot_from_vO_IB,
@@ -20,10 +43,12 @@ from .cosseratRod_q_dot import (
 from .cosseratRod_Internal import (
     CosseratRod_internal_PG_IB,
     CosseratRod_internal_BG,
+    CosseratRod_internal_DBG,
 )
 from .cosseratRod_Dynamics import (
     CosseratRod_dynamics_PG_IB,
     CosseratRod_dynamics_BG,
+    CosseratRod_dynamics_DBG,
 )
 
 ###################
@@ -205,6 +230,8 @@ class CosseratRod(RodBlenderExport):
                 E_pot_functions.append(self.velocity.E_pot_ext)
             if hasattr(self.velocity, "f_ext"):
                 h_functions.append(self.velocity.f_ext)
+            if hasattr(self.velocity, "f_ext_q"):
+                h_q_functions.append(self.velocity.f_ext_q)
             if hasattr(self.velocity, "KN_f_ext"):
                 KN_h_functions.append(self.velocity.KN_f_ext)
             if hasattr(self.velocity, "DG_f_ext"):
@@ -357,27 +384,29 @@ class CosseratRod(RodBlenderExport):
         if len(g_q_functions) == 1:
             self.g_q = g_q_functions[0]
         elif len(g_q_functions) > 1:
-            self.g_q = lambda t, q: np.concatenate([g_q(t, q) for g_q in g_q_functions])
+            self.g_q = lambda t, q: vstack(
+                [_sparse(g_q(t, q)) for g_q in g_q_functions]
+            )
 
         if len(W_g_functions) == 1:
             self.W_g = W_g_functions[0]
         elif len(W_g_functions) > 1:
-            self.W_g = lambda t, q: np.concatenate(
-                [W_g(t, q) for W_g in W_g_functions], axis=1
+            self.W_g = lambda t, q: hstack(
+                [_sparse(W_g(t, q)) for W_g in W_g_functions]
             )
 
         if len(Wla_g_q_functions) == 1:
             self.Wla_g_q = Wla_g_q_functions[0]
         elif len(Wla_g_q_functions) > 1:
-            self.Wla_g_q = lambda t, q, la_g: np.sum(
-                [Wla_g_q(t, q, la_g) for Wla_g_q in Wla_g_q_functions], axis=0
+            self.Wla_g_q = lambda t, q, la_g: _sum_sparse(
+                [Wla_g_q(t, q, la_g) for Wla_g_q in Wla_g_q_functions]
             )
 
         if len(KN_g_functions) == 1:
             self.KN_g = KN_g_functions[0]
         elif len(KN_g_functions) > 1:
-            self.KN_g = lambda t, q, la_g: np.sum(
-                [KN_g(t, q, la_g) for KN_g in KN_g_functions], axis=0
+            self.KN_g = lambda t, q, la_g: self._sum_matrix_pairs(
+                [KN_g(t, q, la_g) for KN_g in KN_g_functions]
             )
 
         if len(g_dot_functions) == 1:
@@ -390,15 +419,15 @@ class CosseratRod(RodBlenderExport):
         if len(g_dot_u_functions) == 1:
             self.g_dot_u = g_dot_u_functions[0]
         elif len(g_dot_u_functions) > 1:
-            self.g_dot_u = lambda t, q: np.concatenate(
-                [g_dot_u(t, q) for g_dot_u in g_dot_u_functions]
+            self.g_dot_u = lambda t, q: vstack(
+                [_sparse(g_dot_u(t, q)) for g_dot_u in g_dot_u_functions]
             )
 
         if len(g_dot_q_functions) == 1:
             self.g_dot_q = g_dot_q_functions[0]
         elif len(g_dot_q_functions) > 1:
-            self.g_dot_q = lambda t, q, u: np.concatenate(
-                [g_dot_q(t, q, u) for g_dot_q in g_dot_q_functions]
+            self.g_dot_q = lambda t, q, u: vstack(
+                [_sparse(g_dot_q(t, q, u)) for g_dot_q in g_dot_q_functions]
             )
 
         if len(g_ddot_functions) == 1:
@@ -461,7 +490,7 @@ def make_CosseratRod(
         Choice of projection:
             "PG"  Petrov-Galerkin,
             "BG"  Bubnov-Galerkin,
-            "BGD" Bubnov-Galerkin Discrete Nullspace Projection
+            "DBG" Bubnov-Galerkin Discrete Nullspace Projection
 
 
     Strain component mapping
@@ -531,8 +560,9 @@ def make_CosseratRod(
     if quadrature_dyn == None:
         # TODO: take trapezoidal rule as default?
         quadrature_dyn = (polynomial_degree + 1, "Trapezoidal")
-        n_full = int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
-        quadrature_dyn = (n_full, "Gauss")
+        if projection != "DBG":
+            n_full = int(np.ceil(3 / 2 * polynomial_degree + 1 / 2))
+            quadrature_dyn = (n_full, "Gauss")
         print(f"quadrature_dyn: {quadrature_dyn}")
     elif isinstance(quadrature_dyn, int):
         quadrature_dyn = (quadrature_dyn, "Gauss")
@@ -595,7 +625,7 @@ def make_CosseratRod(
     assert projection in [
         "PG",
         "BG",
-        "BGD",
+        "DBG",
     ], f"projection {projection} is not supported!"
     if projection == "PG":
         Velocity = CosseratRod_PG_IB
@@ -606,6 +636,11 @@ def make_CosseratRod(
 
     elif projection == "BG":
         # TODO: they get very different if not Quaternion/R12 interpolation is used
+        # Quaternion: statics only, see CosseratRod_dynamics_BG
+        assert parametrization in [
+            "Quaternion",
+            "R12",
+        ], "BG is only implemented for Quaternion and R12 parametrization!"
         Velocity = CosseratRod_BG
         Kin_eq = CosseratRod_kin_trivial
         Internal = CosseratRod_internal_BG
@@ -614,6 +649,20 @@ def make_CosseratRod(
 
     elif projection == "DBG":
         # TODO: they get very different if not Quaternion/R12 interpolation is used
+        assert parametrization in [
+            "Quaternion",
+            "R12",
+        ], "DBG is only implemented for Quaternion and R12 parametrization!"
+        assert (
+            continuity is None
+        ), "DBG is only implemented for Lagrange polynomials, i.e., continuity=None!"
+        assert (
+            quadrature_dyn[1] == "Trapezoidal"
+        ), "DBG is only implemented for the trapezoidal rule in the dynamics!"
+        assert quadrature_dyn[0] == polynomial_degree + 1, (
+            "DBG requires polynomial_degree + 1 points of the trapezoidal rule, "
+            "such that the dynamics are only evaluated at the nodes!"
+        )
         Velocity = CosseratRod_DBG
         Kin_eq = CosseratRod_rP_dot_from_vO_IB
         Internal = CosseratRod_internal_DBG

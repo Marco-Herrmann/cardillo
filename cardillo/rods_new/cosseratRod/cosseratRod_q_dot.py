@@ -1,6 +1,6 @@
 from abc import ABC
 import numpy as np
-from scipy.sparse import block_diag, csr_array
+from scipy.sparse import block_diag, bsr_array, csr_array
 
 from cardillo.math.rotations import (
     Exp_SO3_quat,
@@ -166,11 +166,28 @@ class CosseratRod_kin_constraints(ABC):
         return self.g_q(t, q).T
 
     def Wla_g_q(self, t, q, la_g):
-        # TODO: constant!
-        from cardillo.math.approx_fprime import approx_fprime
-
-        Wla_g_q_num = approx_fprime(q, lambda q_: self.W_g(t, q_).tocsr() @ la_g)
-        return Wla_g_q_num
+        # g is quadratic in q, hence W_g @ la_g is linear in q and its
+        # derivative is independent of q
+        blocks = np.zeros((self.nnodes, self.nq_node, self.nq_node))
+        if self.nq_node == 7:
+            # g = P @ P - 1
+            blocks[:, 3:, 3:] = 2.0 * la_g[:, None, None] * np.eye(4)
+        else:
+            # g = (d1 @ d1 - 1, d2 @ d2 - 1, d3 @ d3 - 1, d1 @ d2, d2 @ d3, d3 @ d1)
+            la = la_g.reshape(self.nnodes, 6)
+            S = np.empty((self.nnodes, 3, 3))
+            S[:, [0, 1, 2], [0, 1, 2]] = 2.0 * la[:, :3]
+            S[:, 0, 1] = S[:, 1, 0] = la[:, 3]
+            S[:, 1, 2] = S[:, 2, 1] = la[:, 4]
+            S[:, 2, 0] = S[:, 0, 2] = la[:, 5]
+            blocks[:, 3:, 3:] = np.einsum("nij,kl->nikjl", S, eye3).reshape(
+                self.nnodes, 9, 9
+            )
+        # bsr keeps the zeros, i.e., the sparsity pattern is independent of la_g
+        return bsr_array(
+            (blocks, np.arange(self.nnodes), np.arange(self.nnodes + 1)),
+            shape=(self.parent.nq, self.parent.nq),
+        )
 
     def g_dot(self, t, q, u): ...
     def g_dot_q(self, t, q, u): ...
@@ -192,6 +209,24 @@ class CosseratRod_kin_trivial(CosseratRod_kin_constraints):
 
     def q_dot_u(self, t, q):
         return self.eye_nu
+
+    # g is quadratic in q, hence g_q is linear in q and with q_dot = u:
+    # g_dot = g_q(q) @ u, g_dot_q = g_q(u), g_ddot = g_q(q) @ u_dot + g_q(u) @ u
+    def g_dot(self, t, q, u):
+        return self.g_q(t, q).tocsr() @ u
+
+    def g_dot_q(self, t, q, u):
+        return self.g_q(t, u)
+
+    def g_dot_u(self, t, q):
+        return self.g_q(t, q)
+
+    def g_ddot(self, t, q, u, u_dot):
+        return self.g_q(t, q).tocsr() @ u_dot + self.g_q(t, u).tocsr() @ u
+
+    def KN_g(self, t, q, la_g):
+        # u = q_dot
+        return self.Wla_g_q(t, q, la_g), None
 
 
 class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):

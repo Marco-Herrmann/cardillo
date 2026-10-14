@@ -4,6 +4,7 @@ from warnings import warn
 
 from cardillo.math.algebra import ax2skew, ax2skew_a, skew2ax
 from cardillo.math.approx_fprime import approx_fprime
+from scipy.sparse import csr_array
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -261,207 +262,266 @@ class CosseratRod_PG_IB(CosseratRod_Velocity):
     def KN_h(self, t, q, u): ...
 
 
-class CosseratRod_BG(CosseratRod_Velocity):
-    def __init__(self, parent, mesh):
-        super().__init__(parent, mesh)
-        self.nu_node = self.parent.kinematics.nq_node
+def _ax(S):
+    """Axial vector of the skew-symmetric part of S (3, 3, ...), cf. skew2ax."""
+    return 0.5 * np.array([S[2, 1] - S[1, 2], S[0, 2] - S[2, 0], S[1, 0] - S[0, 1]])
 
-    def J_P(self, t, qi, xi, B_r_CP=zeros3):
-        return approx_fprime(qi, lambda qi_: self.parent.r_OP(t, qi_, xi, B_r_CP))
-        warn("J_P not implemented yet")
+
+class _PointDerivatives:
+    """Derivatives of r_OP and A_IB w.r.t. the local coordinates qi."""
+
+    def _Psi_q(self, t, qi, xi, deval=1):
+        """Body-fixed angular derivative Psi_q, i.e., A_IB.T @ A_IB_q = skew(Psi_q),
+        and for deval=2 also its derivative Psi_qq."""
         point_dict = self.parent.get_interaction_point(xi)
-        J_C = point_dict["Nu"][:3]
-        if B_r_CP @ B_r_CP == 0.0:
-            return J_C
+        evals = self.parent.kinematics._eval(point_dict, qi, deval=deval)
+        A_IB, A_IB_q = evals[0][1], evals[1][1]
+        Psi_q = _ax(np.einsum("ji,jkc->ikc", A_IB, A_IB_q))
+        if deval == 1:
+            return Psi_q
 
-        B_J_R = point_dict["Nu"][3:]
-        B_J_CP = np.cross(-B_r_CP[:, None], B_J_R, axisa=0, axisb=0, axisc=0)
-        A_IB = self.parent.A_IB(t, qi, xi)
-        return J_C + A_IB @ B_J_CP
+        A_IB_qq = evals[2][1]
+        Psi_qq = _ax(
+            np.einsum("jid,jkc->ikcd", A_IB_q, A_IB_q)
+            + np.einsum("ji,jkcd->ikcd", A_IB, A_IB_qq)
+        )
+        return Psi_q, Psi_qq
+
+    def _r_OP_q(self, t, qi, xi, B_r_CP, deval=1):
+        point_dict = self.parent.get_interaction_point(xi)
+        evals = self.parent.kinematics._eval(point_dict, qi, deval=deval)
+        r_OP_q = evals[1][0] + np.einsum("ijk,j->ik", evals[1][1], B_r_CP)
+        if deval == 1:
+            return r_OP_q
+
+        r_OP_qq = evals[2][0] + np.einsum("ijkl,j->ikl", evals[2][1], B_r_CP)
+        return r_OP_q, r_OP_qq
+
+
+class CosseratRod_DBG(_PointDerivatives, CosseratRod_PG_IB):
+    """Bubnov-Galerkin formulation with discrete nullspace projection, i.e.,
+    the velocities are projected with the nodal kinematic equation
+    q_dot = B(q) @ u. At the nodes, this coincides with CosseratRod_PG_IB."""
+
+    def _B(self, qi, nnodes):
+        """Local projection B (nqi, nui) of the kinematic equation q_dot = B @ u."""
+        nq_node = self.parent.kinematics.nq_node
+        qnodes = qi.reshape(nnodes, nq_node)
+        T_IB_inv = self.parent.kin_eq._T_IB_inv(qnodes[:, 3:])
+        B = np.zeros((nnodes, nq_node, nnodes, 6), dtype=qi.dtype)
+        for i in range(nnodes):
+            B[i, :3, i, :3] = eye3
+            B[i, 3:, i, 3:] = T_IB_inv[i]
+        return B.reshape(nnodes * nq_node, nnodes * 6)
+
+    def _B_q(self, qi, nnodes):
+        """Derivative of _B w.r.t. qi, i.e., B_q (nqi, nui, nqi)."""
+        nq_node = self.parent.kinematics.nq_node
+        T_IB_inv_P = self.parent.kin_eq._T_IB_inv_P
+        B_q = np.zeros((nnodes, nq_node, nnodes, 6, nnodes, nq_node))
+        for i in range(nnodes):
+            B_q[i, 3:, i, 3:, i, 3:] = T_IB_inv_P
+        return B_q.reshape(nnodes * nq_node, nnodes * 6, nnodes * nq_node)
+
+    def _nnodes(self, xi):
+        return self.parent.get_interaction_point(xi)["nnodes"]
+
+    ################################
+    # velocity and its derivatives #
+    ################################
+    def J_P(self, t, qi, xi, B_r_CP=zeros3):
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().J_P(t, qi, xi, B_r_CP)
+        return self._r_OP_q(t, qi, xi, B_r_CP) @ self._B(qi, nnodes)
 
     def J_P_q(self, t, qi, xi, B_r_CP=zeros3):
-        return approx_fprime(qi, lambda qi_: self.parent.J_P(t, qi_, xi, B_r_CP))
-        warn("J_P_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        if B_r_CP @ B_r_CP == 0.0:
-            return point_dict["zero_3_nui_nqi"]
-
-        B_J_R = point_dict["Nu"][3:]
-        B_J_CP = np.cross(-B_r_CP[:, None], B_J_R, axisa=0, axisb=0, axisc=0)
-        A_IB_q = self.parent.A_IB_q(t, qi, xi)
-        return np.einsum("ijk, jl -> ilk", A_IB_q, B_J_CP)
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().J_P_q(t, qi, xi, B_r_CP)
+        r_OP_q, r_OP_qq = self._r_OP_q(t, qi, xi, B_r_CP, deval=2)
+        return np.einsum("ikl,km->iml", r_OP_qq, self._B(qi, nnodes)) + np.einsum(
+            "ik,kml->iml", r_OP_q, self._B_q(qi, nnodes)
+        )
 
     def J2_P(self, t, qi, xi, B_r_CP=zeros3):
-        return self.J_P_q(t, qi, xi, B_r_CP)
-        warn("J2_P not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        if B_r_CP @ B_r_CP == 0.0:
-            return point_dict["zero_3_nui_nui"]
+        if self._nnodes(xi) == 1:
+            return super().J2_P(t, qi, xi, B_r_CP)
+        raise NotImplementedError("J2_P is only implemented at the nodes.")
 
-        qnodes = qi.reshape(point_dict["nnodes"], -1)
-        N = point_dict["N"]
+    def v_P(self, t, qi, ui, xi, B_r_CP=zeros3):
+        if self._nnodes(xi) == 1:
+            return super().v_P(t, qi, ui, xi, B_r_CP)
+        return self.J_P(t, qi, xi, B_r_CP) @ ui
 
-        A_IB = self._A_IB(N @ qnodes[:, 3:])
-        B_J2_R_phi = -0.5 * ax2skew_a()
-        B_r_CP_tilde = ax2skew(B_r_CP)
+    def v_P_q(self, t, qi, ui, xi, B_r_CP=zeros3):
+        if self._nnodes(xi) == 1:
+            return super().v_P_q(t, qi, ui, xi, B_r_CP)
+        return np.einsum("ijk,j->ik", self.J_P_q(t, qi, xi, B_r_CP), ui)
 
-        # TODO: implement for xi at an really arbitrary point
-        nnodes = point_dict["nnodes"]
-        assert nnodes == 1
+    def a_P(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().a_P(t, qi, ui, ui_dot, xi, B_r_CP)
+        qi_dot = self._B(qi, nnodes) @ ui
+        return self.J_P(t, qi, xi, B_r_CP) @ ui_dot + np.einsum(
+            "ijk,j,k->i", self.J_P_q(t, qi, xi, B_r_CP), ui, qi_dot
+        )
 
-        # only operations on relevant DOFs and using B_J_R = [zero, eye]
-        J2_P = np.zeros((3, 6, 6), dtype=qi.dtype)
-        J2_P[:, 3:, 3:] = np.einsum(
-            "jl, lki -> ijk", B_r_CP_tilde, ax2skew_a() @ A_IB.T
-        ) - np.einsum("il, ljk -> ijk", A_IB @ B_r_CP_tilde, B_J2_R_phi)
-        return J2_P
+    def a_P_q(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        if self._nnodes(xi) == 1:
+            return super().a_P_q(t, qi, ui, ui_dot, xi, B_r_CP)
+        return approx_fprime(qi, lambda qi_: self.a_P(t, qi_, ui, ui_dot, xi, B_r_CP))
 
-        # TODO: implement for B_r_CP != 0.0
-        assert np.linalg.norm(B_r_CP) == 0.0
-        point_dict = self.get_interaction_point(xi)
-        return point_dict["zero_3_nui_nui"]
+    def a_P_u(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
+        if self._nnodes(xi) == 1:
+            return super().a_P_u(t, qi, ui, ui_dot, xi, B_r_CP)
+        return approx_fprime(ui, lambda ui_: self.a_P(t, qi, ui_, ui_dot, xi, B_r_CP))
+
+    ########################################
+    # angular velocity and its derivatives #
+    ########################################
+    def B_J_R(self, t, qi, xi):
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().B_J_R(t, qi, xi)
+        return self._Psi_q(t, qi, xi) @ self._B(qi, nnodes)
+
+    def B_J_R_q(self, t, qi, xi):
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().B_J_R_q(t, qi, xi)
+        Psi_q, Psi_qq = self._Psi_q(t, qi, xi, deval=2)
+        return np.einsum("ikl,km->iml", Psi_qq, self._B(qi, nnodes)) + np.einsum(
+            "ik,kml->iml", Psi_q, self._B_q(qi, nnodes)
+        )
+
+    def B_J2_R(self, t, qi, xi):
+        if self._nnodes(xi) == 1:
+            return super().B_J2_R(t, qi, xi)
+        raise NotImplementedError("B_J2_R is only implemented at the nodes.")
+
+    def B_Omega(self, t, qi, ui, xi):
+        if self._nnodes(xi) == 1:
+            return super().B_Omega(t, qi, ui, xi)
+        return self.B_J_R(t, qi, xi) @ ui
+
+    def B_Omega_q(self, t, qi, ui, xi):
+        if self._nnodes(xi) == 1:
+            return super().B_Omega_q(t, qi, ui, xi)
+        return np.einsum("ijk,j->ik", self.B_J_R_q(t, qi, xi), ui)
+
+    def B_Psi(self, t, qi, ui, ui_dot, xi):
+        if (nnodes := self._nnodes(xi)) == 1:
+            return super().B_Psi(t, qi, ui, ui_dot, xi)
+        qi_dot = self._B(qi, nnodes) @ ui
+        return self.B_J_R(t, qi, xi) @ ui_dot + np.einsum(
+            "ijk,j,k->i", self.B_J_R_q(t, qi, xi), ui, qi_dot
+        )
+
+    def B_Psi_q(self, t, qi, ui, ui_dot, xi):
+        if self._nnodes(xi) == 1:
+            return super().B_Psi_q(t, qi, ui, ui_dot, xi)
+        return approx_fprime(qi, lambda qi_: self.B_Psi(t, qi_, ui, ui_dot, xi))
+
+    def B_Psi_u(self, t, qi, ui, ui_dot, xi):
+        if self._nnodes(xi) == 1:
+            return super().B_Psi_u(t, qi, ui, ui_dot, xi)
+        return approx_fprime(ui, lambda ui_: self.B_Psi(t, qi, ui_, ui_dot, xi))
+
+    #################
+    # external load #
+    #################
+    def set_distributed_load(self, distributed_load):
+        # distributed moments make f_ext dependent on q
+        self.include_distributed_moment = distributed_load[1] is not None
+        super().set_distributed_load(distributed_load)
+
+    def f_ext(self, t, q, u):
+        b_qp = self.distributed_load[0](t, self.qp_ext_vec)
+        B_c_qp = self.distributed_load[1](t, self.qp_ext_vec)
+        nq_node = self.parent.kinematics.nq_node
+
+        # Bubnov-Galerkin, i.e., virtual work of b @ delta r + B_c @ delta phi
+        f_BG = np.zeros((self.parent.nnodes, nq_node))
+        f_BG[:, :3] = self.N_ext.T @ (b_qp * self.weights_ext[:, None])
+        if self.include_distributed_moment:
+            _eval, (_, A_IB_qbar) = self.parent.kinematics._eval_internal_vec(
+                self.N_ext, self.N_xi_ext, q, deval=1
+            )
+            # Psi_qbar[N/N_xi, qpi, 3, qDOF]
+            Psi_qbar = _ax(np.einsum("pji,apjkc->ikapc", _eval[0], A_IB_qbar))
+            c_qp = np.einsum("iapc,pi->apc", Psi_qbar, B_c_qp)
+            c_qp *= self.weights_ext[None, :, None]
+            f_BG += self.N_ext.T @ c_qp[0] + self.N_xi_ext.T @ c_qp[1]
+
+        return self.parent.q_dot_u(t, q).T @ f_BG.reshape(-1)
+
+    def f_ext_q(self, t, q, u):
+        if not self.include_distributed_moment:
+            return csr_array((self.parent.nu, self.parent.nq))
+        return approx_fprime(q, lambda q_: self.f_ext(t, q_, u))
+
+
+class CosseratRod_BG(_PointDerivatives, CosseratRod_Velocity):
+    """Bubnov-Galerkin formulation, i.e., u = q_dot. All point quantities follow
+    from the partial derivatives of r_OP and A_IB w.r.t. q."""
+
+    def __init__(self, parent, mesh, quadrature_ext):
+        super().__init__(parent, mesh, quadrature_ext)
+        self.nu_node = self.parent.kinematics.nq_node
+
+    ################################
+    # velocity and its derivatives #
+    ################################
+    def J_P(self, t, qi, xi, B_r_CP=zeros3):
+        return self._r_OP_q(t, qi, xi, B_r_CP)
+
+    def J_P_q(self, t, qi, xi, B_r_CP=zeros3):
+        return self._r_OP_q(t, qi, xi, B_r_CP, deval=2)[1]
+
+    def J2_P(self, t, qi, xi, B_r_CP=zeros3):
+        raise NotImplementedError("J2_P is not implemented for BG.")
 
     def v_P(self, t, qi, ui, xi, B_r_CP=zeros3):
         return self.J_P(t, qi, xi, B_r_CP) @ ui
-        warn("v_P not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        N = point_dict["N"]
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        if B_r_CP @ B_r_CP == 0.0:
-            return N @ unodes[:, :3]
-
-        vO = N @ unodes
-        B_v_CP = np.cross(vO[3:], B_r_CP)
-        A_IB = self.parent.A_IB(t, qi, xi)
-        return vO[:3] + A_IB @ B_v_CP
 
     def v_P_q(self, t, qi, ui, xi, B_r_CP=zeros3):
-        warn("v_P_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        if B_r_CP @ B_r_CP == 0.0:
-            return point_dict["zero_3_nqi"]
-
-        N = point_dict["N"]
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        B_Omega = N @ unodes[:, 3:]
-        B_v_CP = np.cross(B_Omega, B_r_CP)
-        A_IB_q = self.parent.A_IB_q(t, qi, xi)
-        return np.einsum("ijk,j->ik", A_IB_q, B_v_CP)
+        return np.einsum("ijk,j->ik", self.J_P_q(t, qi, xi, B_r_CP), ui)
 
     def a_P(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
-        warn("a_P not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        N = point_dict["N"]
-        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
-        if B_r_CP @ B_r_CP == 0.0:
-            return N @ u_dotnodes[:, :3]
-
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        B_Omega = N @ unodes[:, 3:]
-        aP = N @ u_dotnodes
-        B_a_CP = np.cross(aP[3:], B_r_CP) + np.cross(B_Omega, np.cross(B_Omega, B_r_CP))
-        A_IB = self.parent.A_IB(t, qi, xi)
-        return aP[:3] + A_IB @ B_a_CP
+        r_OP_q, r_OP_qq = self._r_OP_q(t, qi, xi, B_r_CP, deval=2)
+        return r_OP_q @ ui_dot + np.einsum("ijk,j,k->i", r_OP_qq, ui, ui)
 
     def a_P_q(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
-        warn("a_P_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        if B_r_CP @ B_r_CP == 0.0:
-            return point_dict["zero_3_nqi"]
-
-        N = point_dict["N"]
-        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        B_Omega = N @ unodes[:, 3:]
-        aP = N @ u_dotnodes
-        B_a_CP = np.cross(aP[3:], B_r_CP) + np.cross(B_Omega, np.cross(B_Omega, B_r_CP))
-        A_IB_q = self.parent.A_IB_q(t, qi, xi)
-        return np.einsum("ijk,j->ik", A_IB_q, B_a_CP)
+        # TODO: third derivatives of A_IB
+        return approx_fprime(qi, lambda qi_: self.a_P(t, qi_, ui, ui_dot, xi, B_r_CP))
 
     def a_P_u(self, t, qi, ui, ui_dot, xi, B_r_CP=zeros3):
-        warn("a_P_u not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        if B_r_CP @ B_r_CP == 0.0:
-            return point_dict["zero_3_nui"]
+        # r_OP_qq is symmetric
+        return 2.0 * np.einsum("ijk,k->ij", self.J_P_q(t, qi, xi, B_r_CP), ui)
 
-        N = point_dict["N"]
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        B_Omega = N @ unodes[:, 3:]
-        B_a_CP_B_Omega = ax2skew(np.cross(B_r_CP, B_Omega)) - ax2skew(
-            B_Omega
-        ) @ ax2skew(B_r_CP)
-        A_IB = self.parent.A_IB(t, qi, xi)
-        return A_IB @ B_a_CP_B_Omega @ point_dict["Nu"][3:]
-
+    ########################################
+    # angular velocity and its derivatives #
+    ########################################
     def B_J_R(self, t, qi, xi):
-        ui = np.zeros_like(qi)
-        return approx_fprime(ui, lambda ui_: self.B_Omega(t, qi, ui_, xi))
-        warn("B_J_R not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        return point_dict["Nu"][3:]
+        return self._Psi_q(t, qi, xi)
 
     def B_J_R_q(self, t, qi, xi):
-        return approx_fprime(qi, lambda qi_: self.B_J_R(t, qi_, xi))
-        warn("B_J_R_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        return point_dict["zero_3_nui_nqi"]
+        return self._Psi_q(t, qi, xi, deval=2)[1]
 
     def B_J2_R(self, t, qi, xi):
-        raise NotImplementedError("B_J2_R not implemented yet!")
-        return self.B_J2_R(t, qi, xi)
-        warn("B_J2_R not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        # N = point_dict["N"]
-        # qnodes = qi.reshape(point_dict["nnodes"], -1)
-
-        assert point_dict["nnodes"] == 1
-
-        B_J2_R = np.zeros((3, 6, 6), dtype=qi.dtype)
-        B_J2_R[:, 3:, 3:] = -0.5 * ax2skew_a()
-        return B_J2_R
-
-        z = point_dict["zero_3_nui_nui"]
-        warn("B_J2_R not implemented yet")
-        return z
-        return point_dict["B_J2_R"]
-
-        # TODO: check plus-minus bzw. [:, None]
-        N_p, _ = self.basis_functions_p(xi)
-        B_J2_R = np.zeros((3, self.nu_element, self.nu_element), dtype=q.dtype)
-        for node in range(self.nnodes_element_p):
-            DOF = self.nodalDOF_element_p_u[node]
-            B_J2_R[:, DOF, DOF[:, None]] = -0.5 * N_p[node] * ax2skew_a()
-        return B_J2_R
+        raise NotImplementedError("B_J2_R is not implemented for BG.")
 
     def B_Omega(self, t, qi, ui, xi):
-        A_IB = self.parent.A_IB(t, qi, xi)
-        A_IB_q = self.parent.A_IB_q(t, qi, xi)
-        A_IB_dot = np.einsum("ijk,k->ij", A_IB_q, ui)
-        return skew2ax(A_IB.T @ A_IB_dot)
-        point_dict = self.parent.get_interaction_point(xi)
-        N = point_dict["N"]
-        unodes = ui.reshape(point_dict["nnodes"], -1)
-        return N @ unodes[:, 3:]
+        return self.B_J_R(t, qi, xi) @ ui
 
     def B_Omega_q(self, t, qi, ui, xi):
-        return approx_fprime(qi, lambda qi_: self.B_Omega(t, qi_, xi))
-        warn("B_Omega_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        return point_dict["zero_3_nqi"]
+        return np.einsum("ijk,j->ik", self.B_J_R_q(t, qi, xi), ui)
 
     def B_Psi(self, t, qi, ui, ui_dot, xi):
-        warn("B_Psi not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        N = point_dict["N"]
-        u_dotnodes = ui_dot.reshape(point_dict["nnodes"], -1)
-        return N @ u_dotnodes[:, 3:]
+        Psi_q, Psi_qq = self._Psi_q(t, qi, xi, deval=2)
+        return Psi_q @ ui_dot + np.einsum("ijk,j,k->i", Psi_qq, ui, ui)
 
     def B_Psi_q(self, t, qi, ui, ui_dot, xi):
-        warn("B_Psi_q not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        return point_dict["zero_3_nqi"]
+        # TODO: third derivatives of A_IB
+        return approx_fprime(qi, lambda qi_: self.B_Psi(t, qi_, ui, ui_dot, xi))
 
     def B_Psi_u(self, t, qi, ui, ui_dot, xi):
-        warn("B_Psi_u not implemented yet")
-        point_dict = self.parent.get_interaction_point(xi)
-        return point_dict["zero_3_nui"]
+        Psi_qq = self.B_J_R_q(t, qi, xi)
+        return np.einsum("ijk,k->ij", Psi_qq, ui) + np.einsum("ijk,j->ik", Psi_qq, ui)

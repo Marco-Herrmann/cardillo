@@ -682,6 +682,73 @@ def Exp_SO3_quat_P(P_IB, normalize=True):
     return matrix_P[0] if was_1d else matrix_P
 
 
+def _quotient_P2_PP(G, G_P, G_PP, P):
+    """Second derivative of G(P) / (P @ P) w.r.t. P, where G is a stack of
+    arrays with trailing derivative axes, i.e., G (n, ...), G_P (n, ..., 4) and
+    G_PP (n, ..., 4, 4)."""
+    s_inv = 1 / np.sum(P * P, axis=1)
+    expand = (slice(None),) + (None,) * (G.ndim - 1)
+    s_inv = s_inv[expand]
+    P_ = P[expand]  # (n, 1, ..., 4)
+
+    G_P_P = G_P[..., :, None] * P_[..., None, :]
+    return (
+        G_PP * s_inv[..., None, None]
+        - 2.0 * (G_P_P + np.swapaxes(G_P_P, -1, -2)) * (s_inv**2)[..., None, None]
+        - 2.0 * G[..., None, None] * eye4 * (s_inv**2)[..., None, None]
+        + 8.0
+        * G[..., None, None]
+        * P_[..., :, None]
+        * P_[..., None, :]
+        * (s_inv**3)[..., None, None]
+    )
+
+
+eye4 = np.eye(4, dtype=float)
+
+# fmt: off
+# second derivative of 2 * (p0 * p_tilde + p_tilde @ p_tilde) w.r.t. P = (p0, p)
+_E = ax2skew_a()
+_quat_matrix_PP = np.zeros((3, 3, 4, 4), dtype=float)
+_quat_matrix_PP[:, :, 0, 1:] = 2.0 * _E
+_quat_matrix_PP[:, :, 1:, 0] = 2.0 * _E
+_quat_matrix_PP[:, :, 1:, 1:] = 2.0 * (
+    np.einsum("ijk,jml->imkl", _E, _E) + np.einsum("ijl,jmk->imkl", _E, _E)
+)
+# fmt: on
+
+
+def Exp_SO3_quat_PP(P_IB, normalize=True):
+    """Second derivative of Exp_SO3_quat with respect to P."""
+    P_IB, single = _stack(P_IB, 1)
+    assert P_IB.shape[1] == 4
+
+    matrix_PP = np.broadcast_to(_quat_matrix_PP, (P_IB.shape[0], 3, 3, 4, 4))
+    if normalize:
+        matrix = Exp_SO3_quat(P_IB, normalize=False) - eye3
+        matrix_P = Exp_SO3_quat_P(P_IB, normalize=False)
+        result = _quotient_P2_PP(matrix, matrix_P, matrix_PP, P_IB)
+    else:
+        result = matrix_PP.copy()
+    return result[0] if single else result
+
+
+def T_SO3_quat_PP(P_IB, normalize=True):
+    """Second derivative of T_SO3_quat with respect to P."""
+    P_IB, single = _stack(P_IB, 1)
+    assert P_IB.shape[1] == 4
+
+    n = P_IB.shape[0]
+    if normalize:
+        matrix = T_SO3_quat(P_IB, normalize=False)
+        matrix_P = T_SO3_quat_P(P_IB, normalize=False)
+        matrix_PP = np.zeros((n, 3, 4, 4, 4), dtype=np.result_type(P_IB, 1.0))
+        result = _quotient_P2_PP(matrix, matrix_P, matrix_PP, P_IB)
+    else:
+        result = np.zeros((n, 3, 4, 4, 4), dtype=np.result_type(P_IB, 1.0))
+    return result[0] if single else result
+
+
 Log_SO3_quat = Spurrier
 
 
