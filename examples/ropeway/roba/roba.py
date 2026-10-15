@@ -192,7 +192,7 @@ sol_static = Newton(system, 5).solve()
 
 dir_name = Path(__file__).parent
 system.export_blender(
-    dir_name, "blender/static", solution=sol_static, create_blend=True
+    dir_name, "static", solution=sol_static, create_blend=True
 )
 
 system.set_new_initial_state(sol_static.q[-1], sol_static.u[-1], 0.0)
@@ -212,5 +212,5 @@ dt = 1e-2
 sol_dynamic = DualStormerVerlet(system, t1, dt).solve()
 # system.export(dir_name, "sol_dynamic", sol_dynamic)
 system.export_blender(
-    dir_name, "blender/dynamic", solution=sol_dynamic, create_blend=True
+    dir_name, "dynamic", solution=sol_dynamic, create_blend=True
 )
