@@ -91,6 +91,7 @@ class Prismatic(ProjectedPositionOrientationBase):
         return g_dot
 
     def l_dot_q(self, t, q, u):
+        return u @ self.W_l_q(t, q)
         raise NotImplementedError
         nq1 = self._nq1
         g_dot_q = np.zeros((self.nla_g, self._nq), dtype=np.common_type(q, u))

@@ -215,6 +215,14 @@ else:
     try:
         bpy.ops.wm.open_mainfile(filepath=link_path)
         bpy.context.scene.frame_end = int(np.ceil(max_frame))
+
+        # objects that were added to source_path after link_path was created
+        # only get (non-editable) system overrides during the resync on
+        # opening, so make them fully editable as in override_hierarchy_create
+        for obj in bpy.data.objects:
+            override = obj.override_library
+            if override is not None and override.is_system_override:
+                override.is_system_override = False
         bpy.ops.wm.save_mainfile(filepath=link_path)
     except Exception as e:
         print(f"Couldn't update frame_end in {link_path}: {e}")
