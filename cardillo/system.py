@@ -27,7 +27,7 @@ properties.extend(["g"])
 properties.extend(["gamma"])
 
 properties.extend(["c", "c_q", "c_u"])
-properties.extend(["d"])
+properties.extend(["d", "d_q"])
 properties.extend(["g_S"])
 
 properties.extend(["la_tau"])
@@ -677,9 +677,21 @@ class System:
             )
         return d
 
-    def d_q(self, t, q, u, format="coo", coo=None): ...
+    def d_q(self, t, q, u, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nla_d, self.nq))
+        for i, contr in enumerate(self.__d_q_contr):
+            coo[i, contr.la_dDOF, contr.qDOF] = contr.d_q(
+                t, q[contr.qDOF], u[contr.uDOF]
+            )
+        return coo.asformat(format)
 
-    def d_u(self, t, q, format="coo", coo=None): ...
+    def d_u(self, t, q, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nla_d, self.nu))
+        for i, contr in enumerate(self.__d_contr):
+            coo[i, contr.la_dDOF, contr.uDOF] = contr.d_u(t, q[contr.qDOF])
+        return coo.asformat(format)
 
     def d_la_d(self, format="coo"):
         return self._d_la_d0.asformat(format)
@@ -691,7 +703,14 @@ class System:
             coo[i, contr.uDOF, contr.la_dDOF] = contr.W_d(t, q[contr.qDOF])
         return coo.asformat(format)
 
-    def Wla_d_q(self, t, q, la_c, format="coo", coo=None): ...
+    def Wla_d_q(self, t, q, la_d, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nu, self.nq))
+        for i, contr in enumerate(self.__d_contr):
+            coo[i, contr.uDOF, contr.qDOF] = contr.Wla_d_q(
+                t, q[contr.qDOF], la_d[contr.la_dDOF]
+            )
+        return coo.asformat(format)
 
     ###########
     # actuators
