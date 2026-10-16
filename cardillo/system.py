@@ -27,6 +27,7 @@ properties.extend(["g"])
 properties.extend(["gamma"])
 
 properties.extend(["c", "c_q", "c_u"])
+properties.extend(["d"])
 properties.extend(["g_S"])
 
 properties.extend(["la_tau"])
@@ -79,6 +80,7 @@ class System:
         self.nla_g = 0
         self.nla_gamma = 0
         self.nla_c = 0
+        self.nla_d = 0
         self.nla_tau = 0
         self.ntau = 0
         self.nla_S = 0
@@ -253,6 +255,7 @@ class System:
         self.nla_g = 0
         self.nla_gamma = 0
         self.nla_c = 0
+        self.nla_d = 0
         self.nla_tau = 0
         self.ntau = 0
         self.nla_S = 0
@@ -298,6 +301,11 @@ class System:
             if hasattr(contr, "nla_c"):
                 contr.la_cDOF = np.arange(0, contr.nla_c) + self.nla_c
                 self.nla_c += contr.nla_c
+
+            # if contribution has damping contribution
+            if hasattr(contr, "nla_d"):
+                contr.la_dDOF = np.arange(0, contr.nla_d) + self.nla_d
+                self.nla_d += contr.nla_d
 
             # if contribution of actuator forces
             if hasattr(contr, "nla_tau"):
@@ -389,6 +397,12 @@ class System:
             coo[contr.la_cDOF, contr.la_cDOF] = contr.c_la_c()
         self._c_la_c0 = coo.tocoo()
 
+        # - damping matrix
+        coo = CooMatrix((self.nla_d, self.nla_d))
+        for contr in self.__d_contr:
+            coo[contr.la_dDOF, contr.la_dDOF] = contr.d_la_d()
+        self._d_la_d0 = coo.tocoo()
+
         # compute consistent initial conditions
         (
             self.t0,
@@ -399,6 +413,7 @@ class System:
             self.la_g0,
             self.la_gamma0,
             self.la_c0,
+            self.la_d0,
             self.la_N0,
             self.la_F0,
         ) = consistent_initial_conditions(self, *args, **kwargs)
@@ -412,6 +427,7 @@ class System:
             np.array([self.la_g0]),
             np.array([self.la_gamma0]),
             np.array([self.la_c0]),
+            np.array([self.la_d0]),
             np.array([self.la_N0]),
             np.array([self.la_F0]),
         )
@@ -643,6 +659,39 @@ class System:
             coo_K[i, contr.uDOF, contr.uDOF] = K
             coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
+
+    #########
+    # damping
+    #########
+    def la_d(self, t, q, u):
+        la_d = np.zeros(self.nla_d, dtype=np.common_type(q, u))
+        for contr in self.__d_contr:
+            la_d[contr.la_dDOF] = contr.la_d(t, q[contr.qDOF], u[contr.uDOF])
+        return la_d
+
+    def d(self, t, q, u, la_d):
+        d = np.zeros(self.nla_d, dtype=np.common_type(q, u, la_d))
+        for contr in self.__d_contr:
+            d[contr.la_cDOF] = contr.d(
+                t, q[contr.qDOF], u[contr.uDOF], la_d[contr.la_dDOF]
+            )
+        return d
+
+    def d_q(self, t, q, u, format="coo", coo=None): ...
+
+    def d_u(self, t, q, format="coo", coo=None): ...
+
+    def d_la_d(self, format="coo"):
+        return self._d_la_d0.asformat(format)
+
+    def W_d(self, t, q, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nu, self.nla_d))
+        for i, contr in enumerate(self.__d_contr):
+            coo[i, contr.uDOF, contr.la_dDOF] = contr.W_d(t, q[contr.qDOF])
+        return coo.asformat(format)
+
+    def Wla_d_q(self, t, q, la_c, format="coo", coo=None): ...
 
     ###########
     # actuators
