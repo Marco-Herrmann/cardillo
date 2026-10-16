@@ -672,7 +672,7 @@ class System:
     def d(self, t, q, u, la_d):
         d = np.zeros(self.nla_d, dtype=np.common_type(q, u, la_d))
         for contr in self.__d_contr:
-            d[contr.la_cDOF] = contr.d(
+            d[contr.la_dDOF] = contr.d(
                 t, q[contr.qDOF], u[contr.uDOF], la_d[contr.la_dDOF]
             )
         return d
