@@ -27,6 +27,7 @@ class Solution:
         la_g=None,
         la_gamma=None,
         la_c=None,
+        la_e=None,
         la_d=None,
         la_N=None,
         la_F=None,
@@ -40,6 +41,7 @@ class Solution:
         self.la_g = la_g
         self.la_gamma = la_gamma
         self.la_c = la_c
+        self.la_e = la_e
         self.la_d = la_d
         self.la_N = la_N
         self.la_F = la_F
