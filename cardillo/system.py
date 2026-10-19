@@ -14,7 +14,7 @@ from cardillo.visualization import Export
 
 properties = []
 
-properties.extend(["E_kin", "E_pot", "E_pot_comp"])
+properties.extend(["E_kin", "E_pot", "E_pot_comp", "E_pot_comp_e"])
 properties.extend(["linear_momentum", "angular_momentum"])
 
 properties.extend(["M", "Mu_q"])
@@ -27,7 +27,7 @@ properties.extend(["g"])
 properties.extend(["gamma"])
 
 properties.extend(["c", "c_q", "c_u"])
-properties.extend(["d", "d_q"])
+properties.extend(["e", "d"])
 properties.extend(["g_S"])
 
 properties.extend(["la_tau"])
@@ -80,6 +80,7 @@ class System:
         self.nla_g = 0
         self.nla_gamma = 0
         self.nla_c = 0
+        self.nla_e = 0
         self.nla_d = 0
         self.nla_tau = 0
         self.ntau = 0
@@ -255,6 +256,7 @@ class System:
         self.nla_g = 0
         self.nla_gamma = 0
         self.nla_c = 0
+        self.nla_e = 0
         self.nla_d = 0
         self.nla_tau = 0
         self.ntau = 0
@@ -301,6 +303,11 @@ class System:
             if hasattr(contr, "nla_c"):
                 contr.la_cDOF = np.arange(0, contr.nla_c) + self.nla_c
                 self.nla_c += contr.nla_c
+
+            # if contribution has elasticity contribution
+            if hasattr(contr, "nla_e"):
+                contr.la_eDOF = np.arange(0, contr.nla_e) + self.nla_e
+                self.nla_e += contr.nla_e
 
             # if contribution has damping contribution
             if hasattr(contr, "nla_d"):
@@ -373,35 +380,49 @@ class System:
         # compute constant system parts
         # - parts of the mass matrix
         coo = CooMatrix((self.nu, self.nu))
-        if self.__M_contr:
-            I_constant_mass_matrix = np.array(
-                [
-                    (
-                        contr.constant_mass_matrix
-                        if hasattr(contr, "constant_mass_matrix")
-                        else False
-                    )
-                    for contr in self.__M_contr
-                ]
-            )
-            self.I_M = ~I_constant_mass_matrix
-            self.__M_contr = np.array(self.__M_contr)
-            for contr in self.__M_contr[I_constant_mass_matrix]:
-                coo[contr.uDOF, contr.uDOF] = contr.M(self.t0, self.q0[contr.qDOF])
-
+        I_constant_mass_matrix = np.array(
+            [getattr(contr, "constant_mass_matrix", False) for contr in self.__M_contr],
+            dtype=bool,
+        )
+        self.I_M = ~I_constant_mass_matrix
+        self.__M_contr = np.array(self.__M_contr)
+        for contr in self.__M_contr[I_constant_mass_matrix]:
+            coo[contr.uDOF, contr.uDOF] = contr.M(self.t0, self.q0[contr.qDOF])
         self._M0 = coo
+
+        # - parts of the elasticity matrix
+        coo = CooMatrix((self.nla_e, self.nla_e))
+        I_constant_e_la_e = np.array(
+            [getattr(contr, "constant_e_la_e", False) for contr in self.__e_contr],
+            dtype=bool,
+        )
+        self.I_e_la_e = ~I_constant_e_la_e
+        self.__e_contr = np.array(self.__e_contr)
+        for contr in self.__e_contr[I_constant_e_la_e]:
+            coo[contr.la_eDOF, contr.la_eDOF] = contr.e_la_e(
+                self.t0, self.q0[contr.qDOF]
+            )
+        self._e_la_e0 = coo
+
+        # - parts of the damping matrix
+        coo = CooMatrix((self.nla_d, self.nla_d))
+        I_constant_d_la_d = np.array(
+            [getattr(contr, "constant_d_la_d", False) for contr in self.__d_contr],
+            dtype=bool,
+        )
+        self.I_d_la_d = ~I_constant_d_la_d
+        self.__d_contr = np.array(self.__d_contr)
+        for contr in self.__d_contr[I_constant_d_la_d]:
+            coo[contr.la_dDOF, contr.la_dDOF] = contr.d_la_d(
+                self.t0, self.q0[contr.qDOF]
+            )
+        self._d_la_d0 = coo
 
         # - compliance matrix
         coo = CooMatrix((self.nla_c, self.nla_c))
         for contr in self.__c_contr:
             coo[contr.la_cDOF, contr.la_cDOF] = contr.c_la_c()
         self._c_la_c0 = coo.tocoo()
-
-        # - damping matrix
-        coo = CooMatrix((self.nla_d, self.nla_d))
-        for contr in self.__d_contr:
-            coo[contr.la_dDOF, contr.la_dDOF] = contr.d_la_d()
-        self._d_la_d0 = coo.tocoo()
 
         # compute consistent initial conditions
         (
@@ -413,6 +434,7 @@ class System:
             self.la_g0,
             self.la_gamma0,
             self.la_c0,
+            self.la_e0,
             self.la_d0,
             self.la_N0,
             self.la_F0,
@@ -420,16 +442,17 @@ class System:
 
         self.sol0 = Solution(
             self,
-            np.array([self.t0]),
-            np.array([self.q0]),
-            np.array([self.u0]),
-            np.array([self.u_dot0]),
-            np.array([self.la_g0]),
-            np.array([self.la_gamma0]),
-            np.array([self.la_c0]),
-            np.array([self.la_d0]),
-            np.array([self.la_N0]),
-            np.array([self.la_F0]),
+            t=np.array([self.t0]),
+            q=np.array([self.q0]),
+            u=np.array([self.u0]),
+            u_dot=np.array([self.u_dot0]),
+            la_g=np.array([self.la_g0]),
+            la_gamma=np.array([self.la_gamma0]),
+            la_c=np.array([self.la_c0]),
+            la_e=np.array([self.la_e0]),
+            la_d=np.array([self.la_d0]),
+            la_N=np.array([self.la_N0]),
+            la_F=np.array([self.la_F0]),
         )
 
     def assembler_callback(self):
@@ -488,6 +511,12 @@ class System:
             E_pot_comp += contr.E_pot_comp(t, q[contr.qDOF], la_c[contr.la_cDOF])
         return E_pot_comp
 
+    def E_pot_comp_e(self, t, q, la_e):
+        E_pot_comp_e = 0.0
+        for contr in self.__E_pot_comp_e_contr:
+            E_pot_comp_e += contr.E_pot_comp_e(t, q[contr.qDOF], la_e[contr.la_eDOF])
+        return E_pot_comp_e
+
     def E_pot(self, t, q):
         E_pot = 0.0
         for contr in self.__E_pot_contr:
@@ -524,7 +553,7 @@ class System:
                 self.__M_contr[self.I_M]
             ):  # only loop over variable mass parts
                 coo[i, contr.uDOF, contr.uDOF] = contr.M(t, q[contr.qDOF])
-            return coo.asformat(format) + self._M0.asformat(format)
+            return coo.asformat(format)
         else:
             return self._M0.asformat(format)
 
@@ -660,6 +689,71 @@ class System:
             coo_N[i, contr.uDOF, contr.uDOF] = N
         return coo_K.asformat(format), coo_N.asformat(format)
 
+    ############
+    # elasticity
+    ############
+    def la_e(self, t, q):
+        la_e = np.zeros(self.nla_e, dtype=np.common_type(q))
+        for contr in self.__e_contr:
+            la_e[contr.la_eDOF] = contr.la_e(t, q[contr.qDOF])
+        return la_e
+
+    def e(self, t, q, la_e):
+        e = np.zeros(self.nla_e, dtype=np.common_type(q, la_e))
+        for contr in self.__e_contr:
+            e[contr.la_eDOF] = contr.e(t, q[contr.qDOF], la_e[contr.la_eDOF])
+        return e
+
+    def e_q(self, t, q, la_e, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nla_e, self.nq))
+        for i, contr in enumerate(self.__e_contr):
+            coo[i, contr.la_eDOF, contr.qDOF] = contr.e_q(
+                t, q[contr.qDOF], la_e[contr.la_eDOF]
+            )
+        return coo.asformat(format)
+
+    def e_la_e(self, t, q, format="coo", coo=None):
+        if np.any(self.I_e_la_e):
+            if coo is None:
+                coo = CooMatrix((self.nla_e, self.nla_e))
+                coo[:, :] = self._e_la_e0
+            for i, contr in enumerate(
+                self.__e_contr[self.I_e_la_e]
+            ):  # only loop over variable elasticity parts
+                coo[i, contr.la_eDOF, contr.la_eDOF] = contr.e_la_e(t, q[contr.qDOF])
+            return coo.asformat(format)
+        else:
+            return self._e_la_e0.asformat(format)
+
+    def W_e(self, t, q, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nu, self.nla_e))
+        for i, contr in enumerate(self.__e_contr):
+            coo[i, contr.uDOF, contr.la_eDOF] = contr.W_e(t, q[contr.qDOF])
+        return coo.asformat(format)
+
+    def Wla_e_q(self, t, q, la_e, format="coo", coo=None):
+        if coo is None:
+            coo = CooMatrix((self.nu, self.nq))
+        for i, contr in enumerate(self.__e_contr):
+            coo[i, contr.uDOF, contr.qDOF] = contr.Wla_e_q(
+                t, q[contr.qDOF], la_e[contr.la_eDOF]
+            )
+        return coo.asformat(format)
+
+    def KN_e(self, t, q, la_e, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+        for i, contr in enumerate(self.__e_contr):
+            K, N = contr.KN_e(t, q[contr.qDOF], la_e[contr.la_eDOF])
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
     #########
     # damping
     #########
@@ -677,24 +771,27 @@ class System:
             )
         return d
 
-    def d_q(self, t, q, u, format="coo", coo=None):
+    def d_q(self, t, q, u, la_d, format="coo", coo=None):
         if coo is None:
             coo = CooMatrix((self.nla_d, self.nq))
-        for i, contr in enumerate(self.__d_q_contr):
+        for i, contr in enumerate(self.__d_contr):
             coo[i, contr.la_dDOF, contr.qDOF] = contr.d_q(
-                t, q[contr.qDOF], u[contr.uDOF]
+                t, q[contr.qDOF], u[contr.uDOF], la_d[contr.la_dDOF]
             )
         return coo.asformat(format)
 
-    def d_u(self, t, q, format="coo", coo=None):
-        if coo is None:
-            coo = CooMatrix((self.nla_d, self.nu))
-        for i, contr in enumerate(self.__d_contr):
-            coo[i, contr.la_dDOF, contr.uDOF] = contr.d_u(t, q[contr.qDOF])
-        return coo.asformat(format)
-
-    def d_la_d(self, format="coo"):
-        return self._d_la_d0.asformat(format)
+    def d_la_d(self, t, q, format="coo", coo=None):
+        if np.any(self.I_d_la_d):
+            if coo is None:
+                coo = CooMatrix((self.nla_d, self.nla_d))
+                coo[:, :] = self._d_la_d0
+            for i, contr in enumerate(
+                self.__d_contr[self.I_d_la_d]
+            ):  # only loop over variable damping parts
+                coo[i, contr.la_dDOF, contr.la_dDOF] = contr.d_la_d(t, q[contr.qDOF])
+            return coo.asformat(format)
+        else:
+            return self._d_la_d0.asformat(format)
 
     def W_d(self, t, q, format="coo", coo=None):
         if coo is None:
@@ -711,6 +808,21 @@ class System:
                 t, q[contr.qDOF], la_d[contr.la_dDOF]
             )
         return coo.asformat(format)
+
+    def KN_d(self, t, q, la_d, format="coo", coo=None):
+        if coo is None:
+            coo_K = CooMatrix((self.nu, self.nu))
+            coo_N = CooMatrix((self.nu, self.nu))
+        else:
+            coo_K, coo_N = coo
+        for i, contr in enumerate(self.__d_contr):
+            K, N = contr.KN_d(t, q[contr.qDOF], la_d[contr.la_eDOF])
+            coo_K[i, contr.uDOF, contr.uDOF] = K
+            coo_N[i, contr.uDOF, contr.uDOF] = N
+        return coo_K.asformat(format), coo_N.asformat(format)
+
+    def DG_d(self, t, q, la_d, format="coo", coo=None):
+        raise NotImplementedError
 
     ###########
     # actuators

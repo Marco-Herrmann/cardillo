@@ -1,9 +1,9 @@
 import numpy as np
 
-from ._base import ScalarForceLawComplianceForm
+from ._base import ScalarForceLaw
 
 
-class KelvinVoigtElement(ScalarForceLawComplianceForm):
+class KelvinVoigtElement(ScalarForceLaw):
     r"""Scalar force law consisting of a linear spring and a linear damper acting in parallel.
 
     Parameters
@@ -32,37 +32,63 @@ class KelvinVoigtElement(ScalarForceLawComplianceForm):
         compliance_form=True,
         name="kelvin_voigt_element",
     ):
-        super().__init__(subsystem, compliance_form)
-        self.k = k
-        self.d = d
+        nla_d = 1 if d > 0.0 else 0
+        super().__init__(subsystem, nla_d, compliance_form)
+        assert k > 0.0
+        self.__k = k
+        self.__d = d
         self.l_ref = l_ref
         self.name = name
+
+        # e_la_e = 1 / k and d_la_d = 1 / d are constant
+        self.constant_e_la_e = True
+        self.constant_d_la_d = True
 
     def assembler_callback(self):
         super().assembler_callback()
         if self.l_ref is None:
             self.l_ref = self.subsystem.l(self.subsystem.t0, self.subsystem.q0)
 
+    # stiffness
     def _E_pot(self, t, l):
-        return 0.5 * self.k * (l - self.l_ref) ** 2
+        return 0.5 * self.__k * (l - self.l_ref) ** 2
 
-    def _la_c(self, t, l, l_dot):
-        return -self.k * (l - self.l_ref) - self.d * l_dot
+    def _E_pot_comp_e(self, t, l, la_e):
+        return -(l - self.l_ref) * la_e - 0.5 / self.__k * la_e**2
 
-    def _la_c_l(self, t, l, l_dot):
-        return -self.k
+    def _la_e(self, t, l):
+        return -self.__k * (l - self.l_ref)
 
-    def _la_c_l_dot(self, t, l, l_dot):
-        return -self.d
+    def _la_e_l(self, t, l):
+        return -self.__k
 
-    def _c(self, t, l, l_dot, la_c):
-        return la_c / self.k + (l - self.l_ref) + (self.d / self.k) * l_dot
+    def _e(self, t, l, la_e):
+        return la_e / self.__k + (l - self.l_ref)
 
-    def _c_l(self, t, l, l_dot, la_c):
-        return 1
+    def _e_l(self, t, l, la_e):
+        return 1.0
 
-    def _c_l_dot(self, t, l, l_dot, la_c):
-        return self.d / self.k
+    def _e_la_e(self, t, l):
+        return 1 / self.__k
 
-    def c_la_c(self):
-        return 1 / self.k
+    # damping
+    def _la_d(self, t, l, l_dot):
+        return -self.__d * l_dot
+
+    def _la_d_l(self, t, l, l_dot):
+        return 0.0
+
+    def _la_d_l_dot(self, t, l):
+        return -self.__d
+
+    def _d(self, t, l, l_dot, la_d):
+        return la_d / self.__d + l_dot
+
+    def _d_l(self, t, l, l_dot, la_d):
+        return 0.0
+
+    def _d_l_dot(self, t, l):
+        return 1.0
+
+    def _d_la_d(self, t, l):
+        return 1 / self.__d

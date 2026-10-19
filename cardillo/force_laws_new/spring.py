@@ -1,9 +1,9 @@
 import numpy as np
 
-from ._base import ScalarForceLawComplianceForm
+from ._base import ScalarForceLaw
 
 
-class Spring(ScalarForceLawComplianceForm):
+class Spring(ScalarForceLaw):
     r"""Scalar force law consisting of a linear spring.
 
     Parameters
@@ -24,6 +24,7 @@ class Spring(ScalarForceLawComplianceForm):
     def __init__(
         self, subsystem, k, l_ref=None, compliance_form=True, name="linear_spring"
     ):
+        raise NotImplementedError
         super().__init__(subsystem, compliance_form)
         self.k = k
         self.l_ref = l_ref
@@ -37,23 +38,17 @@ class Spring(ScalarForceLawComplianceForm):
     def _E_pot(self, t, l):
         return 0.5 * self.k * (l - self.l_ref) ** 2
 
-    def _la_c(self, t, l, l_dot):
+    def _la_c(self, t, l):
         return -self.k * (l - self.l_ref)
 
-    def _la_c_l(self, t, l, l_dot):
+    def _la_c_l(self, t, l):
         return -self.k
 
-    def _la_c_l_dot(self, t, l, l_dot):
-        return 0.0
-
-    def _c(self, t, l, l_dot, la_c):
+    def _c(self, t, l, la_c):
         return la_c / self.k + (l - self.l_ref)
 
-    def _c_l(self, t, l, l_dot, la_c):
+    def _c_l(self, t, l, la_c):
         return 1.0
-
-    def _c_l_dot(self, t, l, l_dot, la_c):
-        return 0.0
 
     def c_la_c(self):
         return 1 / self.k
