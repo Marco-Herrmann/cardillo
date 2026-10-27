@@ -102,7 +102,14 @@ class CosseratRod(RodBlenderExport):
         self.kin_eq = self._Kin_eq(self, self._parametrization, self._projection)
 
         # initialize internal virtual work contributions
-        self.internal = self._Internal(self, mesh_kin, mesh_cg, self._quadrature_int)
+        self.internal = self._Internal(
+            self,
+            mesh_kin,
+            mesh_cg,
+            self._quadrature_int,
+            material_model.idx_damp,
+            self._convex_conjugate,
+        )
 
         # initialize dynamics virtual work contributiosn
         self.dynamics = self._Dynamics(
@@ -424,6 +431,7 @@ def make_CosseratRod(
     quadrature_ext=None,
     parametrization=None,
     projection=None,
+    convex_conjugate=False,
 ):
     """Factory for Petrov-Galerkin Cosserat rod classes.
 
@@ -657,6 +665,7 @@ def make_CosseratRod(
         idx_g = idx_constraints
         idx_db = idx_displacement_based
         idx_c = idx_compliance
+        _convex_conjugate = convex_conjugate
 
     return _CosseratRod
 

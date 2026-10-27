@@ -1,11 +1,18 @@
 from abc import ABC, abstractmethod
 import numpy as np
+from warnings import warn
 
 from cardillo.utility.parametrize import parametrize
 
 
 class RodMaterialModel(ABC):
     """Abstract class for rod material models"""
+
+    idx_damp = np.array([], dtype=int)
+    # C(epsilon) and D are independent of the strains, i.e., the rod's e_la_e
+    # and d_la_d are constant and only evaluated once by the system
+    constant_C = False
+    constant_D = False
 
     @abstractmethod
     def prepare(self, xi):
@@ -44,7 +51,54 @@ class RodMaterialModel_compliance(RodMaterialModel):
     def C_inv(self, xi): ...
 
 
-class Simo1986(RodMaterialModel_compliance):
+class LinearViscousDamping:
+    """Linear viscous stresses sigma_d = diag(DEi, DFi) @ epsilon_dot, which can
+    be added to any rod material model."""
+
+    # D_inv does not depend on the strains
+    constant_D = True
+
+    def _init_damping(self, DEi, DFi):
+        self.DEi = parametrize(DEi)
+        self.DFi = parametrize(DFi)
+
+        # check which indices are damped (assume that is not changing along the rod)
+        DEiDFi0 = np.concatenate([self.DEi(0.0), self.DFi(0.0)])
+        self.idx_damp = np.array([i for i in range(6) if DEiDFi0[i] != 0.0], dtype=int)
+
+    def _prepare_damping(self, xi):
+        DEi = self.DEi(xi)
+        DFi = self.DFi(xi)
+        DEiDFi = np.hstack([DEi, DFi])
+        D_Ga = np.apply_along_axis(np.diag, 1, DEi)
+        D_Ka = np.apply_along_axis(np.diag, 1, DFi)
+        zeros = np.zeros((len(xi), 3, 3))
+        # invert the invertable ones
+        D_inv = 1 / np.where(DEiDFi != 0.0, DEiDFi, np.ones_like(DEiDFi))
+        D_inv = np.apply_along_axis(np.diag, 1, D_inv)
+
+        return dict(
+            DEiDFi=DEiDFi,
+            sigma_epsilon_dot=(D_Ga, zeros, zeros, D_Ka),
+            D_inv=D_inv,
+        )
+
+    def _sigma_damping(self, epsilon_dot, prepare):
+        # epsilon_dot = None: only elastic stresses, e.g., in the compliance form
+        if epsilon_dot is None:
+            return 0.0
+        return prepare["DEiDFi"] * epsilon_dot
+
+    def sigma_epsilon_dot(self, epsilon, epsilon0, epsilon_dot, prepare):
+        return prepare["sigma_epsilon_dot"]
+
+    def D_inv(self, prepare):
+        return prepare["D_inv"]
+
+
+class Simo1986(LinearViscousDamping, RodMaterialModel_compliance):
+    constant_C = True
+
     def __init__(self, Ei, Fi, DEi=np.zeros(3), DFi=np.zeros(3)):
         """
         Material model for shear deformable rod with quadratic strain energy
@@ -70,8 +124,7 @@ class Simo1986(RodMaterialModel_compliance):
         """
         self.Ei = parametrize(Ei)
         self.Fi = parametrize(Fi)
-        self.DEi = parametrize(DEi)
-        self.DFi = parametrize(DFi)
+        self._init_damping(DEi, DFi)
 
     def prepare(self, xi):
         Ei = self.Ei(xi)
@@ -82,19 +135,13 @@ class Simo1986(RodMaterialModel_compliance):
         zeros = np.zeros((len(xi), 3, 3))
         C_inv = np.apply_along_axis(np.diag, 1, 1 / EiFi)
 
-        # viscous part
-        DEi = self.DEi(xi)
-        DFi = self.DFi(xi)
-        DEiDFi = np.hstack([DEi, DFi])
-        D_Ga = np.apply_along_axis(np.diag, 1, DEi)
-        D_Ka = np.apply_along_axis(np.diag, 1, DFi)
-
         return dict(
             EiFi=EiFi,
-            DEiDFi=DEiDFi,
             sigma_epsilon=(C_Ga, zeros, zeros, C_Ka),
-            sigma_epsilon_dot=(D_Ga, zeros, zeros, D_Ka),
             C_inv=C_inv,
+            epsilon_rel_epsilon=np.tile(np.eye(6), (len(xi), 1, 1)),
+            Csigma_epsilon=np.zeros((len(xi), 6, 6)),
+            **self._prepare_damping(xi),
         )
 
     def potential(self, epsilon, epsilon0, prepare):
@@ -104,13 +151,27 @@ class Simo1986(RodMaterialModel_compliance):
 
     def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
         d_epsilon = epsilon - epsilon0
-        return prepare["EiFi"] * d_epsilon + prepare["DEiDFi"] * epsilon_dot
+        return prepare["EiFi"] * d_epsilon + self._sigma_damping(epsilon_dot, prepare)
 
     def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
         return prepare["sigma_epsilon"]
 
-    def sigma_epsilon_dot(self, epsilon, epsilon0, epsilon_dot, prepare):
-        return prepare["sigma_epsilon_dot"]
+    def epsilon_rel(self, epsilon, epsilon0, prepare):
+        return epsilon - epsilon0
+
+    def epsilon_rel_epsilon(self, epsilon, epsilon0, prepare):
+        return prepare["epsilon_rel_epsilon"]
+
+    def C(self, epsilon, epsilon0, prepare):
+        return prepare["C_inv"]
+
+    def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
+        # derivative of C(epsilon) @ sigma w.r.t. epsilon, C is constant
+        return prepare["Csigma_epsilon"]
+
+    def epsilon_rel_inv(self, sigma, epsilon0, prepare):
+        # solves C @ sigma - epsilon_rel(epsilon) = 0 for epsilon
+        return epsilon0 + np.einsum("ijk,ik->ij", prepare["C_inv"], sigma)
 
     def C_inv(self, prepare):
         return prepare["C_inv"]
@@ -123,11 +184,11 @@ class Harsch2021(RodMaterialModel):
 
         Parameters
         ----------
-        Ei : np.ndarray(3)
+        Ei : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
             E0: extensional stiffness, i.e., stiffness in r_OP'-direction.
             E1: shear stiffness in e_y^K-direction.
             E2: shear stiffness in e_z^K-direction.
-        Fi : np.ndarray(3)
+        Fi : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
             F0: torsional stiffness
             F1: flexural stiffness around e_y^K-direction.
             F2: flexural stiffness around e_z^K-direction.
@@ -136,52 +197,253 @@ class Harsch2021(RodMaterialModel):
         ----------
         Harsch2021: https://doi.org/10.1177/10812865211000790
         """
-
-        # TODO: do this maybe nicer
-        from cardillo.rods._material_models import Harsch2021 as Harsch2021_old
-
-        self.old = Harsch2021_old(Ei, Fi)
+        self.Ei = parametrize(Ei)
+        self.Fi = parametrize(Fi)
 
     def prepare(self, xi):
-        return None
+        Ei = self.Ei(xi)
+        Fi = self.Fi(xi)
+        E0 = Ei[:, 0]
+        C_n = np.apply_along_axis(np.diag, 1, Ei * np.array([0, 1, 1]))
+        C_m = np.apply_along_axis(np.diag, 1, Fi)
+        C_m_inv = np.apply_along_axis(np.diag, 1, 1 / Fi)
+        # inverse of linearized n_Ga at the reference, i.e., diag(1 / Ei)
+        C_n_inv = np.apply_along_axis(np.diag, 1, 1 / Ei)
+        zeros = np.zeros((len(xi), 3, 3))
+
+        return dict(
+            E0=E0,
+            C_n=C_n,
+            C_n_inv=C_n_inv,
+            C_m=C_m,
+            C_m_inv=C_m_inv,
+            zeros=zeros,
+            eye6=np.tile(np.eye(6), (len(xi), 1, 1)),
+        )
+
+    def _n_Ga(self, epsilon, epsilon0, prepare):
+        """n_Ga = C_n + a * I + b * Gamma x Gamma, with
+        a = E0 * (1 - lambda0 / lambda) and b = E0 * lambda0 / lambda^3."""
+        Ga = epsilon[:, :3]
+        la = np.linalg.norm(Ga, axis=1)
+        la0 = np.linalg.norm(epsilon0[:, :3], axis=1)
+        E0 = prepare["E0"]
+        a = E0 * (1 - la0 / la)
+        b = E0 * la0 / la**3
+        n_Ga = (
+            prepare["C_n"]
+            + a[:, None, None] * np.eye(3)
+            + b[:, None, None] * np.einsum("ij,ik->ijk", Ga, Ga)
+        )
+        return n_Ga, a, b, la
 
     def potential(self, epsilon, epsilon0, prepare):
-        nxi = np.atleast_2d(epsilon).shape[0]
-        pot = np.empty(nxi)
-        for i in range(nxi):
-            Gamma = epsilon[i, :3]
-            Gamma0 = epsilon0[i, :3]
-            Kappa = epsilon[i, 3:]
-            Kappa0 = epsilon0[i, 3:]
-            pot[i] = self.old.potential(Gamma, Gamma0, Kappa, Kappa0)
-        return pot
+        d_epsilon = epsilon - epsilon0
+        dG = d_epsilon[:, :3]
+        dK = d_epsilon[:, 3:]
+        la = np.linalg.norm(epsilon[:, :3], axis=1)
+        la0 = np.linalg.norm(epsilon0[:, :3], axis=1)
+        return 0.5 * (
+            np.einsum("ij,ijk,ik->i", dG, prepare["C_n"], dG)
+            + prepare["E0"] * (la - la0) ** 2
+            + np.einsum("ij,ijk,ik->i", dK, prepare["C_m"], dK)
+        )
 
     def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
-        nxi = np.atleast_2d(epsilon).shape[0]
-        sigma = np.empty((nxi, 6))
-        for i in range(nxi):
-            Gamma = epsilon[i, :3]
-            Gamma0 = epsilon0[i, :3]
-            Kappa = epsilon[i, 3:]
-            Kappa0 = epsilon0[i, 3:]
-            sigma[i, :3] = self.old.B_n(Gamma, Gamma0, Kappa, Kappa0)
-            sigma[i, 3:] = self.old.B_m(Gamma, Gamma0, Kappa, Kappa0)
+        d_epsilon = epsilon - epsilon0
+        la = np.linalg.norm(epsilon[:, :3], axis=1)
+        la0 = np.linalg.norm(epsilon0[:, :3], axis=1)
+        a = prepare["E0"] * (1 - la0 / la)
+        sigma = np.empty_like(epsilon)
+        sigma[:, :3] = (
+            np.einsum("ijk,ik->ij", prepare["C_n"], d_epsilon[:, :3])
+            + a[:, None] * epsilon[:, :3]
+        )
+        sigma[:, 3:] = np.einsum("ijk,ik->ij", prepare["C_m"], d_epsilon[:, 3:])
         return sigma
 
     def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
-        nxi = np.atleast_2d(epsilon).shape[0]
-        n_Ga = np.empty((nxi, 3, 3))
-        n_Ka = np.empty((nxi, 3, 3))
-        m_Ga = np.empty((nxi, 3, 3))
-        m_Ka = np.empty((nxi, 3, 3))
-        for i in range(nxi):
-            Gamma = epsilon[i, :3]
-            Gamma0 = epsilon0[i, :3]
-            Kappa = epsilon[i, 3:]
-            Kappa0 = epsilon0[i, 3:]
-            n_Ga[i] = self.old.B_n_B_Gamma(Gamma, Gamma0, Kappa, Kappa0)
-            n_Ka[i] = self.old.B_n_B_Kappa(Gamma, Gamma0, Kappa, Kappa0)
-            m_Ga[i] = self.old.B_m_B_Gamma(Gamma, Gamma0, Kappa, Kappa0)
-            m_Ka[i] = self.old.B_m_B_Kappa(Gamma, Gamma0, Kappa, Kappa0)
+        n_Ga = self._n_Ga(epsilon, epsilon0, prepare)[0]
+        zeros = prepare["zeros"]
+        return n_Ga, zeros, zeros, prepare["C_m"]
 
-        return n_Ga, n_Ka, m_Ga, m_Ka
+    # compliance form: C(epsilon) @ sigma - epsilon_rel(epsilon) = 0,
+    # with C = sigma_epsilon^-1 and epsilon_rel = C @ sigma
+    def C(self, epsilon, epsilon0, prepare):
+        n_Ga = self._n_Ga(epsilon, epsilon0, prepare)[0]
+        C = np.zeros((len(epsilon), 6, 6))
+        C[:, :3, :3] = np.linalg.inv(n_Ga)
+        C[:, 3:, 3:] = prepare["C_m_inv"]
+        return C
+
+    def epsilon_rel(self, epsilon, epsilon0, prepare):
+        warn(
+            "Harsch2021 is not convex, but its compliance form (la_e) requires "
+            "an invertible sigma_epsilon: n_Ga becomes singular under compression, "
+            "e.g., for lambda / lambda0 < E0 / (E0 + min(E1, E2)) without shear. "
+            "Use it displacement-based or use a convex material model, e.g., Herrmann2026."
+        )
+        C = self.C(epsilon, epsilon0, prepare)
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        return np.einsum("ijk,ik->ij", C, sigma)
+
+    def epsilon_rel_epsilon(self, epsilon, epsilon0, prepare):
+        # d(C @ sigma)/d epsilon = C @ sigma_epsilon + d(C @ sigma)/d epsilon|_sigma
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        return prepare["eye6"] + self.Csigma_epsilon(epsilon, epsilon0, sigma, prepare)
+
+    def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
+        # d(n_Ga^-1 @ n)/d Gamma = -n_Ga^-1 @ T with T_k = d n_Ga/d Gamma_k @ v,
+        # v = n_Ga^-1 @ n, and n_Ga as in self._n_Ga
+        n_Ga, a, b, la = self._n_Ga(epsilon, epsilon0, prepare)
+        n_Ga_inv = np.linalg.inv(n_Ga)
+        Ga = epsilon[:, :3]
+        v = np.einsum("ijk,ik->ij", n_Ga_inv, sigma[:, :3])
+        Ga_v = np.sum(Ga * v, axis=1)
+        T = b[:, None, None] * (
+            np.einsum("ij,ik->ijk", v, Ga)
+            + np.einsum("ij,ik->ijk", Ga, v)
+            + Ga_v[:, None, None] * np.eye(3)
+            - 3 * (Ga_v / la**2)[:, None, None] * np.einsum("ij,ik->ijk", Ga, Ga)
+        )
+
+        Csigma_epsilon = np.zeros((len(epsilon), 6, 6))
+        Csigma_epsilon[:, :3, :3] = -n_Ga_inv @ T
+        return Csigma_epsilon
+
+    def epsilon_rel_inv(self, sigma, epsilon0, prepare, atol=1e-12, max_iter=20):
+        # solves C(epsilon) @ sigma - epsilon_rel(epsilon) = 0 for epsilon,
+        # which is equivalent to sigma(epsilon) - sigma = 0 as C is regular
+        epsilon = epsilon0.copy()
+        epsilon[:, :3] += np.einsum("ijk,ik->ij", prepare["C_n_inv"], sigma[:, :3])
+        epsilon[:, 3:] += np.einsum("ijk,ik->ij", prepare["C_m_inv"], sigma[:, 3:])
+
+        # Newton iteration for Gamma, starting at linearized solution
+        for _ in range(max_iter):
+            R = self.sigma(epsilon, epsilon0, None, prepare)[:, :3] - sigma[:, :3]
+            if np.max(np.abs(R)) < atol:
+                break
+            n_Ga = self._n_Ga(epsilon, epsilon0, prepare)[0]
+            epsilon[:, :3] -= np.linalg.solve(n_Ga, R[:, :, None])[:, :, 0]
+        else:
+            raise RuntimeError("epsilon_rel_inv: Newton iteration did not converge")
+
+        return epsilon
+
+
+class Herrmann2026(LinearViscousDamping, RodMaterialModel):
+    def __init__(self, Ei, Fi, DEi=np.zeros(3), DFi=np.zeros(3), quadratic_part=0.5):
+        self.Ei = parametrize(Ei)
+        self.Fi = parametrize(Fi)
+
+        assert (
+            0 < quadratic_part <= 1
+        ), f"quadratic part must be in (0, 1], but was {quadratic_part:.3f}"
+        self.quadratic_part = quadratic_part
+
+        self._init_damping(DEi, DFi)
+
+    def prepare(self, xi):
+        Ei = self.Ei(xi)
+        Fi = self.Fi(xi)
+        E0 = Ei[:, 0]
+        # split of the axial stiffness into the ln part and quadratic part
+        E_quad = self.quadratic_part * E0
+        E_ln = (1 - self.quadratic_part) * E0
+
+        prepare = {}
+        prepare["E_ln"] = E_ln
+        # diagonal of the quadratic part, i.e., stored component-wise
+        EiFi_quad = np.hstack([E_quad[:, None], Ei[:, 1:], Fi])
+        prepare["EiFi_quad"] = EiFi_quad
+        # constant parts of sigma_epsilon, only n_Ga[:, 0, 0] gets the ln part
+        prepare["n_Ga_quad"] = np.apply_along_axis(np.diag, 1, EiFi_quad[:, :3])
+        prepare["m_Ka"] = np.apply_along_axis(np.diag, 1, Fi)
+        prepare["zeros"] = np.zeros((len(xi), 3, 3))
+        prepare.update(self._prepare_damping(xi))
+        return prepare
+
+    def potential(self, epsilon, epsilon0, prepare):
+        epsx = epsilon[:, 0]
+        epsx0 = epsilon0[:, 0]
+        Wx = -prepare["E_ln"] * epsx0 * (epsx0 * np.log(epsx / epsx0) - (epsx - epsx0))
+
+        d_eps = epsilon - epsilon0
+        return Wx + 0.5 * np.sum(prepare["EiFi_quad"] * d_eps**2, axis=1)
+
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
+        epsx = epsilon[:, 0]
+        epsx0 = epsilon0[:, 0]
+
+        sigma = prepare["EiFi_quad"] * (epsilon - epsilon0)
+        sigma[:, 0] += prepare["E_ln"] * epsx0 * (epsx - epsx0) / epsx
+        return sigma + self._sigma_damping(epsilon_dot, prepare)
+
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
+        epsx = epsilon[:, 0]
+        epsx0 = epsilon0[:, 0]
+
+        n_Ga = prepare["n_Ga_quad"].copy()
+        n_Ga[:, 0, 0] += prepare["E_ln"] * epsx0**2 / epsx**2
+        zeros = prepare["zeros"]
+        return n_Ga, zeros, zeros, prepare["m_Ka"]
+
+    # compliance form: C(epsilon) @ sigma - epsilon_rel(epsilon) = 0,
+    # with C = sigma_epsilon^-1 and epsilon_rel = C @ sigma.
+    # sigma_epsilon is diagonal, hence everything is evaluated component-wise.
+    def _k(self, epsilon, epsilon0, prepare):
+        """diagonal of sigma_epsilon"""
+        k = prepare["EiFi_quad"].copy()
+        k[:, 0] += prepare["E_ln"] * epsilon0[:, 0] ** 2 / epsilon[:, 0] ** 2
+        return k
+
+    def C(self, epsilon, epsilon0, prepare):
+        k = self._k(epsilon, epsilon0, prepare)
+        C = np.zeros((len(epsilon), 6, 6))
+        C[:, range(6), range(6)] = 1 / k
+        return C
+
+    def epsilon_rel(self, epsilon, epsilon0, prepare):
+        k = self._k(epsilon, epsilon0, prepare)
+        return self.sigma(epsilon, epsilon0, None, prepare) / k
+
+    def epsilon_rel_epsilon(self, epsilon, epsilon0, prepare):
+        # d(C @ sigma)/d epsilon = C @ sigma_epsilon + d(C @ sigma)/d epsilon|_sigma
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        epsilon_rel_epsilon = self.Csigma_epsilon(epsilon, epsilon0, sigma, prepare)
+        epsilon_rel_epsilon[:, range(6), range(6)] += 1.0
+        return epsilon_rel_epsilon
+
+    def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
+        # only C[0, 0] = 1 / k0 depends on epsilon, with
+        # k0 = E_quad + E_ln * epsx0^2 / epsx^2 and dk0/depsx = -2 * E_ln * epsx0^2 / epsx^3
+        epsx = epsilon[:, 0]
+        epsx0 = epsilon0[:, 0]
+        k0 = self._k(epsilon, epsilon0, prepare)[:, 0]
+        k0_epsx = -2 * prepare["E_ln"] * epsx0**2 / epsx**3
+
+        Csigma_epsilon = np.zeros((len(epsilon), 6, 6))
+        Csigma_epsilon[:, 0, 0] = -sigma[:, 0] * k0_epsx / k0**2
+        return Csigma_epsilon
+
+    def epsilon_rel_inv(self, sigma, epsilon0, prepare):
+        # solves C(epsilon) @ sigma - epsilon_rel(epsilon) = 0 for epsilon,
+        # which is equivalent to sigma(epsilon) - sigma = 0 as C is regular
+        epsilon = epsilon0 + sigma / prepare["EiFi_quad"]
+
+        # axial part: E_quad * (x - x0) + E_ln * x0 * (x - x0) / x = n,
+        # multiplied by x: E_quad * x^2 + b * x - E_ln * x0^2 = 0, with
+        # b = (E_ln - E_quad) * x0 - n, which has exactly one positive root
+        x0 = epsilon0[:, 0]
+        E_quad = prepare["EiFi_quad"][:, 0]
+        E_ln = prepare["E_ln"]
+        b = (E_ln - E_quad) * x0 - sigma[:, 0]
+        sqrt_D = np.sqrt(b**2 + 4 * E_quad * E_ln * x0**2)
+        # cancellation free root (also valid for E_quad = 0 if b > 0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            epsilon[:, 0] = np.where(
+                b > 0,
+                2 * E_ln * x0**2 / (b + sqrt_D),
+                (-b + sqrt_D) / (2 * E_quad),
+            )
+        return epsilon
