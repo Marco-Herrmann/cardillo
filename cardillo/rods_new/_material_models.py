@@ -350,9 +350,11 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
         # split of the axial stiffness into the ln part and quadratic part
         E_quad = self.quadratic_part * E0
         E_ln = (1 - self.quadratic_part) * E0
+        has_ln = E_ln != 0.0
 
         prepare = {}
         prepare["E_ln"] = E_ln
+        prepare["has_ln"] = has_ln
         # diagonal of the quadratic part, i.e., stored component-wise
         EiFi_quad = np.hstack([E_quad[:, None], Ei[:, 1:], Fi])
         prepare["EiFi_quad"] = EiFi_quad
@@ -364,27 +366,36 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
         return prepare
 
     def potential(self, epsilon, epsilon0, prepare):
-        epsx = epsilon[:, 0]
-        epsx0 = epsilon0[:, 0]
-        Wx = -prepare["E_ln"] * epsx0 * (epsx0 * np.log(epsx / epsx0) - (epsx - epsx0))
+        E_ln = prepare["E_ln"]
+        has_ln = prepare["has_ln"]
 
         d_eps = epsilon - epsilon0
+        d_epsx = d_eps[has_ln, 0]
+        epsx_rel = epsilon[has_ln, 0] / epsilon0[has_ln, 0]
+
+        epsx = epsilon[:, 0]
+        epsx0 = epsilon0[has_ln, 0]
+        Wx = np.zeros_like(epsx)
+        Wx[has_ln] = -E_ln[has_ln] * epsx0 * (epsx0 * np.log(epsx_rel) - d_epsx)
+
         return Wx + 0.5 * np.sum(prepare["EiFi_quad"] * d_eps**2, axis=1)
 
     def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
-        epsx = epsilon[:, 0]
-        epsx0 = epsilon0[:, 0]
+        has_ln = prepare["has_ln"]
+        epsx = epsilon[has_ln, 0]
+        epsx0 = epsilon0[has_ln, 0]
 
         sigma = prepare["EiFi_quad"] * (epsilon - epsilon0)
-        sigma[:, 0] += prepare["E_ln"] * epsx0 * (epsx - epsx0) / epsx
+        sigma[has_ln, 0] += prepare["E_ln"][has_ln] * epsx0 * (epsx - epsx0) / epsx
         return sigma + self._sigma_damping(epsilon_dot, prepare)
 
     def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
-        epsx = epsilon[:, 0]
-        epsx0 = epsilon0[:, 0]
+        has_ln = prepare["has_ln"]
+        epsx = epsilon[has_ln, 0]
+        epsx0 = epsilon0[has_ln, 0]
 
         n_Ga = prepare["n_Ga_quad"].copy()
-        n_Ga[:, 0, 0] += prepare["E_ln"] * epsx0**2 / epsx**2
+        n_Ga[has_ln, 0, 0] += prepare["E_ln"][has_ln] * epsx0**2 / epsx**2
         zeros = prepare["zeros"]
         return n_Ga, zeros, zeros, prepare["m_Ka"]
 
@@ -393,8 +404,13 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
     # sigma_epsilon is diagonal, hence everything is evaluated component-wise.
     def _k(self, epsilon, epsilon0, prepare):
         """diagonal of sigma_epsilon"""
+        has_ln = prepare["has_ln"]
         k = prepare["EiFi_quad"].copy()
-        k[:, 0] += prepare["E_ln"] * epsilon0[:, 0] ** 2 / epsilon[:, 0] ** 2
+        k[has_ln, 0] += (
+            prepare["E_ln"][has_ln]
+            * epsilon0[has_ln, 0] ** 2
+            / epsilon[has_ln, 0] ** 2
+        )
         return k
 
     def C(self, epsilon, epsilon0, prepare):
@@ -417,10 +433,12 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
     def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
         # only C[0, 0] = 1 / k0 depends on epsilon, with
         # k0 = E_quad + E_ln * epsx0^2 / epsx^2 and dk0/depsx = -2 * E_ln * epsx0^2 / epsx^3
-        epsx = epsilon[:, 0]
-        epsx0 = epsilon0[:, 0]
+        has_ln = prepare["has_ln"]
+        epsx = epsilon[has_ln, 0]
+        epsx0 = epsilon0[has_ln, 0]
         k0 = self._k(epsilon, epsilon0, prepare)[:, 0]
-        k0_epsx = -2 * prepare["E_ln"] * epsx0**2 / epsx**3
+        k0_epsx = np.zeros(len(epsilon))
+        k0_epsx[has_ln] = -2 * prepare["E_ln"][has_ln] * epsx0**2 / epsx**3
 
         Csigma_epsilon = np.zeros((len(epsilon), 6, 6))
         Csigma_epsilon[:, 0, 0] = -sigma[:, 0] * k0_epsx / k0**2
@@ -431,19 +449,20 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
         # which is equivalent to sigma(epsilon) - sigma = 0 as C is regular
         epsilon = epsilon0 + sigma / prepare["EiFi_quad"]
 
-        # axial part: E_quad * (x - x0) + E_ln * x0 * (x - x0) / x = n,
+        # axial part with ln: E_quad * (x - x0) + E_ln * x0 * (x - x0) / x = n,
         # multiplied by x: E_quad * x^2 + b * x - E_ln * x0^2 = 0, with
-        # b = (E_ln - E_quad) * x0 - n, which has exactly one positive root
-        x0 = epsilon0[:, 0]
-        E_quad = prepare["EiFi_quad"][:, 0]
-        E_ln = prepare["E_ln"]
-        b = (E_ln - E_quad) * x0 - sigma[:, 0]
+        # b = (E_ln - E_quad) * x0 - n, which has exactly one positive root.
+        # Without ln, the linear solution from above is already correct.
+        has_ln = prepare["has_ln"]
+        x0 = epsilon0[has_ln, 0]
+        E_quad = prepare["EiFi_quad"][has_ln, 0]
+        E_ln = prepare["E_ln"][has_ln]
+        b = (E_ln - E_quad) * x0 - sigma[has_ln, 0]
         sqrt_D = np.sqrt(b**2 + 4 * E_quad * E_ln * x0**2)
-        # cancellation free root (also valid for E_quad = 0 if b > 0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            epsilon[:, 0] = np.where(
-                b > 0,
-                2 * E_ln * x0**2 / (b + sqrt_D),
-                (-b + sqrt_D) / (2 * E_quad),
-            )
+        # cancellation free root
+        epsilon[has_ln, 0] = np.where(
+            b > 0,
+            2 * E_ln * x0**2 / (b + sqrt_D),
+            (-b + sqrt_D) / (2 * E_quad),
+        )
         return epsilon

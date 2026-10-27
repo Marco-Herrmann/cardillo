@@ -78,7 +78,7 @@ class CosseratRod_Internal:
             self.parent.W_e = lambda t, q: self.W_sigma(q)[0]
             self.parent.Wla_e_q = lambda t, q, la_e: self.Wla_sigma_q(q, la_e, None)
             self.parent.KN_e = lambda t, q, la_e: (self.K_sigma(q, la_e, None), None)
-            self.parent.E_pot_comp_e = self.E_pot_comp
+            self.parent.E_pot_comp_e = self.E_pot_comp_e
 
         # constraint
         self._nla_g = nla_g
@@ -367,6 +367,26 @@ class CosseratRod_Internal:
     ########################
     # elasticity formulation
     ########################
+    def E_pot_comp_e(self, t, q, la_e):
+        if self._nDB > 0:
+            msg = "E_pot_comp_e might not be correct if there are displacement-based deformations."
+            warn(msg)
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        la_sigma_nodes[:, self.idx_c] = la_e.reshape(self.nnodes_sigma, -1)
+        la_sigma = self.Nc_int @ la_sigma_nodes
+
+        # potential evaluated at the strains that belong to the stresses, i.e.,
+        # C(epsilon) @ la_sigma - epsilon_rel(epsilon) = 0. The other components
+        # have zero stress, hence they only drop out for uncoupled material laws.
+        epsilon_sigma = self.material_model.epsilon_rel_inv(
+            la_sigma, self.epsilon0_int, self.material_model_qp
+        )
+        E_pot_i = self.material_model.potential(
+            epsilon_sigma, self.epsilon0_int, self.material_model_qp
+        )
+        E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
+        return E_pot
+    
     def l_rel(self, q):
         _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
