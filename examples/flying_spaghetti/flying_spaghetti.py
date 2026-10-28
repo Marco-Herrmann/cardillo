@@ -9,14 +9,13 @@ from cardillo.discrete import RigidBody, Cylinder
 from cardillo.forces import Force, Moment, B_Moment
 from cardillo.math import e1, e2, e3, ax2skew
 from cardillo.math.rotations import A_IB_basic
-from cardillo.rods import (
+from cardillo.rods_new import (
     CircularCrossSection,
     CrossSectionInertias,
+    make_CosseratRod,
     Simo1986,
-    animate_beam,
 )
-from cardillo.rods.cosseratRod import make_CosseratRod
-from cardillo.rods.force_line_distributed import Force_line_distributed
+
 from cardillo.solver import (
     Newton,
     BackwardEuler,
@@ -33,9 +32,14 @@ def flying_spaghetti(
     nelement=10,
     planar=True,
     VTK_export=True,
+    Blender_export=True,
 ):
-
-    constitutive_law = Simo1986(np.array([1e4, 1e4, 1e4]), np.array([2e2, 1e2, 1e2]))
+    Ei = np.array([1e4, 1e4, 1e4])
+    Fi = np.array([2e2, 1e2, 1e2])
+    dEi = 0.001 * Ei
+    dFi = 0.001 * Fi
+    constitutive_law = Simo1986(Ei, Fi)
+    constitutive_law = Simo1986(Ei, Fi, dEi, dFi)
     cross_section_inertias = CrossSectionInertias(
         A_rho0=1.0, B_I_rho0=np.diag([10.0, 10.0, 10.0])
     )
@@ -108,8 +112,12 @@ def flying_spaghetti(
 
     # VTK export
     dir_name = Path(__file__).parent
+    name = f"{'planar' if planar else 'spatial'}"
     if VTK_export:
-        system.export(dir_name, f"vtk_{'planar' if planar else 'spatial'}", sol, fps=50)
+        system.export(dir_name, f"vtk_{name}", sol, fps=50)
+
+    if Blender_export:
+        system.export_blender(dir_name, name, sol, create_blend=True)
 
     # postprocessing
     nt = len(sol.t)
@@ -122,7 +130,7 @@ def flying_spaghetti(
     lin_momentum = np.zeros((3, nt), dtype=float)
     ang_momentum = np.zeros((3, nt), dtype=float)
     for i in range(nt):
-        force_pot = force.E_pot(t[i], q[i])
+        force_pot = force.E_pot(t[i], q[i, force.qDOF])
         energy[0, i] = system.E_kin(t[i], q[i], u[i])
         energy[1, i] = system.E_pot(t[i], q[i]) - force_pot
         energy[2, i] = system.E_pot_comp(t[i], q[i], la_c[i])
@@ -190,6 +198,6 @@ def flying_spaghetti(
 
 
 if __name__ == "__main__":
-    Rod = make_CosseratRod()
+    Rod = make_CosseratRod(idx_displacement_based=np.arange(6))
 
-    flying_spaghetti(Rod, 10, False, False)
+    flying_spaghetti(Rod, 10, False, False, True)

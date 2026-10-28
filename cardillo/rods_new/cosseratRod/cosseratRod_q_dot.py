@@ -18,6 +18,7 @@ from cardillo.math.rotations import (
     Exp_SE3,
 )
 from cardillo.utility.coo_matrix import CooMatrix
+from .cosseratRod_MatrixUtils import bsr_block_diag
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
@@ -28,7 +29,6 @@ class CosseratRod_kin_constraints(ABC):
         self.parent = parent
         self.nnodes = self.parent.nnodes
 
-        # TODO: move T_IB_inv and T_IB_inv_P to rP_dot_from_vO_IB class!, as it is only relevant there!
         assert parametrization in ["Quaternion", "R12", "SE3"]
 
         if parametrization in ["Quaternion", "SE3"]:
@@ -37,8 +37,6 @@ class CosseratRod_kin_constraints(ABC):
 
             self._Exp_SO3 = Exp_SO3_quat
             self._Log_SO3 = Log_SO3_quat
-            self._T_IB_inv = T_SO3_inv_quat
-            self._T_IB_inv_P = T_SO3_inv_quat_P(None)  # evaluate as it is constant
 
             # rows/cols for g_q
             # TODO: check this
@@ -56,8 +54,6 @@ class CosseratRod_kin_constraints(ABC):
 
             self._Exp_SO3 = Exp_SO3_R9
             self._Log_SO3 = Log_SO3_R9
-            self._T_IB_inv = T_SO3_inv_R9
-            self._T_IB_inv_P = T_SO3_inv_R9_R9(None)  # evaluate as it is constant
 
             # rows/cols for g_q
             rows = []
@@ -166,11 +162,25 @@ class CosseratRod_kin_constraints(ABC):
         return self.g_q(t, q).T
 
     def Wla_g_q(self, t, q, la_g):
-        # TODO: constant!
-        from cardillo.math.approx_fprime import approx_fprime
-
-        Wla_g_q_num = approx_fprime(q, lambda q_: self.W_g(t, q_).tocsr() @ la_g)
-        return Wla_g_q_num
+        # g is quadratic in q, hence W_g @ la_g is linear in q and its
+        # derivative is independent of q
+        blocks = np.zeros((self.nnodes, self.nq_node, self.nq_node))
+        if self.nq_node == 7:
+            # g = P @ P - 1
+            blocks[:, 3:, 3:] = 2.0 * la_g[:, None, None] * np.eye(4)
+        else:
+            # g = (d1 @ d1 - 1, d2 @ d2 - 1, d3 @ d3 - 1, d1 @ d2, d2 @ d3, d3 @ d1)
+            la = la_g.reshape(self.nnodes, 6)
+            S = np.empty((self.nnodes, 3, 3))
+            S[:, [0, 1, 2], [0, 1, 2]] = 2.0 * la[:, :3]
+            S[:, 0, 1] = S[:, 1, 0] = la[:, 3]
+            S[:, 1, 2] = S[:, 2, 1] = la[:, 4]
+            S[:, 2, 0] = S[:, 0, 2] = la[:, 5]
+            blocks[:, 3:, 3:] = np.einsum("nij,kl->nikjl", S, eye3).reshape(
+                self.nnodes, 9, 9
+            )
+        # bsr keeps the zeros, i.e., the sparsity pattern is independent of la_g
+        return bsr_block_diag(blocks)
 
     def g_dot(self, t, q, u): ...
     def g_dot_q(self, t, q, u): ...
@@ -193,6 +203,24 @@ class CosseratRod_kin_trivial(CosseratRod_kin_constraints):
     def q_dot_u(self, t, q):
         return self.eye_nu
 
+    # g is quadratic in q, hence g_q is linear in q and with q_dot = u:
+    # g_dot = g_q(q) @ u, g_dot_q = g_q(u), g_ddot = g_q(q) @ u_dot + g_q(u) @ u
+    def g_dot(self, t, q, u):
+        return self.g_q(t, q).tocsr() @ u
+
+    def g_dot_q(self, t, q, u):
+        return self.g_q(t, u)
+
+    def g_dot_u(self, t, q):
+        return self.g_q(t, q)
+
+    def g_ddot(self, t, q, u, u_dot):
+        return self.g_q(t, q).tocsr() @ u_dot + self.g_q(t, u).tocsr() @ u
+
+    def KN_g(self, t, q, la_g):
+        # u = q_dot
+        return self.Wla_g_q(t, q, la_g), None
+
 
 class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
     def __init__(self, parent, parametrization, projection):
@@ -201,6 +229,13 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         self.parent.q_dot_u = self.q_dot_u
         self.parent.q_dot_q = self.q_dot_q
         self.parent.Lie_update = self.Lie_update
+
+        if parametrization in ["Quaternion", "SE3"]:
+            self._T_IB_inv = T_SO3_inv_quat
+            self._T_IB_inv_P = T_SO3_inv_quat_P(None)  # evaluate as it is constant
+        else:
+            self._T_IB_inv = T_SO3_inv_R9
+            self._T_IB_inv_P = T_SO3_inv_R9_R9(None)  # evaluate as it is constant
 
     def q_dot(self, t, q, u):
         qnodes = q.reshape(self.nnodes, self.nq_node)
@@ -215,30 +250,50 @@ class CosseratRod_rP_dot_from_vO_IB(CosseratRod_kin_constraints):
         return qnodes_dot.reshape(-1)
 
     def q_dot_q(self, t, q, u):
-        # qnodes = q.reshape(self.nnodes, self.nq_node)
-        unodes = u.reshape(self.nnodes, 6)
-
-        blocks = np.empty((self.nnodes, self.nq_node, self.nq_node))
-        blocks[:, :3] = 0.0
-        blocks[:, 3:, :3] = 0.0
-        blocks[:, 3:, 3:] = np.einsum(
-            "jkl,ik->ijl",
-            self._T_IB_inv_P,
-            unodes[:, 3:],
-        )
-
-        return csr_array(block_diag(blocks))
+        return csr_array(block_diag(self.Bu_q_blocks(u)))
 
     def q_dot_u(self, t, q):
-        qnodes = q.reshape(self.nnodes, self.nq_node)
+        return csr_array(block_diag(self.B_blocks(q)))  # this keeps the 0's
 
-        blocks = np.empty((self.nnodes, self.nq_node, 6))
-        blocks[:, :3, :3] = eye3
-        blocks[:, :3, 3:] = 0.0
-        blocks[:, 3:, :3] = 0.0
-        blocks[:, 3:, 3:] = self._T_IB_inv(qnodes[:, 3:])
+    ##########################################
+    # nodal blocks of the kinematic equation #
+    ##########################################
+    # q_dot = B(q) @ u with block diagonal B(q), where each node has the block
+    # [[eye3, 0], [0, T_IB_inv(P)]] (nq_node, 6). The functions below work for
+    # an arbitrary number of nodes, e.g., the nodes of an element.
+    def B_blocks(self, q):
+        """Nodal blocks (nq_node, 6) of B(q)."""
+        q_nodes = q.reshape(-1, self.nq_node)
+        B = np.zeros((len(q_nodes), self.nq_node, 6), dtype=q.dtype)
+        B[:, :3, :3] = eye3
+        B[:, 3:, 3:] = self._T_IB_inv(q_nodes[:, 3:])
+        return B
 
-        return csr_array(block_diag(blocks))  # this keeps the 0's
+    def B_q_blocks(self, q):
+        """Nodal blocks (nq_node, 6, nq_node) of the derivative of B(q)."""
+        nnodes = len(q) // self.nq_node
+        B_q = np.zeros((nnodes, self.nq_node, 6, self.nq_node))
+        B_q[:, 3:, 3:, 3:] = self._T_IB_inv_P
+        return B_q
+
+    def Bu_q_blocks(self, u):
+        """Nodal blocks (nq_node, nq_node) of d(B(q) @ u)/dq."""
+        u_nodes = u.reshape(-1, 6)
+        blocks = np.zeros((len(u_nodes), self.nq_node, self.nq_node))
+        blocks[:, 3:, 3:] = np.einsum("jkl,ik->ijl", self._T_IB_inv_P, u_nodes[:, 3:])
+        return blocks
+
+    def BT_f(self, q, f):
+        """B(q).T @ f"""
+        f_nodes = f.reshape(-1, self.nq_node)
+        return np.einsum("nqk,nq->nk", self.B_blocks(q), f_nodes).reshape(-1)
+
+    def BT_f_q_blocks(self, q, f):
+        """Nodal blocks (6, nq_node) of d(B(q).T @ f)/dq for fixed f."""
+        f_nodes = f.reshape(-1, self.nq_node)
+        blocks = np.zeros((len(f_nodes), 6, self.nq_node))
+        blocks[:, 3:, 3:] = np.einsum("jkl,ij->ikl", self._T_IB_inv_P, f_nodes[:, 3:])
+        return blocks
 
     def Lie_update(self, t, q, Delta_s):
         # return self.Lie_update_R3xSO3_B(t, q, Delta_s)

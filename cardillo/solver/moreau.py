@@ -349,10 +349,11 @@ class MoreauTheta:
         self.nu = self.system.nu
         self.nla_g = self.system.nla_g
         self.nla_gamma = self.system.nla_gamma
+        self.nla_c = self.system.nla_c
+        self.nla_e = self.system.nla_e
+        self.nla_d = self.system.nla_d
         self.nla_N = self.system.nla_N
         self.nla_F = self.system.nla_F
-        self.nR_smooth = self.nu + self.nla_g + self.nla_gamma
-        self.nR = self.nR_smooth + self.nla_N + self.nla_F
 
         # initial conditions
         self.tn = system.t0
@@ -361,6 +362,8 @@ class MoreauTheta:
         self.q_dotn = system.q_dot0
         self.u_dotn = system.u_dot0
         self.la_cn = system.la_c0
+        self.la_en = system.la_e0
+        self.la_dn = system.la_d0
         self.la_gn = system.la_g0
         self.la_gamman = system.la_gamma0
 
@@ -375,16 +378,13 @@ class MoreauTheta:
                 self.nu,
                 self.nu + self.nla_g,
                 self.nu + self.nla_g + self.nla_gamma,
+                self.nu + self.nla_g + self.nla_gamma + self.nla_c,
+                self.nu + self.nla_g + self.nla_gamma + self.nla_c + self.nla_e,
             ],
             dtype=int,
         )
         self.x = np.concatenate(
-            (
-                self.un,
-                self.la_gn,
-                self.la_gamman,
-                self.la_cn,
-            )
+            (self.un, self.la_gn, self.la_gamman, self.la_cn, self.la_en, self.la_dn)
         )
         self.x0 = self.x.copy()
 
@@ -414,6 +414,8 @@ class MoreauTheta:
         dt = self.dt
         un = self.un
         la_cn = self.la_cn
+        la_en = self.la_en
+        la_dn = self.la_dn
         tn1 = self.tn + dt
         tnth = self.tn + (1 - theta) * dt
 
@@ -424,24 +426,34 @@ class MoreauTheta:
         M = self.system.M(tnth, qnth)
         # c = C @ la_c + g(t, q)?
         C = self.system.c_la_c()
+        Ce = self.system.e_la_e(tnth, qnth)
+        A = self.system.d_la_d(tnth, qnth)
         # TODO: Add polarization/Kahan's method for gyroscopic forces
         h = self.system.h(tnth, qnth, un)
         W_g = self.system.W_g(tnth, qnth)  # C == 0
         W_gamma = self.system.W_gamma(tnth, qnth)
         W_c = self.system.W_c(tnth, qnth)  # C != 0, regular and diagonal
+        W_e = self.system.W_e(tnth, qnth)  # C != 0, regular and diagonal
+        W_d = self.system.W_d(tnth, qnth)  # C != 0, regular and diagonal
         W_tau = self.system.W_tau(tnth, qnth)
         la_tau = self.system.la_tau(tnth, qnth, un)
         chi_g = self.system.g_dot(tnth, qnth, np.zeros_like(un))
         chi_gamma = self.system.gamma(tnth, qnth, np.zeros_like(un))
+        chi_d = self.system.d(tnth, qnth, np.zeros_like(un), np.zeros_like(la_dn))
         # TODO: We need the affine part of c_dot here on system level
         chi_c = np.zeros_like(la_cn)
+        chi_e = np.zeros_like(la_en)  # TODO: system.e_dot(???)
 
         # Build matrix A for computation of new velocities and bilateral constraint percussions
         # fmt: off
-        A = bmat([[                M, -dt * W_g, -dt* W_gamma,        -dt * W_c],
-                  [    theta * W_g.T,      None,         None,             None],
-                  [theta * W_gamma.T,      None,         None,             None],
-                  [    theta * W_c.T,      None,         None, C / (dt * theta)]], format="csc")
+        C_scaled = C / (dt * theta)
+        Ce_scaled = Ce / (dt * theta)
+        A = bmat([[                M, -dt * W_g, -dt* W_gamma, -dt * W_c, - dt * W_e, -dt * W_d],
+                  [    theta * W_g.T,      None,         None,      None,       None,       None],
+                  [theta * W_gamma.T,      None,         None,      None,       None,       None],
+                  [    theta * W_c.T,      None,         None,  C_scaled,       None,       None],
+                  [    theta * W_e.T,      None,         None,      None,  Ce_scaled,       None],
+                  [    theta * W_d.T,      None,         None,      None,       None,          A]], format="csc")
         # fmt: on
 
         # perform LU decomposition only once since matrix A is constant in
@@ -453,8 +465,10 @@ class MoreauTheta:
         Cla_n = -self.system.c(
             self.tn, self.qn, np.zeros_like(un), np.zeros_like(la_cn)
         )
+        Cla_en = -self.system.e(self.tn, self.qn, np.zeros_like(la_en))
         # c = C @ la - g(t, q)
         gn = self.system.g(self.tn, self.qn)
+        # fmt: off
         b = np.concatenate(
             (
                 M @ un + dt * (h + W_tau @ la_tau),
@@ -462,11 +476,12 @@ class MoreauTheta:
                 # -gn / (dt * theta) - W_g.T @ ((1 - theta) * un) - chi_g, # stabilized variant
                 -W_gamma.T @ ((1 - theta) * un) - chi_gamma,
                 # C @ (la_cn / (dt * theta)) - W_c.T @ ((1 - theta) * un) - chi_c,  # - beta * self.system.c(self.tn, self.qn, un, la_cn)
-                Cla_n / (dt * theta)
-                - W_c.T @ ((1 - theta) * un)
-                - chi_c,  # stabilized variant
+                Cla_n / (dt * theta) - W_c.T @ ((1 - theta) * un) - chi_c,  # stabilized variant
+                Cla_en / (dt * theta) - W_e.T @ ((1 - theta) * un) - chi_e,  # stabilized variant
+                -W_d.T @ ((1 - theta) * un) - chi_d,
             )
         )
+        # fmt: on
 
         # 0 = C @ la + g(t, q)
         # 0 = C @ la_n + g(tn + qn) + dt * (C @ la' + W.T @ u)
@@ -570,10 +585,14 @@ class MoreauTheta:
             x = x0
 
         # unpack solution and recover grid multipliers
-        un1, la_gn_theta, la_gamman_theta, la_cn_theta = np.array_split(x, self.split_x)
+        un1, la_gn_theta, la_gamman_theta, la_cn_theta, la_en_theta, la_dn_theta = (
+            np.array_split(x, self.split_x)
+        )
         # la_gn1 = la_gn_theta / theta - (1 - theta) / theta * self.la_gn
         # la_gamman1 = la_gamman_theta / theta - (1 - theta) / theta * self.la_gamman
         la_cn1 = la_cn_theta / theta - (1 - theta) / theta * self.la_cn
+        la_en1 = la_en_theta / theta - (1 - theta) / theta * self.la_en
+        la_dn1 = la_dn_theta
         la_gn1 = la_gn_theta
         la_gamman1 = la_gamman_theta
         # la_cn1 = la_cn_theta
@@ -589,6 +608,8 @@ class MoreauTheta:
             la_gn1,
             la_gamman1,
             la_cn1,
+            la_en1,
+            la_dn1,
             P_Nn1,
             P_Fn1,
         )
@@ -602,6 +623,8 @@ class MoreauTheta:
         la_g = [self.la_gn]
         la_gamma = [self.la_gamman]
         la_c = [self.la_cn]
+        la_e = [self.la_en]
+        la_d = [self.la_dn]
         P_N = [self.P_Nn]
         P_F = [self.P_Fn]
 
@@ -616,6 +639,8 @@ class MoreauTheta:
                 la_gn1,
                 la_gamman1,
                 la_cn1,
+                la_en1,
+                la_dn1,
                 P_Nn1,
                 P_Fn1,
             ) = self.step()
@@ -641,6 +666,8 @@ class MoreauTheta:
             la_g.append(la_gn1)
             la_gamma.append(la_gamman1)
             la_c.append(la_cn1)
+            la_e.append(la_en1)
+            la_d.append(la_dn1)
             P_N.append(P_Nn1)
             P_F.append(P_Fn1)
 
@@ -652,9 +679,22 @@ class MoreauTheta:
                 self.la_gn,
                 self.la_gamman,
                 self.la_cn,
+                self.la_en,
+                self.la_dn,
                 self.P_Nn,
                 self.P_Fn,
-            ) = (tn1, qn1, un1, la_gn1, la_gamman1, la_cn1, P_Nn1, P_Fn1)
+            ) = (
+                tn1,
+                qn1,
+                un1,
+                la_gn1,
+                la_gamman1,
+                la_cn1,
+                la_en1,
+                la_dn1,
+                P_Nn1,
+                P_Fn1,
+            )
 
         solver_summary.print()
         return Solution(
@@ -665,6 +705,8 @@ class MoreauTheta:
             la_g=np.array(la_g),
             la_gamma=np.array(la_gamma),
             la_c=np.array(la_c),
+            la_e=np.array(la_e),
+            la_d=np.array(la_d),
             la_N=np.array(P_N) / self.dt,
             la_F=np.array(P_F) / self.dt,
             P_N=np.array(P_N),

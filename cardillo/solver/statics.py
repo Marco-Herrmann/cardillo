@@ -1,6 +1,6 @@
 import numpy as np
 import warnings
-from scipy.sparse import lil_array, bmat, csc_array, eye_array
+from scipy.sparse import lil_array, bmat, csc_array, coo_array, eye_array
 from scipy.sparse.linalg import inv as sparse_inv
 from scipy.sparse.linalg import eigsh
 from scipy.linalg import eigh, null_space, eig, qr, solve
@@ -48,41 +48,50 @@ class Newton:
 
         self.split_f = np.cumsum(
             np.array(
-                [system.nu, system.nla_g, system.nla_c, system.nla_N],
+                [system.nu, system.nla_g, system.nla_c, system.nla_e, system.nla_N],
                 dtype=int,
             )
         )
         self.split_x = np.cumsum(
             np.array(
-                [system.nq, system.nla_g, system.nla_c],
+                [system.nq, system.nla_g, system.nla_c, system.nla_e],
                 dtype=int,
             )
         )
 
         if self.updated:
-            self.nx_bar = system.nu + system.nla_g + system.nla_c + system.nla_N
+            self.nx_bar = (
+                system.nu + system.nla_g + system.nla_c + system.nla_e + system.nla_N
+            )
             # not sure how the Jacobian is for this
             assert self.nla_N == 0
 
             def update_rule(x, Delta_x_bar, t):
-                q, la_g, la_c, la_N = np.array_split(x, self.split_x)
-                ds, dla_g, dla_c, dla_N, _ = np.array_split(Delta_x_bar, self.split_f)
+                q, la_g, la_c, la_e, la_N = np.array_split(x, self.split_x)
+                ds, dla_g, dla_c, dla_e, dla_N, _ = np.array_split(
+                    Delta_x_bar, self.split_f
+                )
 
                 x_new = np.zeros_like(x)
                 x_new[: self.split_x[0]] = self.system.Lie_update(t, q, ds)
                 x_new[self.split_x[0] : self.split_x[1]] = la_g + dla_g
                 x_new[self.split_x[1] : self.split_x[2]] = la_c + dla_c
-                x_new[self.split_x[2] :] = la_N + dla_N
+                x_new[self.split_x[2] : self.split_x[3]] = la_e + dla_e
+                x_new[self.split_x[3] :] = la_N + dla_N
                 return x_new
 
             self.update_rule = update_rule
 
         else:
-            self.nx_bar = system.nq + system.nla_g + system.nla_c + system.nla_N
+            self.nx_bar = (
+                system.nq + system.nla_g + system.nla_c + system.nla_e + system.nla_N
+            )
             self.update_rule = lambda x, Delta_x_bar, t: x + Delta_x_bar
 
         # initial conditions
-        x0 = np.concatenate((system.q0, system.la_g0, system.la_c0, system.la_N0))
+        x0 = np.concatenate(
+            (system.q0, system.la_g0, system.la_c0, system.la_e0, system.la_N0)
+        )
         nx = len(x0)
         self.u0 = np.zeros(system.nu)  # zero velocities as system is static
 
@@ -101,15 +110,19 @@ class Newton:
         # fmt: off
         self.W_g_coo = system.W_g(self.load_steps[0], system.q0, format="Coo")
         self.W_c_coo = system.W_c(self.load_steps[0], system.q0, format="Coo")
+        self.W_e_coo = system.W_e(self.load_steps[0], system.q0, format="Coo")
         self.W_N_coo = system.W_N(self.load_steps[0], system.q0, format="Coo")
+        self.e_la_e_coo = system.e_la_e(self.load_steps[0], system.q0, format="Coo")
         if not self.updated:
             self.h_q_coo = system.h_q(self.load_steps[0], system.q0, self.u0, format="Coo")
             self.Wla_g_q_coo = system.Wla_g_q(self.load_steps[0], system.q0, system.la_g0, format="Coo")
             self.Wla_c_q_coo = system.Wla_c_q(self.load_steps[0], system.q0, system.la_c0, format="Coo")
+            self.Wla_e_q_coo = system.Wla_e_q(self.load_steps[0], system.q0, system.la_e0, format="Coo")
             self.Wla_N_q_coo = system.Wla_N_q(self.load_steps[0], system.q0, system.la_N0, format="Coo")
             self.g_q_coo = system.g_q(self.load_steps[0], system.q0, format="Coo")
             self.g_S_q_coo = system.g_S_q(self.load_steps[0], system.q0, format="Coo")
             self.c_q_coo = system.c_q(self.load_steps[0], system.q0, self.u0, system.la_c0, format="Coo")
+            self.e_q_coo = system.e_q(self.load_steps[0], system.q0, system.la_e0, format="Coo")
             self.g_N_q_coo = system.g_N_q(self.load_steps[0], system.q0, format="Coo")
         # fmt: on
 
@@ -118,7 +131,7 @@ class Newton:
 
     def fun(self, x, t):
         # unpack unknowns
-        q, la_g, la_c, la_N = np.array_split(x, self.split_x)
+        q, la_g, la_c, la_e, la_N = np.array_split(x, self.split_x)
 
         # evaluate quantites that are required for computing the residual and
         # the jacobian
@@ -126,6 +139,7 @@ class Newton:
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
         self.W_g = self.system.W_g(t, q, format="csr", coo=self.W_g_coo)
         self.W_c = self.system.W_c(t, q, format="csr", coo=self.W_c_coo)
+        self.W_e = self.system.W_e(t, q, format="csr", coo=self.W_e_coo)
         self.W_N = self.system.W_N(t, q, format="csr", coo=self.W_N_coo)
         self.g_N = self.system.g_N(t, q)
 
@@ -135,18 +149,20 @@ class Newton:
             self.system.h(t, q, self.u0)
             + self.W_g @ la_g
             + self.W_c @ la_c
+            + self.W_e @ la_e
             + self.W_N @ la_N
         )
         F[self.split_f[0] : self.split_f[1]] = self.system.g(t, q)
         F[self.split_f[1] : self.split_f[2]] = self.system.c(t, q, self.u0, la_c)
-        F[self.split_f[2] : self.split_f[3]] = np.minimum(la_N, self.g_N)
+        F[self.split_f[2] : self.split_f[3]] = self.system.e(t, q, la_e)
+        F[self.split_f[3] : self.split_f[4]] = np.minimum(la_N, self.g_N)
         if not self.updated:
-            F[self.split_f[3] :] = self.system.g_S(t, q)
+            F[self.split_f[4] :] = self.system.g_S(t, q)
         return F
 
     def jac_updated(self, x, t):
         # unpack unknowns
-        q, la_g, la_c, la_N = np.array_split(x, self.split_x)
+        q, la_g, la_c, la_e, la_N = np.array_split(x, self.split_x)
 
         # evaluate additionally required quantites for computing the jacobian
         # coo is used for efficient bmat
@@ -154,6 +170,7 @@ class Newton:
             self.system.KN_h(t, q, self.u0),
             self.system.KN_g(t, q, la_g),
             self.system.KN_c(t, q, la_c),
+            self.system.KN_e(t, q, la_e),
             self.system.KN_N(t, q, la_N),
         ]
         K = np.sum([KN[0] for KN in KNs])
@@ -170,16 +187,20 @@ class Newton:
             else:
                 dRla_N[i] = self.W_N.T[i]
 
+        e_la_e = self.system.e_la_e(t, q, coo=self.e_la_e_coo)
+
         # fmt: off
-        return bmat([[     K + N, self.W_g,    self.W_c,   self.W_N], 
-                     [self.W_g.T,     None,        None,       None],
-                     [self.W_c.T,     None, self.c_la_c,       None],
-                     [    dRla_N,     None,        None, Rla_N_la_N],], format="csc")
+        return bmat([[     K + N, self.W_g,    self.W_c, self.W_e,   self.W_N], 
+                     [self.W_g.T,     None,        None,     None,       None],
+                     [self.W_c.T,     None, self.c_la_c,     None,       None],
+                     [self.W_e.T,     None,        None,   e_la_e,       None], # TODO?
+                     [    dRla_N,     None,        None,     None, Rla_N_la_N],], format="csc")
         # fmt: on
 
     def jac(self, x, t):
+        _ = self.fun(x, t)
         # unpack unknowns
-        q, la_g, la_c, la_N = np.array_split(x, self.split_x)
+        q, la_g, la_c, la_e, la_N = np.array_split(x, self.split_x)
 
         # evaluate additionally required quantites for computing the jacobian
         # coo is used for efficient bmat
@@ -192,45 +213,58 @@ class Newton:
         self.K_coo["Wla_c_q", :, :] = self.system.Wla_c_q(
             t, q, la_c, format="Coo", coo=self.Wla_c_q_coo
         )
+        self.K_coo["Wla_e_q", :, :] = self.system.Wla_e_q(
+            t, q, la_e, format="Coo", coo=self.Wla_e_q_coo
+        )
         self.K_coo["Wla_N_q", :, :] = self.system.Wla_N_q(
             t, q, la_N, format="Coo", coo=self.Wla_N_q_coo
         )
         g_q = self.system.g_q(t, q, coo=self.g_q_coo)
         g_S_q = self.system.g_S_q(t, q, coo=self.g_S_q_coo)
         c_q = self.system.c_q(t, q, self.u0, la_c, coo=self.c_q_coo)
+        e_q = self.system.e_q(t, q, la_e, coo=self.e_q_coo)
         c_la_c = self.system.c_la_c()
+        e_la_e = self.system.e_la_e(t, q, coo=self.e_la_e_coo)
 
         # note: csr_matrix is best for row slicing, see
         # https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html#scipy.sparse.csr_array
-        g_N_q = self.system.g_N_q(t, q, format="csr", coo=self.g_N_q_coo)
+        # note: Rla_N_q is built from the coo data of g_N_q, such that its
+        # sparsity pattern does not change, even if entries of g_N_q are zero
+        g_N_q = self.system.g_N_q(t, q, format="coo", coo=self.g_N_q_coo)
 
-        Rla_N_q = lil_array((self.nla_N, self.nq), dtype=float)
         Rla_N_la_N = lil_array((self.nla_N, self.nla_N), dtype=float)
+        scale_g_N_q = np.ones(self.nla_N, dtype=float)
         for i in range(self.nla_N):
             # TODO: solve dirty fix with 1e-99
             if la_N[i] < self.g_N[i]:
                 Rla_N_la_N[i, i] = 1.0
-                Rla_N_q[i] = g_N_q[i] * 1e-99
+                scale_g_N_q[i] = 1e-99
             else:
                 Rla_N_la_N[i, i] = 1e-99
-                Rla_N_q[i] = g_N_q[i]
+        Rla_N_q = coo_array(
+            (g_N_q.data * scale_g_N_q[g_N_q.row], (g_N_q.row, g_N_q.col)),
+            shape=g_N_q.shape,
+        )
 
         # Rla_N_q = Rla_N_q.toarray()
         # Rla_N_la_N = Rla_N_la_N.toarray()
 
         # fmt: off
-        sf0, sf1, sf2, sf3 = self.split_f
-        sx0, sx1, sx2 = self.split_x
+        sf0, sf1, sf2, sf3, sf4 = self.split_f
+        sx0, sx1, sx2, sx3 = self.split_x
         self.jac_coo["K"         ,    :sf0,    :sx0] = self.K_coo
         self.jac_coo["W_g"       ,    :sf0, sx0:sx1] = self.W_g
         self.jac_coo["W_c"       ,    :sf0, sx1:sx2] = self.W_c
-        self.jac_coo["W_N"       ,    :sf0, sx2:   ] = self.W_N
+        self.jac_coo["W_e"       ,    :sf0, sx2:sx3] = self.W_e
+        self.jac_coo["W_N"       ,    :sf0, sx3:   ] = self.W_N
         self.jac_coo["g_q"       , sf0:sf1,    :sx0] = g_q
         self.jac_coo["c_q"       , sf1:sf2,    :sx0] = c_q
         self.jac_coo["c_la_c"    , sf1:sf2, sx1:sx2] = c_la_c
-        self.jac_coo["Rla_N_q"   , sf2:sf3,    :sx0] = Rla_N_q
-        self.jac_coo["Rla_N_la_N", sf2:sf3, sx2:   ] = Rla_N_la_N
-        self.jac_coo["g_S_q"     , sf3:   ,    :sx0] = g_S_q
+        self.jac_coo["e_q"       , sf2:sf3,    :sx0] = e_q
+        self.jac_coo["e_la_e"    , sf2:sf3, sx2:sx3] = e_la_e # TODO: Cla_q?
+        self.jac_coo["Rla_N_q"   , sf3:sf4,    :sx0] = Rla_N_q
+        self.jac_coo["Rla_N_la_N", sf3:sf4, sx3:   ] = Rla_N_la_N
+        self.jac_coo["g_S_q"     , sf4:   ,    :sx0] = g_S_q
         # fmt: on
         return self.jac_coo.asformat("csc")
 
@@ -289,7 +323,8 @@ class Newton:
                     u=np.zeros((i + 1, self.nu)),
                     la_g=self.x[: i + 1, self.split_x[0] : self.split_x[1]],
                     la_c=self.x[: i + 1, self.split_x[1] : self.split_x[2]],
-                    la_N=self.x[: i + 1, self.split_x[2] :],
+                    la_e=self.x[: i + 1, self.split_x[2] : self.split_x[3]],
+                    la_N=self.x[: i + 1, self.split_x[3] :],
                     all_x=self.all_x[: i + 1],
                     all_q=all_q,
                     all_t=all_t,
@@ -322,7 +357,8 @@ class Newton:
             u=np.zeros((len(self.load_steps), self.nu)),
             la_g=self.x[: i + 1, self.split_x[0] : self.split_x[1]],
             la_c=self.x[: i + 1, self.split_x[1] : self.split_x[2]],
-            la_N=self.x[: i + 1, self.split_x[2] :],
+            la_e=self.x[: i + 1, self.split_x[2] : self.split_x[3]],
+            la_N=self.x[: i + 1, self.split_x[3] :],
             all_x=self.all_x[: i + 1],
             all_q=all_q,
             all_t=all_t,

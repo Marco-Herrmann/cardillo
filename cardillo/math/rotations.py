@@ -390,38 +390,60 @@ def Log_SE3_H(H: np.ndarray) -> np.ndarray:
 
 
 def U(a, b):
+    """Off-diagonal block of the SE(3) tangent map, see Sonneville2014 (A.12),
+    expressed with the SO(3) coefficients:
+    U = -beta2 a~ + delta (a~ b~ + b~ a~) + (b . a) (-beta2_d b~ + delta_d b~ b~)
+    """
+    a, single = _stack(a, 1)
+    b, _ = _stack(b, 1)
+    angle2 = _angle2(b)[:, None, None]
     a_tilde = ax2skew(a)
+    b_tilde = ax2skew(b)
+    ba = np.sum(b * a, axis=-1)[:, None, None]
 
-    b2 = b @ b
-    if b2 > 0:
-        abs_b = np.sqrt(b2)
-        alpha = np.sin(abs_b) / abs_b
-        beta = 2.0 * (1.0 - np.cos(abs_b)) / b2
-
-        b_tilde = ax2skew(b)
-
-        # Sonneville2014 (A.12); how is this related to Park2005 (20) and (21)?
-        return (
-            -0.5 * beta * a_tilde
-            + (1.0 - alpha) * (a_tilde @ b_tilde + b_tilde @ a_tilde) / b2
-            + ((b @ a) / b2)
-            * (
-                (beta - alpha) * b_tilde
-                + (0.5 * beta - 3.0 * (1.0 - alpha) / b2) * b_tilde @ b_tilde
-            )
-        )
-    else:
-        return -0.5 * a_tilde  # Soneville2014
+    U = (
+        -_beta2(angle2) * a_tilde
+        + _delta(angle2) * (a_tilde @ b_tilde + b_tilde @ a_tilde)
+        + ba * (-_beta2_d(angle2) * b_tilde + _delta_d(angle2) * b_tilde @ b_tilde)
+    )
+    return U[0] if single else U
 
 
 def T_SE3(h: np.ndarray) -> np.ndarray:
-    r = h[:3]
-    psi = h[3:]
+    """Tangent map of SE(3) with h = (r, psi), i.e.,
+    Exp_SE3(h)^-1 @ d Exp_SE3(h) = hat(T_SE3(h) @ dh)."""
+    h, single = _stack(h, 1)
+    assert h.shape[1] == 6
 
-    T = np.zeros((6, 6), dtype=np.result_type(h, 1.0))
-    T[:3, :3] = T[3:, 3:] = T_SO3(psi)
-    T[:3, 3:] = U(r, psi)
-    return T
+    T = np.zeros((h.shape[0], 6, 6), dtype=np.result_type(h, 1.0))
+    T[:, :3, :3] = T[:, 3:, 3:] = T_SO3(h[:, 3:])
+    T[:, :3, 3:] = U(h[:, :3], h[:, 3:])
+    return T[0] if single else T
+
+
+def T_SE3_inv(h: np.ndarray) -> np.ndarray:
+    """Inverse of the tangent map of SE(3)."""
+    h, single = _stack(h, 1)
+    assert h.shape[1] == 6
+
+    T_inv_SO3 = T_SO3_inv(h[:, 3:])
+    T_inv = np.zeros((h.shape[0], 6, 6), dtype=np.result_type(h, 1.0))
+    T_inv[:, :3, :3] = T_inv[:, 3:, 3:] = T_inv_SO3
+    T_inv[:, :3, 3:] = -T_inv_SO3 @ U(h[:, :3], h[:, 3:]) @ T_inv_SO3
+    return T_inv[0] if single else T_inv
+
+
+def Ad_SE3(H: np.ndarray) -> np.ndarray:
+    """Adjoint of H = (A, r) acting on twists (v, omega), i.e.,
+    hat(Ad_SE3(H) @ s) = H @ hat(s) @ H^-1."""
+    H, single = _stack(H, 2)
+    assert H.shape[1:] == (4, 4)
+
+    A = H[:, :3, :3]
+    Ad = np.zeros((H.shape[0], 6, 6), dtype=np.result_type(H, 1.0))
+    Ad[:, :3, :3] = Ad[:, 3:, 3:] = A
+    Ad[:, :3, 3:] = ax2skew(H[:, :3, 3]) @ A
+    return Ad[0] if single else Ad
 
 
 class A_IB_basic:
@@ -642,12 +664,10 @@ def Exp_SO3_quat_P(P_IB, normalize=True):
     matrix_P = np.zeros((n, 3, 3, 4), dtype=np.result_type(P_IB, 1.0))
     # deriv. w.r.t. p0
     matrix_P[:, :, :, 0] = 2.0 * p_tilde
-    # deriv. w.r.t. p
+    # deriv. w.r.t. p: d(p0 * p_tilde + p_tilde @ p_tilde)/dp
     term1 = p0[:, None, None, None] * p_tilde_p[None, :, :, :]
-    term2 = np.transpose(p_tilde_p @ p_tilde[:, None, :, :], (0, 2, 3, 1))
-    term3 = np.transpose(
-        p_tilde[:, None, :, :] @ p_tilde_p[None, :, :, :], (0, 2, 3, 1)
-    )
+    term2 = np.einsum("ilk,nlj->nijk", p_tilde_p, p_tilde)
+    term3 = np.einsum("nil,ljk->nijk", p_tilde, p_tilde_p)
     matrix_P[:, :, :, 1:] = 2.0 * (term1 + term2 + term3)
 
     if normalize:
@@ -655,10 +675,78 @@ def Exp_SO3_quat_P(P_IB, normalize=True):
         matrix_P *= P2_inv[:, None, None, None]
         # inner derivative due to normalization
         matrix = 2.0 * (p0[:, None, None] * p_tilde + ax2skew_squared(p))
-        matrix_P += np.multiply.outer(
-            matrix, -2.0 * (P2_inv**2)[:, None] * P_IB
-        ).reshape(n, 3, 3, 4)
+        matrix_P += (
+            matrix[:, :, :, None]
+            * (-2.0 * (P2_inv**2)[:, None] * P_IB)[:, None, None, :]
+        )
     return matrix_P[0] if was_1d else matrix_P
+
+
+def _quotient_P2_PP(G, G_P, G_PP, P):
+    """Second derivative of G(P) / (P @ P) w.r.t. P, where G is a stack of
+    arrays with trailing derivative axes, i.e., G (n, ...), G_P (n, ..., 4) and
+    G_PP (n, ..., 4, 4)."""
+    s_inv = 1 / np.sum(P * P, axis=1)
+    expand = (slice(None),) + (None,) * (G.ndim - 1)
+    s_inv = s_inv[expand]
+    P_ = P[expand]  # (n, 1, ..., 4)
+
+    G_P_P = G_P[..., :, None] * P_[..., None, :]
+    return (
+        G_PP * s_inv[..., None, None]
+        - 2.0 * (G_P_P + np.swapaxes(G_P_P, -1, -2)) * (s_inv**2)[..., None, None]
+        - 2.0 * G[..., None, None] * eye4 * (s_inv**2)[..., None, None]
+        + 8.0
+        * G[..., None, None]
+        * P_[..., :, None]
+        * P_[..., None, :]
+        * (s_inv**3)[..., None, None]
+    )
+
+
+eye4 = np.eye(4, dtype=float)
+
+# fmt: off
+# second derivative of 2 * (p0 * p_tilde + p_tilde @ p_tilde) w.r.t. P = (p0, p)
+_E = ax2skew_a()
+_quat_matrix_PP = np.zeros((3, 3, 4, 4), dtype=float)
+_quat_matrix_PP[:, :, 0, 1:] = 2.0 * _E
+_quat_matrix_PP[:, :, 1:, 0] = 2.0 * _E
+_quat_matrix_PP[:, :, 1:, 1:] = 2.0 * (
+    np.einsum("ijk,jml->imkl", _E, _E) + np.einsum("ijl,jmk->imkl", _E, _E)
+)
+# fmt: on
+
+
+def Exp_SO3_quat_PP(P_IB, normalize=True):
+    """Second derivative of Exp_SO3_quat with respect to P."""
+    P_IB, single = _stack(P_IB, 1)
+    assert P_IB.shape[1] == 4
+
+    matrix_PP = np.broadcast_to(_quat_matrix_PP, (P_IB.shape[0], 3, 3, 4, 4))
+    if normalize:
+        matrix = Exp_SO3_quat(P_IB, normalize=False) - eye3
+        matrix_P = Exp_SO3_quat_P(P_IB, normalize=False)
+        result = _quotient_P2_PP(matrix, matrix_P, matrix_PP, P_IB)
+    else:
+        result = matrix_PP.copy()
+    return result[0] if single else result
+
+
+def T_SO3_quat_PP(P_IB, normalize=True):
+    """Second derivative of T_SO3_quat with respect to P."""
+    P_IB, single = _stack(P_IB, 1)
+    assert P_IB.shape[1] == 4
+
+    n = P_IB.shape[0]
+    if normalize:
+        matrix = T_SO3_quat(P_IB, normalize=False)
+        matrix_P = T_SO3_quat_P(P_IB, normalize=False)
+        matrix_PP = np.zeros((n, 3, 4, 4, 4), dtype=np.result_type(P_IB, 1.0))
+        result = _quotient_P2_PP(matrix, matrix_P, matrix_PP, P_IB)
+    else:
+        result = np.zeros((n, 3, 4, 4, 4), dtype=np.result_type(P_IB, 1.0))
+    return result[0] if single else result
 
 
 Log_SO3_quat = Spurrier
@@ -851,7 +939,10 @@ T_IB_inv_R9[3:6, 0, 6:] = eye3
 T_IB_inv_R9[3:6, 2, :3] = -eye3
 T_IB_inv_R9[6:, 0, 3:6] = -eye3
 T_IB_inv_R9[6:, 1, :3] = eye3
-def T_SO3_inv_R9_R9(R9):
+def T_SO3_inv_R9_R9(R9=None):
+    # constant derivative: R9=None returns the single (9, 3, 9) array
+    if R9 is None:
+        return T_IB_inv_R9
     R9, single = _stack(R9, 1)
     assert R9.shape[1] == 9
     return T_IB_inv_R9 if single else np.broadcast_to(T_IB_inv_R9, (R9.shape[0], 9, 3, 9))

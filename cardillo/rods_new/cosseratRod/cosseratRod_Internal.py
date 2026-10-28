@@ -6,15 +6,24 @@ from warnings import warn
 from cardillo.math.algebra import ax2skew
 from cardillo.math.approx_fprime import approx_fprime
 from cardillo.utility.sparse_array_blocks import SparseArrayBlocks
+from .cosseratRod_MatrixUtils import (
+    bsr_add_block_diag,
+    bsr_left,
+    bsr_right,
+    bsr_sym_skew,
+)
 
 zeros3 = np.zeros(3, dtype=float)
 eye3 = np.eye(3, dtype=float)
 
 
 class CosseratRod_Internal:
-    def __init__(self, parent, mesh_kin, mesh_cg, quadrature):
+    def __init__(
+        self, parent, mesh_kin, mesh_cg, quadrature, idx_damp, convex_conjugate
+    ):
         self.parent = parent
         self.nnodes_sigma = self.parent.nnodes_sigma
+        self.convex_conjugate = convex_conjugate
 
         # quadrature
         quadrature_int_kin = mesh_kin.quadrature(*quadrature, 1)
@@ -37,7 +46,7 @@ class CosseratRod_Internal:
 
         # compliance contributions
         self._nla_c = nla_c
-        if nla_c > 0:
+        if nla_c > 0 and convex_conjugate:
             self.parent.nla_c = nla_c
 
             # c = c_la_c @ la_c - l_c
@@ -53,6 +62,24 @@ class CosseratRod_Internal:
             self.parent.KN_c = lambda t, q, la_c: (self.K_sigma(q, la_c, None), None)
             self.parent.E_pot_comp = self.E_pot_comp
 
+        if nla_c > 0 and not convex_conjugate:
+            self.parent.nla_e = nla_c
+
+            # e = e_la_e @ la_e - l_e
+            # --> la_e = -e_la_e_inv(q) @ e(q, 0) = e_la_e_inv(q) @ l_e(q)
+            self.parent.la_e = lambda t, q: spsolve(
+                self.e_la_e(t, q).tocsc(), self.l_rel(q)[0]
+            )
+            self.parent.e = (
+                lambda t, q, la_e: self.e_la_e(t, q) @ la_e - self.l_rel(q)[0]
+            )
+            self.parent.e_q = self.e_q
+            self.parent.e_la_e = self.e_la_e
+            self.parent.W_e = lambda t, q: self.W_sigma(q)[0]
+            self.parent.Wla_e_q = lambda t, q, la_e: self.Wla_sigma_q(q, la_e, None)
+            self.parent.KN_e = lambda t, q, la_e: (self.K_sigma(q, la_e, None), None)
+            self.parent.E_pot_comp_e = self.E_pot_comp_e
+
         # constraint
         self._nla_g = nla_g
         self.include_g = nla_g > 0
@@ -61,6 +88,26 @@ class CosseratRod_Internal:
         self._nDB = len(self.idx_db)
         self.include_f_pot = self._nDB > 0
 
+        #########
+        # damping
+        #########
+        # new DOF only in c indeces (db-damping reamins there!)
+        self._material_models_idx_damp = idx_damp
+        self.idx_d = np.array([i for i in idx_damp if i in self.idx_c], dtype=int)
+        self._nla_d = self.nnodes_sigma * len(self.idx_d)
+        if self._nla_d > 0:
+            self.parent.nla_d = self._nla_d
+
+            # d = d_la_d @ la_d + gamma(t, q, u)
+            # gamma = W_d(t, q).T @ u
+            # --> la_d = -d_la_d_inv @ gamma(t, q, u) = -d_la_d_inv @ W_d(t, q).T @ u
+            self.parent.la_d = lambda t, q, u: -self.d_la_d_inv @ self.W_d(t, q).T @ u
+            self.parent.d = (
+                lambda t, q, u, la_d: self.d_la_d @ la_d + self.W_d(t, q).T @ u
+            )
+            self.parent.W_d = self.W_d
+            self.parent.d_la_d = lambda t, q: self.d_la_d
+
         # eval functions
         self.parent.eval_stresses = self.eval_stresses
         self.parent.eval_strains = self.eval_strains
@@ -68,6 +115,17 @@ class CosseratRod_Internal:
     def set_material_model(self, material_model):
         self.material_model = material_model
         self.material_model_qp = self.material_model.prepare(self.qp_int_vec)
+        assert all(
+            material_model.idx_damp == self._material_models_idx_damp
+        ), "New material model damps other deformations! New assembly required!"
+
+        # let the system evaluate constant e_la_e and d_la_d only once
+        # TODO: changing the material model after assembly requires a new
+        # assembly, if these flags change
+        if self._nla_c > 0 and not self.convex_conjugate:
+            self.parent.constant_e_la_e = material_model.constant_C
+        if self._nla_d > 0:
+            self.parent.constant_d_la_d = material_model.constant_D
 
     def set_reference_strains(self, Q):
         _, B_gamma0_bar, B_kappa0_bar = self.parent.kinematics._eval_internal_vec(
@@ -103,6 +161,9 @@ class CosseratRod_Internal:
             [(self.idx_c, ...), (self.idx_g, ...)],
         )
 
+        # generalized force directions and their derivatives
+        nu_node = self.parent.velocity.nu_node
+
         # W_sigma
         W_sigma_pairs = [
             (self.N_int, self.Nc_int, self.qw_int_vec),
@@ -110,13 +171,14 @@ class CosseratRod_Internal:
         ]
         self.W_sigma_SAB = SparseArrayBlocks(
             (self.parent.nu, self.nla_sigma),
-            (6, 6),
+            (nu_node, 6),
             W_sigma_pairs,
             [(..., self.idx_c), (..., self.idx_g)],
         )
 
         # Wla_sigma_q
-        h_pot_q_pairs = [
+        # pairs [N/N_xi <-> N/N_xi] of the internal quadrature
+        self.N_Nxi_pairs = [
             (self.N_int, self.N_int, self.qw_int_vec),
             (self.N_int, self.N_xi_int, self.qw_int_vec),
             (self.N_xi_int, self.N_int, self.qw_int_vec),
@@ -124,27 +186,97 @@ class CosseratRod_Internal:
         ]
         self.h_pot_q_SAB = SparseArrayBlocks(
             (self.parent.nu, self.parent.nq),
-            (6, self.parent.kinematics.nq_node),
-            h_pot_q_pairs,
+            (nu_node, self.parent.kinematics.nq_node),
+            self.N_Nxi_pairs,
         )
         self.K_sigma_SAB = SparseArrayBlocks(
-            (self.parent.nu, self.parent.nu), (6, 6), h_pot_q_pairs
+            (self.parent.nu, self.parent.nu), (nu_node, nu_node), self.N_Nxi_pairs
         )
 
-    def sigma_qp_db(self, t, q, u):
-        _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        #########
+        # damping
+        #########
+        if self._nla_d > 0:
+            # d_la_d
+            d_la_d_pairs = [
+                (self.Nc_int, self.Nc_int, self.qw_int_vec * self.J_int_vec)
+            ]
+            self.d_la_d_SAB = SparseArrayBlocks(
+                (self._nla_d, self._nla_d),
+                (len(self.idx_d), len(self.idx_d)),
+                d_la_d_pairs,
+            )
+            self.W_d_SAB = SparseArrayBlocks(
+                (self.parent.nu, self.nla_sigma),
+                (nu_node, 6),
+                W_sigma_pairs,
+                [(..., self.idx_d)],
+            )
+
+    def sigma_qp_db(self, _eval, _eval_dot, deval=0):
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+        epsilon_dot = np.hstack([_eval_dot[1], _eval_dot[2]]) / self.J_int_vec[:, None]
         sigma_db = self.material_model.sigma(
-            epsilon, self.epsilon0_int, self.material_model_qp
+            epsilon, self.epsilon0_int, epsilon_dot, self.material_model_qp
         )
 
         sigma_qp = np.zeros((self.nquadrature_int_total, 6))
         sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
-        return _eval, sigma_qp
+        if deval == 0:
+            return sigma_qp
+
+        # tangents as (nqp, 6, 6), only rows of displacement-based stresses
+        sigma_epsilon_qp = self._tangent_db(
+            self.material_model.sigma_epsilon(
+                epsilon, self.epsilon0_int, epsilon_dot, self.material_model_qp
+            )
+        )
+        sigma_epsilon_dot_qp = self._tangent_db(
+            self.material_model.sigma_epsilon_dot(
+                epsilon, self.epsilon0_int, epsilon_dot, self.material_model_qp
+            )
+        )
+        return sigma_qp, sigma_epsilon_qp, sigma_epsilon_dot_qp
+
+    def _tangent_db(self, blocks):
+        B_n_gamma, B_n_kappa, B_m_gamma, B_m_kappa = blocks
+        tangent = np.zeros((self.nquadrature_int_total, 6, 6))
+        tangent[:, :3, :3] = B_n_gamma
+        tangent[:, :3, 3:] = B_n_kappa
+        tangent[:, 3:, :3] = B_m_gamma
+        tangent[:, 3:, 3:] = B_m_kappa
+        tangent_db = np.zeros_like(tangent)
+        tangent_db[:, self.idx_db] = tangent[:, self.idx_db]
+        return tangent_db
+
+    ##########################################
+    # linearization of displacement-based part
+    ##########################################
+    def DG_f_pot(self, t, q, u):
+        # D + G = -f_pot_u, split into symmetric and skew-symmetric part
+        return bsr_sym_skew(-self.f_pot_u(t, q, u))
 
     def assembler_callback(self):
         if self._nla_c > 0:
-            self._c_la_c_coo()
+            if self.convex_conjugate:
+                self._c_la_c_coo()
+        if self._nla_d > 0:
+            self._d_la_d_coo()
+
+    def step_callback(self, t, q, u):
+        if hasattr(self.material_model, "step_callback"):
+            _eval = self.parent.kinematics._eval_internal_vec(
+                self.N_int, self.N_xi_int, q
+            )
+            _eval_dot = self._eval_internal_vec_dot(
+                self.N_int, self.N_xi_int, q, u, _eval=_eval
+            )
+            epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+            epsilon_dot = np.hstack(_eval_dot[1:]) / self.J_int_vec[:, None]
+            self.material_model.step_callback(
+                t, epsilon, self.epsilon0_int, epsilon_dot, self.material_model_qp
+            )
+        return q, u
 
     def _c_la_c_coo(self):
         C_qp = self.material_model.C_inv(self.material_model_qp)
@@ -154,6 +286,15 @@ class CosseratRod_Internal:
 
         self.c_la_c = c_la_c
         self.c_la_c_inv = spsolve(c_la_c.tocsc(), eye_array(self._nla_c, format="csc"))
+
+    def _d_la_d_coo(self):
+        D_inv_qp = self.material_model.D_inv(self.material_model_qp)
+        d_la_d = self.d_la_d_SAB.add_blocks(
+            D_inv_qp[None, :, self.idx_d[:, None], self.idx_d]
+        )
+
+        self.d_la_d = d_la_d
+        self.d_la_d_inv = spsolve(d_la_d.tocsc(), eye_array(self._nla_d, format="csc"))
 
     ############################
     # total energies and momenta
@@ -214,30 +355,12 @@ class CosseratRod_Internal:
         return l_c, l_g
 
     def l_sigma_q(self, q):
-        # compute l_sigma_q
-        _eval, _deval = self.parent.kinematics._eval_internal_vec(
+        # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF] = epsilon_bar_qbar
+        _, _deval = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q, deval=1
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-
-        # TODO: make sparse?
-        # c_sigma_q_qp[N/N_xi, qpi, la_cDOF, qDOF]
-        c_sigma_q_qp = np.empty(
-            (2, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
-        )
-        # to be multiplied with N_xi
-        c_sigma_q_qp[1, :, :3, :3] = A_IB.transpose((0, 2, 1))
-        c_sigma_q_qp[1, :, :3, 3:] = 0.0
-        c_sigma_q_qp[1, :, 3:, :3] = 0.0
-        c_sigma_q_qp[1, :, 3:, 3:] = T
-
-        # to be multiplied with N
-        c_sigma_q_qp[0, :, :, :3] = 0.0
-        c_sigma_q_qp[0, :, :3, 3:] = B_gamma_bar_P
-        c_sigma_q_qp[0, :, 3:, 3:] = B_kappa_bar_P
-
-        return self.c_sigma_q_SAB.add_blocks(c_sigma_q_qp)
+        epsilon_bar_qbar = _deval[0]
+        return self.c_sigma_q_SAB.add_blocks(epsilon_bar_qbar)
 
     def l_sigma_dot_q(self, q, u):
         # TODO: do this without approx_fprime
@@ -255,6 +378,77 @@ class CosseratRod_Internal:
         l_c_ddot = W_c.T @ u_dot + l_c_dot_q @ q_dot
         l_g_ddot = W_g.T @ u_dot + l_g_dot_q @ q_dot
         return l_c_ddot, l_g_ddot
+
+    ########################
+    # elasticity formulation
+    ########################
+    def E_pot_comp_e(self, t, q, la_e):
+        if self._nDB > 0:
+            msg = "E_pot_comp_e might not be correct if there are displacement-based deformations."
+            warn(msg)
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        la_sigma_nodes[:, self.idx_c] = la_e.reshape(self.nnodes_sigma, -1)
+        la_sigma = self.Nc_int @ la_sigma_nodes
+
+        # potential evaluated at the strains that belong to the stresses, i.e.,
+        # C(epsilon) @ la_sigma - epsilon_rel(epsilon) = 0. The other components
+        # have zero stress, hence they only drop out for uncoupled material laws.
+        epsilon_sigma = self.material_model.epsilon_rel_inv(
+            la_sigma, self.epsilon0_int, self.material_model_qp
+        )
+        E_pot_i = self.material_model.potential(
+            epsilon_sigma, self.epsilon0_int, self.material_model_qp
+        )
+        E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
+        return E_pot
+
+    def l_rel(self, q):
+        _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+
+        epsilon_rel = self.material_model.epsilon_rel(
+            epsilon, self.epsilon0_int, self.material_model_qp
+        )
+
+        l = self.Nc_int.T @ (
+            epsilon_rel * self.J_int_vec[:, None] * self.qw_int_vec[:, None]
+        )
+
+        l_c = l[:, self.idx_c].reshape(-1)
+        l_g = l[:, self.idx_g].reshape(-1)
+        return l_c, l_g
+
+    def e_q(self, t, q, la_e):
+        _eval, _deval = self.parent.kinematics._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=1
+        )
+        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+
+        la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
+        la_sigma_nodes[:, self.idx_c] = la_e.reshape(self.nnodes_sigma, -1)
+        sigma_qp = self.Nc_int @ la_sigma_nodes
+
+        Csigma_epsilon = self.material_model.Csigma_epsilon(
+            epsilon, self.epsilon0_int, sigma_qp, self.material_model_qp
+        )
+        epsilon_rel_epsilon = self.material_model.epsilon_rel_epsilon(
+            epsilon, self.epsilon0_int, self.material_model_qp
+        )
+
+        # e_q_qp[N/N_xi, qpi, la_eDOF, qDOF], J cancels with epsilon = epsilon_bar / J
+        epsilon_bar_qbar = _deval[0]
+        e_q_qp = (Csigma_epsilon - epsilon_rel_epsilon) @ epsilon_bar_qbar
+        return self.c_sigma_q_SAB.add_blocks(e_q_qp)[0]
+
+    def e_la_e(self, t, q):
+        _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+        C_qp = self.material_model.C(epsilon, self.epsilon0_int, self.material_model_qp)
+
+        e_la_e = self.c_la_c_SAB.add_blocks(
+            C_qp[None, :, self.idx_c[:, None], self.idx_c]
+        )
+        return e_la_e
 
     ########################
     # evaluation functions #
@@ -280,24 +474,62 @@ class CosseratRod_Internal:
 
         return xis, els
 
-    def eval_stresses(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
+    def eval_stresses(self, t, q, u, la_c, la_e, la_g, n_per_element=None, n_ges=None):
         xis, els = self._eval_logic(n_per_element, n_ges)
 
         # TODO: are there problems, if everything is DB?
         # stresses due to compliance and constraints
         Nc = self.parent.Nc(xis, els)
         la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
-        if self._nla_c > 0:
+        if self._nla_c > 0 and self.convex_conjugate:
             la_sigma_nodes[:, self.idx_c] = la_c[self.parent.la_cDOF].reshape(
                 self.nnodes_sigma, -1
             )
-        if self._nla_g > 0:
-            la_sigma_nodes[:, self.idx_g] = la_g[self.parent.la_gDOF].reshape(
+        if self._nla_c > 0 and not self.convex_conjugate:
+            la_sigma_nodes[:, self.idx_c] = la_e[self.parent.la_eDOF].reshape(
                 self.nnodes_sigma, -1
             )
+        if self._nla_g > 0:
+            # the internal constraints come first, cf. compose_g
+            la_g_int = la_g[self.parent.la_gDOF][: self._nla_g]
+            la_sigma_nodes[:, self.idx_g] = la_g_int.reshape(self.nnodes_sigma, -1)
         sigma = Nc @ la_sigma_nodes
 
         # stresses due to displacement based
+        if self._nDB > 0:
+            N, N_xi = self.parent.N(xis, els)
+            # reference strains
+            _, B_gamma0_bar, B_kappa0_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, self.parent.Q
+            )
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            # current strains
+            _eval = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, q[self.parent.qDOF]
+            )
+            _, B_gamma_bar, B_kappa_bar = _eval
+
+            epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
+            epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
+            prepare = self.material_model.prepare(xis)
+            if u is None:
+                epsilon_dot = np.zeros_like(epsilon)
+            else:
+                _eval_dot = self._eval_internal_vec_dot(
+                    N, N_xi, q[self.parent.qDOF], u[self.parent.uDOF], _eval=_eval
+                )
+                epsilon_dot = np.hstack(_eval_dot[1:]) / J[:, None]
+            sigma_db = self.material_model.sigma(
+                epsilon, epsilon0, epsilon_dot, prepare
+            )
+            sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
+
+        return xis, sigma[:, :3], sigma[:, 3:]
+
+    def eval_strains(self, t, q, u, la_c, la_e, la_g, n_per_element=None, n_ges=None):
+        xis, els = self._eval_logic(n_per_element, n_ges)
+
+        epsilon = np.zeros((len(xis), 6))
         if self._nDB > 0:
             N, N_xi = self.parent.N(xis, els)
             # reference strains
@@ -310,38 +542,39 @@ class CosseratRod_Internal:
                 N, N_xi, q[self.parent.qDOF]
             )
 
-            epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
-            epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
-            prepare = self.material_model.prepare(xis)
-            sigma_db = self.material_model.sigma(epsilon, epsilon0, prepare)
-            sigma[:, self.idx_db] = sigma_db[:, self.idx_db]
-
-        return xis, sigma[:, :3], sigma[:, 3:]
-
-    def eval_strains(self, t, q, la_c, la_g, n_per_element=None, n_ges=None):
-        xis, els = self._eval_logic(n_per_element, n_ges)
-
-        epsilon = np.zeros((len(xis), 6))
-        if self._nDB > 0:
-            N, N_xi = self.N(xis, els)
-            # reference strains
-            _, B_gamma0_bar, B_kappa0_bar = self._eval_internal_vec(N, N_xi, self.Q)
-            J = np.linalg.norm(B_gamma0_bar, axis=1)
-            # current strains
-            _, B_gamma_bar, B_kappa_bar = self._eval_internal_vec(N, N_xi, q[self.qDOF])
-
             epsilon[:, :3] = (B_gamma_bar - B_gamma0_bar) / J[:, None]
             epsilon[:, 3:] = (B_kappa_bar - B_kappa0_bar) / J[:, None]
 
         # strains from compliance
-        if self._nla_c > 0:
+        if self._nla_c > 0 and self.convex_conjugate:
             Nc = self.parent.Nc(xis, els)
             la_c_nodes = la_c[self.parent.la_cDOF].reshape(self.nnodes_sigma, -1)
             la_sigma = Nc @ la_c_nodes
 
             prepare = self.material_model.prepare(xis)
             C_inv = self.material_model.C_inv(prepare)
-            epsilon[:, self.idx_c] = np.einsum("ijk,ik->ij", C_inv, la_sigma)
+            C_inv_c = C_inv[:, self.idx_c[:, None], self.idx_c]
+            epsilon[:, self.idx_c] = np.einsum("ijk,ik->ij", C_inv_c, la_sigma)
+
+        if self._nla_c > 0 and not self.convex_conjugate:
+            # full stresses, as the material law might couple all components
+            _, B_n, B_m = self.eval_stresses(
+                t, q, u, la_c, la_e, la_g, n_per_element, n_ges
+            )
+            sigma = np.hstack([B_n, B_m])
+
+            # reference strains
+            N, N_xi = self.parent.N(xis, els)
+            _, B_gamma0_bar, B_kappa0_bar = self.parent.kinematics._eval_internal_vec(
+                N, N_xi, self.parent.Q
+            )
+            J = np.linalg.norm(B_gamma0_bar, axis=1)
+            epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
+
+            # C(epsilon) @ sigma - epsilon_rel(epsilon) = 0 --> epsilon
+            prepare = self.material_model.prepare(xis)
+            epsilon_c = self.material_model.epsilon_rel_inv(sigma, epsilon0, prepare)
+            epsilon[:, self.idx_c] = (epsilon_c - epsilon0)[:, self.idx_c]
 
         # strains from constraints are always 0
         epsilon[:, self.idx_g] = 0.0
@@ -350,7 +583,59 @@ class CosseratRod_Internal:
 
 
 class CosseratRod_internal_PG_IB(CosseratRod_Internal):
-    def W_sigma(self, q):
+    def _geometric_stiffness_qp(self, sigma_qp, _deval):
+        epsilon_bar_qbar, A_IB_qbar = _deval[:2]
+
+        result = np.zeros(
+            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
+        )
+        for i in range(2):
+            # to be multiplied with N_xi <-> N/N_xi: -d(A_IB @ B_n)/dq
+            result[2 + i, :, :3] = -np.einsum(
+                "ijkl,ik->ijl", A_IB_qbar[i], sigma_qp[:, :3]
+            )
+            # to be multiplied with N <-> N/N_xi:
+            # d(B_gamma_bar x B_n + B_kappa_bar x B_m)/dq
+            result[i, :, 3:] = -np.cross(
+                sigma_qp[:, :3, None],
+                epsilon_bar_qbar[i, :, :3],
+                axisa=1,
+                axisb=1,
+                axisc=1,
+            ) - np.cross(
+                sigma_qp[:, 3:, None],
+                epsilon_bar_qbar[i, :, 3:],
+                axisa=1,
+                axisb=1,
+                axisc=1,
+            )
+        return result
+
+    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _eval=None, _deval=None):
+        """Strain rates consistent with the virtual strains of the Petrov-Galerkin
+        formulation, i.e., the virtual strain operator applied to u. Returns
+        (B_Omega, B_gamma_bar_dot, B_kappa_bar_dot)."""
+        if u @ u == 0:
+            n = N.shape[0]
+            zeros_n3 = np.zeros((n, 3))
+            return (zeros_n3, zeros_n3, zeros_n3)
+
+        if _eval is None:
+            _eval = self.parent.kinematics._eval_internal_vec(N, N_xi, q)
+
+        unodes = u.reshape(self.parent.nnodes, -1)
+        B_Omega = N @ unodes[:, 3:]
+        vO_xi = N_xi @ unodes
+
+        B_gamma_bar_dot = np.einsum("ijk,ij->ik", _eval[0], vO_xi[:, :3]) - np.cross(
+            B_Omega, _eval[1]
+        )
+        B_kappa_bar_dot = vO_xi[:, 3:] - np.cross(B_Omega, _eval[2])
+
+        _eval_dot = (B_Omega, B_gamma_bar_dot, B_kappa_bar_dot)
+        return _eval_dot
+
+    def W_sigma(self, q, SAB=None):
         # compute W_sigma
         A_IB, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
             self.N_int, self.N_xi_int, q
@@ -372,7 +657,9 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         W_sigma_qp[0, :, 3:, :3] = gamma_bar_tilde
         W_sigma_qp[0, :, 3:, 3:] = kappa_bar_tilde
 
-        return self.W_sigma_SAB.add_blocks(W_sigma_qp)
+        if SAB is None:
+            SAB = self.W_sigma_SAB
+        return SAB.add_blocks(W_sigma_qp)
 
     def Wla_sigma_q(self, q, la_c, la_g):
         la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
@@ -383,37 +670,9 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         sigma_qp = self.Nc_int @ la_sigma_nodes
 
         _eval, _deval = self.parent.kinematics._eval_internal_vec(
-            self.N_int, self.N_xi_int, q, deval=True
+            self.N_int, self.N_xi_int, q, deval=1
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
-        )
-
-        # TODO: make sparse?
-        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
-        )
-        # to be multiplied with N_xi <-> N
-        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
-
-        # to be multiplied with N <-> N_xi
-        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
-        )
-
-        # to be multiplied with N <-> N
-        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
-            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
-            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
-        )
+        Wla_sigma_qp_qbar = self._geometric_stiffness_qp(sigma_qp, _deval)
         return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
 
     def K_sigma(self, q, la_c, la_g):
@@ -454,7 +713,11 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
         return self.K_sigma_SAB.add_blocks(K_qp)
 
     def f_pot(self, t, q, u):
-        _eval, sigma_qp = self.sigma_qp_db(t, q, u)
+        _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        _eval_dot = self._eval_internal_vec_dot(
+            self.N_int, self.N_xi_int, q, u, _eval=_eval
+        )
+        sigma_qp = self.sigma_qp_db(_eval, _eval_dot)
 
         # compute generalized internal forces based on evaluation and forces at quadrature points
         A_IB, B_gamma_bar, B_kappa_bar = _eval
@@ -479,147 +742,327 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
 
     def f_pot_q(self, t, q, u):
         _eval, _deval = self.parent.kinematics._eval_internal_vec(
-            self.N_int, self.N_xi_int, q, deval=True
+            self.N_int, self.N_xi_int, q, deval=1
         )
-        epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
-        sigma_db = self.material_model.sigma(
-            epsilon, self.epsilon0_int, self.material_model_qp
+        _eval_dot = self._eval_internal_vec_dot(
+            self.N_int, self.N_xi_int, q, u, _eval=_eval
         )
-
-        sigma_qp = np.zeros((self.nquadrature_int_total, 6))
-        sigma_qp[:, self.idx_db] = sigma_db[:, self.idx_db]
+        sigma_qp, C_qp, D_qp = self.sigma_qp_db(_eval, _eval_dot, deval=1)
 
         A_IB, B_gamma_bar, B_kappa_bar = _eval
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
+        epsilon_bar_qbar, A_IB_qbar = _deval[:2]
+        B_Omega = _eval_dot[0]
 
-        ######################
-        # material stiffness #
-        ######################
-        A_IB_transpose_to_J = A_IB.transpose(0, 2, 1) / self.J_int_vec[:, None, None]
-        T_to_J = T / self.J_int_vec[:, None, None]
-
-        sigma_epsilon = self.material_model.sigma_epsilon(
-            epsilon, self.epsilon0_int, self.material_model_qp
+        ######################################
+        # material stiffness (incl. viscous) #
+        ######################################
+        # B_gamma_bar_dot = A_IB.T @ I_v_xi - B_Omega x B_gamma_bar
+        # B_kappa_bar_dot = B_Omega_xi - B_Omega x B_kappa_bar
+        epsilon_bar_dot_qbar = np.empty_like(epsilon_bar_qbar)
+        epsilon_bar_dot_qbar[..., :3, :] = -np.cross(
+            B_Omega[:, :, None],
+            epsilon_bar_qbar[..., :3, :],
+            axisa=1,
+            axisb=-2,
+            axisc=-2,
         )
-        B_n_gamma, B_n_kappa, B_m_gamma, B_m_kappa = sigma_epsilon
-
-        # fmt: off
-        B_n_P = (B_n_gamma @ B_gamma_bar_P + B_n_kappa @ B_kappa_bar_P) / self.J_int_vec[:, None, None]
-        B_m_P = (B_m_gamma @ B_gamma_bar_P + B_m_kappa @ B_kappa_bar_P) / self.J_int_vec[:, None, None]
-        # fmt: on
-
-        # TODO: make sparse?
-        # f_pot_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        f_pot_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
+        epsilon_bar_dot_qbar[..., 3:, :] = -np.cross(
+            B_Omega[:, :, None],
+            epsilon_bar_qbar[..., 3:, :],
+            axisa=1,
+            axisb=-2,
+            axisc=-2,
         )
-        # to be multiplied with N_xi <-> N_xi
-        f_pot_qp_qbar[3, :, :3, :3] = -A_IB @ B_n_gamma @ A_IB_transpose_to_J
-        f_pot_qp_qbar[3, :, :3, 3:] = -A_IB @ B_n_kappa @ T_to_J
-        f_pot_qp_qbar[3, :, 3:, :3] = -B_m_gamma @ A_IB_transpose_to_J
-        f_pot_qp_qbar[3, :, 3:, 3:] = -B_m_kappa @ T_to_J
-
-        # to be multiplied with N_xi <-> N
-        f_pot_qp_qbar[2, :, :3, 3:] = -A_IB @ B_n_P
-        f_pot_qp_qbar[2, :, 3:, 3:] = -B_m_P
-
-        # to be multiplied with N <-> N_xi
-        f_pot_qp_qbar[1, :, 3:, :3] = (
-            np.cross(B_gamma_bar[:, :, None], B_n_gamma, axisa=1, axisb=1, axisc=1)
-            + np.cross(B_kappa_bar[:, :, None], B_m_gamma, axisa=1, axisb=1, axisc=1)
-        ) @ A_IB_transpose_to_J
-        f_pot_qp_qbar[1, :, 3:, 3:] = (
-            np.cross(B_gamma_bar[:, :, None], B_n_kappa, axisa=1, axisb=1, axisc=1)
-            + np.cross(B_kappa_bar[:, :, None], B_m_kappa, axisa=1, axisb=1, axisc=1)
-        ) @ T_to_J
-
-        # to be multiplied with N <-> N
-        f_pot_qp_qbar[0, :, 3:, 3:] = np.cross(
-            B_gamma_bar[:, :, None], B_n_P, axisa=1, axisb=1, axisc=1
-        ) + np.cross(B_kappa_bar[:, :, None], B_m_P, axisa=1, axisb=1, axisc=1)
-
-        ##################
-        # geometric part #
-        ##################
-        # TODO: can we use this from Wla_sigma_q?
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
+        # derivative of A_IB.T @ I_v_xi
+        I_v_xi = self.N_xi_int @ u.reshape(self.parent.nnodes, -1)[:, :3]
+        epsilon_bar_dot_qbar[..., :3, :] += np.einsum(
+            "aijkl,ij->aikl", A_IB_qbar, I_v_xi
         )
 
-        # to be multiplied with N_xi <-> N
-        f_pot_qp_qbar[2, :, :3, 3:] += I_n_P
+        sigma_qbar = (
+            C_qp @ epsilon_bar_qbar + D_qp @ epsilon_bar_dot_qbar
+        ) / self.J_int_vec[:, None, None]
 
-        # to be multiplied with N <-> N_xi
-        f_pot_qp_qbar[1, :, 3:, :3] -= np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        f_pot_qp_qbar[1, :, 3:, 3:] -= np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
-        )
-
-        # to be multiplied with N <-> N
-        f_pot_qp_qbar[0, :, 3:, 3:] -= np.cross(
-            sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1
-        ) + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
+        # f_pot_qp_qbar[N/N_xi <-> N/N_xi, qpi, uDOF, qDOF]
+        f_pot_qp_qbar = self._geometric_stiffness_qp(sigma_qp, _deval)
+        for i in range(2):
+            f_pot_qp_qbar[2 + i] += self._B_xi_T_minus(A_IB, sigma_qbar[i])
+            f_pot_qp_qbar[i] += self._B_0_T_minus(
+                B_gamma_bar, B_kappa_bar, sigma_qbar[i]
+            )
 
         return self.h_pot_q_SAB.add_blocks(f_pot_qp_qbar)
 
+    def f_pot_u(self, t, q, u):
+        _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
+        _eval_dot = self._eval_internal_vec_dot(
+            self.N_int, self.N_xi_int, q, u, _eval=_eval
+        )
+        _, _, D_qp = self.sigma_qp_db(_eval, _eval_dot, deval=1)
+
+        A_IB, B_gamma_bar, B_kappa_bar = _eval
+
+        # epsilon_bar_dot_ubar[N/N_xi, qpi, epsilonDOF, uDOF]
+        epsilon_bar_dot_ubar = np.zeros((2, self.nquadrature_int_total, 6, 6))
+        # to be multiplied with N_xi
+        epsilon_bar_dot_ubar[1, :, :3, :3] = A_IB.transpose(0, 2, 1)
+        epsilon_bar_dot_ubar[1, :, 3:, 3:] = eye3
+        # to be multiplied with N
+        epsilon_bar_dot_ubar[0, :, :3, 3:] = np.cross(
+            B_gamma_bar[:, :, None], eye3[None], axisa=1, axisb=1, axisc=1
+        )
+        epsilon_bar_dot_ubar[0, :, 3:, 3:] = np.cross(
+            B_kappa_bar[:, :, None], eye3[None], axisa=1, axisb=1, axisc=1
+        )
+
+        sigma_ubar = D_qp @ epsilon_bar_dot_ubar / self.J_int_vec[:, None, None]
+
+        # f_pot_qp_ubar[N/N_xi, qpi, uDOF, uDOF]
+        f_pot_qp_ubar = np.empty((4, self.nquadrature_int_total, 6, 6))
+        # to be multiplied with N_xi <-> N_xi, N_xi <-> N, N <-> N_xi, N <-> N
+        f_pot_qp_ubar[3] = self._B_xi_T_minus(A_IB, sigma_ubar[1])
+        f_pot_qp_ubar[2] = self._B_xi_T_minus(A_IB, sigma_ubar[0])
+        f_pot_qp_ubar[1] = self._B_0_T_minus(B_gamma_bar, B_kappa_bar, sigma_ubar[1])
+        f_pot_qp_ubar[0] = self._B_0_T_minus(B_gamma_bar, B_kappa_bar, sigma_ubar[0])
+
+        return self.K_sigma_SAB.add_blocks(f_pot_qp_ubar)
+
     def KN_f_pot(self, t, q, u):
-        warn("KN_f_pot not implemented")
+        # TODO: stiffness w.r.t. the nodal (Lie group) increments, cf. K_sigma
+        warn("KN_f_pot not implemented for PG")
         return None, None
+
+    #########
+    # damping
+    #########
+    def W_d(self, t, q):
+        return self.W_sigma(q, self.W_d_SAB)[0]
+
+    # f_pot = N_xi.T @ (-B_xi.T @ sigma) + N.T @ (-B_0.T @ sigma), where
+    # B_xi = diag(A_IB.T, eye3) and B_0 = [[0, skew(gamma_bar)], [0, skew(kappa_bar)]]
+    @staticmethod
+    def _B_xi_T_minus(A_IB, X):
+        result = np.empty_like(X)
+        result[:, :3] = -A_IB @ X[:, :3]
+        result[:, 3:] = -X[:, 3:]
+        return result
+
+    @staticmethod
+    def _B_0_T_minus(B_gamma_bar, B_kappa_bar, X):
+        result = np.zeros_like(X)
+        result[:, 3:] = np.cross(
+            B_gamma_bar[:, :, None], X[:, :3], axisa=1, axisb=1, axisc=1
+        ) + np.cross(B_kappa_bar[:, :, None], X[:, 3:], axisa=1, axisb=1, axisc=1)
+        return result
 
 
 class CosseratRod_internal_BG(CosseratRod_Internal):
-    def W_sigma(self, q):
-        W_c, W_g = self.l_sigma_q(q)
-        return (None if W_c is None else -W_c.T, None if W_g is None else -W_g.T)
+    """Bubnov-Galerkin formulation, i.e., u = q_dot and the virtual work is
+    tested with delta q. The generalized forces are
+    f_BG(q, q_dot) = -int epsilon_bar_q.T @ sigma(epsilon, epsilon_dot)."""
 
-    def Wla_sigma_q(self, q, la_c, la_g):
+    def set_reference_strains(self, Q):
+        super().set_reference_strains(Q)
+
+        # f_BG lives in q-space, i.e., blocks (nq_node, nq_node), which differ from
+        # the blocks (nu_node, nq_node) of h_pot_q_SAB for DBG
+        nq_node = self.parent.kinematics.nq_node
+        self.f_BG_q_SAB = SparseArrayBlocks(
+            (self.parent.nq, self.parent.nq), (nq_node, nq_node), self.N_Nxi_pairs
+        )
+
+    def _q_dot_qbar(self, N, N_xi, q, u):
+        """q_dot_qbar[N/N_xi, qpi, qDOF], i.e., interpolated q_dot = u."""
+        u_nodes = u.reshape(self.parent.nnodes, -1)
+        return np.array([N @ u_nodes, N_xi @ u_nodes])
+
+    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _eval=None, _deval=None):
+        """Strain rates epsilon_bar_dot = epsilon_bar_q @ q_dot with q_dot = q_dot(q, u).
+        Returns (None, B_gamma_bar_dot, B_kappa_bar_dot)."""
+        if _deval is None:
+            _, _deval = self.parent.kinematics._eval_internal_vec(N, N_xi, q, deval=1)
+        q_dot_qbar = self._q_dot_qbar(N, N_xi, q, u)
+        epsilon_bar_dot = np.einsum("apik,apk->pi", _deval[0], q_dot_qbar)
+        return (None, epsilon_bar_dot[:, :3], epsilon_bar_dot[:, 3:])
+
+    def _f_BG(self, sigma_qp, epsilon_bar_qbar):
+        """f_BG = -int epsilon_bar_q.T @ sigma"""
+        f_BG_qp = -np.einsum("apik,pi->apk", epsilon_bar_qbar, sigma_qp)
+        f_BG_nodes = self.N_int.T @ (
+            f_BG_qp[0] * self.qw_int_vec[:, None]
+        ) + self.N_xi_int.T @ (f_BG_qp[1] * self.qw_int_vec[:, None])
+        return f_BG_nodes.reshape(-1)
+
+    def _f_BG_q_dot(self, D_qp, epsilon_bar_qbar):
+        """Derivative of f_BG w.r.t. q_dot."""
+        D_epsilon_bar_qbar = D_qp @ epsilon_bar_qbar / self.J_int_vec[:, None, None]
+        f_BG_q_dot_qp = -np.einsum(
+            "apik,bpil->abpkl", epsilon_bar_qbar, D_epsilon_bar_qbar
+        )
+        return self.f_BG_q_SAB.add_blocks(
+            f_BG_q_dot_qp.reshape(4, *f_BG_q_dot_qp.shape[2:])
+        )
+
+    def _f_BG_q_geometric(self, sigma_qp, epsilon_bar_qbarqbar):
+        """Derivative of f_BG w.r.t. q for fixed sigma, as qp_contributions."""
+        return -np.einsum("pi,abpikl->abpkl", sigma_qp, epsilon_bar_qbarqbar)
+
+    def _f_BG_and_derivatives(self, t, q, u):
+        """f_BG, its derivative w.r.t. q for fixed q_dot and w.r.t. q_dot."""
+        N, N_xi = self.N_int, self.N_xi_int
+        _eval, _deval, _ddeval = self.parent.kinematics._eval_internal_vec(
+            N, N_xi, q, deval=2
+        )
+        _eval_dot = self._eval_internal_vec_dot(N, N_xi, q, u, _deval=_deval)
+        q_dot_qbar = self._q_dot_qbar(N, N_xi, q, u)
+        sigma_qp, C_qp, D_qp = self.sigma_qp_db(_eval, _eval_dot, deval=1)
+        epsilon_bar_qbar = _deval[0]
+        epsilon_bar_qbarqbar = _ddeval[0]
+
+        # derivative of epsilon_bar_dot w.r.t. q for fixed q_dot
+        epsilon_bar_dot_qbar = np.einsum(
+            "abpijk,apj->bpik", epsilon_bar_qbarqbar, q_dot_qbar
+        )
+        sigma_qbar = (
+            C_qp @ epsilon_bar_qbar + D_qp @ epsilon_bar_dot_qbar
+        ) / self.J_int_vec[:, None, None]
+
+        f_BG_q_qp = -np.einsum(
+            "apik,bpil->abpkl", epsilon_bar_qbar, sigma_qbar
+        ) + self._f_BG_q_geometric(sigma_qp, epsilon_bar_qbarqbar)
+        f_BG_q = self.f_BG_q_SAB.add_blocks(f_BG_q_qp.reshape(4, *f_BG_q_qp.shape[2:]))
+
+        f_BG = self._f_BG(sigma_qp, epsilon_bar_qbar)
+        f_BG_q_dot = self._f_BG_q_dot(D_qp, epsilon_bar_qbar)
+        return f_BG, f_BG_q, f_BG_q_dot
+
+    def _sigma_qp_la(self, la_c, la_g):
         la_sigma_nodes = np.zeros((self.nnodes_sigma, 6))
         if la_c is not None:
             la_sigma_nodes[:, self.idx_c] = la_c.reshape(self.nnodes_sigma, -1)
         if la_g is not None:
             la_sigma_nodes[:, self.idx_g] = la_g.reshape(self.nnodes_sigma, -1)
-        sigma_qp = self.Nc_int @ la_sigma_nodes
+        return self.Nc_int @ la_sigma_nodes
 
-        _eval, _deval = self.parent.kinematics._eval_internal_vec(
-            self.N_int, self.N_xi_int, q, deval=True
+    def _Wla_BG_and_derivative(self, q, la_c, la_g):
+        """W_BG @ la = f_BG(sigma(la)) and its derivative w.r.t. q."""
+        sigma_qp = self._sigma_qp_la(la_c, la_g)
+        _, _deval, _ddeval = self.parent.kinematics._eval_internal_vec(
+            self.N_int, self.N_xi_int, q, deval=2
         )
-        A_IB = _eval[0]
-        T, B_gamma_bar_P, B_kappa_bar_P = _deval
-        I_n_P = np.einsum(
-            "ijk,ikl->ijl",
-            A_IB,
-            np.cross(sigma_qp[:, :3, None], T, axisa=1, axisb=1, axisc=1),
+        f_BG_q_qp = self._f_BG_q_geometric(sigma_qp, _ddeval[0])
+        f_BG_q = self.f_BG_q_SAB.add_blocks(f_BG_q_qp.reshape(4, *f_BG_q_qp.shape[2:]))
+        return self._f_BG(sigma_qp, _deval[0]), f_BG_q
+
+    ###########################
+    # displacement-based part #
+    ###########################
+    def f_pot(self, t, q, u):
+        N, N_xi = self.N_int, self.N_xi_int
+        _eval, _deval = self.parent.kinematics._eval_internal_vec(N, N_xi, q, deval=1)
+        _eval_dot = self._eval_internal_vec_dot(N, N_xi, q, u, _deval=_deval)
+        sigma_qp = self.sigma_qp_db(_eval, _eval_dot)
+        return self._f_BG(sigma_qp, _deval[0])
+
+    def f_pot_q(self, t, q, u):
+        # q_dot = u
+        _, f_BG_q, _ = self._f_BG_and_derivatives(t, q, u)
+        return f_BG_q
+
+    def f_pot_u(self, t, q, u):
+        # q_dot = u
+        N, N_xi = self.N_int, self.N_xi_int
+        _eval, _deval = self.parent.kinematics._eval_internal_vec(N, N_xi, q, deval=1)
+        _eval_dot = self._eval_internal_vec_dot(N, N_xi, q, u, _deval=_deval)
+        _, _, D_qp = self.sigma_qp_db(_eval, _eval_dot, deval=1)
+        return self._f_BG_q_dot(D_qp, _deval[0])
+
+    def KN_f_pot(self, t, q, u):
+        # u = q_dot: K + N = -f_pot_q, split into symmetric and skew-symmetric part
+        return bsr_sym_skew(-self.f_pot_q(t, q, u))
+
+    ######################################
+    # compliance and constraint stresses #
+    ######################################
+    def W_sigma(self, q, SAB):
+        # W_BG = -l_sigma_q.T
+        return tuple(None if l_q is None else -l_q.T for l_q in self.l_sigma_q(q, SAB))
+
+    def Wla_sigma_q(self, q, la_c, la_g):
+        return self._Wla_BG_and_derivative(q, la_c, la_g)[1]
+
+    def K_sigma(self, q, la_c, la_g):
+        # u = q_dot
+        return self.Wla_sigma_q(q, la_c, la_g)
+
+
+class CosseratRod_internal_DBG(CosseratRod_internal_BG):
+    """Bubnov-Galerkin formulation with discrete nullspace projection, i.e.,
+    the generalized forces of the Bubnov-Galerkin formulation f_BG(q, q_dot)
+    are projected with the nodal kinematic equation q_dot = B(q) @ u, i.e.,
+    f = B(q).T @ f_BG(q, B(q) @ u).
+
+    As B is block diagonal w.r.t. the nodes, all projections are done on the
+    blocks of the bsr arrays, which keeps their sparsity pattern."""
+
+    def _q_dot_qbar(self, N, N_xi, q, u):
+        """q_dot_qbar[N/N_xi, qpi, qDOF], i.e., interpolated q_dot = B(q) @ u."""
+        u_nodes = u.reshape(self.parent.nnodes, -1)
+        B = self.parent.kin_eq.B_blocks(q)
+        q_dot_nodes = np.einsum("nij,nj->ni", B, u_nodes)
+        return np.array([N @ q_dot_nodes, N_xi @ q_dot_nodes])
+
+    ###########################
+    # displacement-based part #
+    ###########################
+    def f_pot(self, t, q, u):
+        return self.parent.kin_eq.BT_f(q, super().f_pot(t, q, u))
+
+    def f_pot_q(self, t, q, u):
+        f_BG, f_BG_q, f_BG_q_dot = self._f_BG_and_derivatives(t, q, u)
+
+        # q_dot = B(q) @ u, same pattern for f_BG_q and f_BG_q_dot
+        f_BG_q.data += bsr_right(f_BG_q_dot, self.parent.kin_eq.Bu_q_blocks(u)).data
+
+        B_T = self.parent.kin_eq.B_blocks(q).transpose(0, 2, 1)
+        return bsr_add_block_diag(
+            bsr_left(B_T, f_BG_q), self.parent.kin_eq.BT_f_q_blocks(q, f_BG)
         )
 
-        # TODO: make sparse?
-        # Wla_sigma_qp_qbar[N/N_xi, qpi, uDOF, qDOF]
-        Wla_sigma_qp_qbar = np.zeros(
-            (4, self.nquadrature_int_total, 6, self.parent.kinematics.nq_node)
+    def f_pot_u(self, t, q, u):
+        B = self.parent.kin_eq.B_blocks(q)
+        return bsr_left(B.transpose(0, 2, 1), bsr_right(super().f_pot_u(t, q, u), B))
+
+    def KN_f_pot(self, t, q, u):
+        # K + N = -f_pot_q @ B, split into symmetric and skew-symmetric part
+        f_pot_q_B = bsr_right(self.f_pot_q(t, q, u), self.parent.kin_eq.B_blocks(q))
+        return bsr_sym_skew(-f_pot_q_B)
+
+    ######################################
+    # compliance and constraint stresses #
+    ######################################
+    def W_sigma(self, q):
+        B_T = self.parent.kin_eq.B_blocks(q).transpose(0, 2, 1)
+        nq_node = self.parent.kinematics.nq_node
+        W = []
+        for l_q in self.l_sigma_q(q):
+            if l_q is None:
+                W.append(None)
+                continue
+            # W_BG = -l_q.T in bsr format with blocks (nq_node, nla_node)
+            W_BG = -l_q.T.tobsr(blocksize=(nq_node, l_q.blocksize[0]))
+            W.append(bsr_left(B_T, W_BG))
+        return tuple(W)
+
+    def Wla_sigma_q(self, q, la_c, la_g):
+        f_BG, f_BG_q = self._Wla_BG_and_derivative(q, la_c, la_g)
+        B_T = self.parent.kin_eq.B_blocks(q).transpose(0, 2, 1)
+        return bsr_add_block_diag(
+            bsr_left(B_T, f_BG_q), self.parent.kin_eq.BT_f_q_blocks(q, f_BG)
         )
-        # to be multiplied with N_xi <-> N
-        Wla_sigma_qp_qbar[2, :, :3, 3:] = I_n_P
 
-        # to be multiplied with N <-> N_xi
-        Wla_sigma_qp_qbar[1, :, 3:, :3] = -np.cross(
-            sigma_qp[:, :3, None], A_IB, axisa=1, axisb=2, axisc=1
-        )  # A_IB.T in gamma -> axisb=2
-        Wla_sigma_qp_qbar[1, :, 3:, 3:] = -np.cross(
-            sigma_qp[:, 3:, None], T, axisa=1, axisb=1, axisc=1
+    def K_sigma(self, q, la_c, la_g):
+        # derivative w.r.t. the nodal velocity-like increments, i.e., q_dot = B @ u
+        return bsr_right(
+            self.Wla_sigma_q(q, la_c, la_g), self.parent.kin_eq.B_blocks(q)
         )
-
-        # to be multiplied with N <-> N
-        Wla_sigma_qp_qbar[0, :, 3:, 3:] = -(
-            np.cross(sigma_qp[:, :3, None], B_gamma_bar_P, axisa=1, axisb=1, axisc=1)
-            + np.cross(sigma_qp[:, 3:, None], B_kappa_bar_P, axisa=1, axisb=1, axisc=1)
-        )
-        return self.h_pot_q_SAB.add_blocks(Wla_sigma_qp_qbar)
-
-    def K_sigma(self, q, la_c, la_g): ...
-
-    def f_pot(self, t, q, u): ...
-
-    def f_pot_q(self, t, q, u): ...

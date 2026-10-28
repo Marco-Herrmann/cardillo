@@ -46,6 +46,7 @@ eggs/
 jupyter_execute/
 
 .mypy_cache
+*.slurm
 
 # vtk files
 *.vtk

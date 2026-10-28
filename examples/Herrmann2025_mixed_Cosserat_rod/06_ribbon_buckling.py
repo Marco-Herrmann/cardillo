@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
+from warnings import warn
 
 from cardillo import System
 from cardillo.constraints import RigidConnection
@@ -34,6 +35,8 @@ class Ribbon(RodMaterialModel):
     def __init__(self, E, nu, a, t):
         assert a > t, "Arguments of a and t are wrong!"
         self.bendable_axis = 1
+        # torsion and bending, i.e., indices in Kappa with stiffness
+        self.idx_active = np.array([0, self.bendable_axis])
 
         self.nu = nu
         self.stiffness_factor = E * t**5 / (a**3 * (12 * (1 - nu**2)) ** 2)
@@ -55,7 +58,7 @@ class Ribbon(RodMaterialModel):
             pot[i] = self.potential_old(Gamma, Gamma0, Kappa, Kappa0)
         return pot
 
-    def sigma(self, epsilon, epsilon0, prepare):
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         sigma = np.zeros((nxi, 6))
         for i in range(nxi):
@@ -67,7 +70,7 @@ class Ribbon(RodMaterialModel):
             sigma[i, 3:] = self.B_m(Gamma, Gamma0, Kappa, Kappa0)
         return sigma
 
-    def sigma_epsilon(self, epsilon, epsilon0, prepare):
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
         nxi = np.atleast_2d(epsilon).shape[0]
         n_Ga = np.empty((nxi, 3, 3))
         n_Ka = np.empty((nxi, 3, 3))
@@ -84,6 +87,78 @@ class Ribbon(RodMaterialModel):
             m_Ka[i] = self.B_m_B_Kappa(Gamma, Gamma0, Kappa, Kappa0)
 
         return n_Ga, n_Ka, m_Ga, m_Ka
+
+    #################
+    # compliance form
+    #################
+    # C(epsilon) @ sigma - epsilon_rel(epsilon) = 0, with C = m_Ka^-1 and
+    # epsilon_rel = C @ sigma on the active components (torsion and bending
+    # around the bendable axis), all others have to be constrained
+    def C(self, epsilon, epsilon0, prepare):
+        m_Ka = self.sigma_epsilon(epsilon, epsilon0, None, prepare)[3]
+        idx = self.idx_active
+        C = np.zeros((len(epsilon), 6, 6))
+        C[:, 3 + idx[:, None], 3 + idx] = np.linalg.inv(m_Ka[:, idx[:, None], idx])
+        return C
+
+    def epsilon_rel(self, epsilon, epsilon0, prepare):
+        warn(
+            f"{self.__class__.__name__} is not convex, but its compliance form (la_e) "
+            "requires an invertible sigma_epsilon: Ribbon is non-convex for large "
+            "torsion with small bending (|torsion| > ~28 kappa_char), Sadowsky "
+            "across zero bending. Use it displacement-based instead."
+        )
+        C = self.C(epsilon, epsilon0, prepare)
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        return np.einsum("ijk,ik->ij", C, sigma)
+
+    def epsilon_rel_epsilon(self, epsilon, epsilon0, prepare):
+        # d(C @ sigma)/d epsilon = C @ sigma_epsilon + d(C @ sigma)/d epsilon|_sigma
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        eye = np.zeros((len(epsilon), 6, 6))
+        eye[:, 3 + self.idx_active, 3 + self.idx_active] = 1.0
+        return eye + self.Csigma_epsilon(epsilon, epsilon0, sigma, prepare)
+
+    def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
+        # d(m_Ka^-1 @ m)/d Kappa = -m_Ka^-1 @ T with T = d(m_Ka @ v)/d Kappa|_v,
+        # v = m_Ka^-1 @ m. T requires third derivatives of the potential,
+        # hence it is approximated by finite differences of B_m_B_Kappa.
+        from cardillo.math.approx_fprime import approx_fprime
+
+        C = self.C(epsilon, epsilon0, prepare)
+        v = np.einsum("ijk,ik->ij", C, sigma)
+        nxi = np.atleast_2d(epsilon).shape[0]
+        Csigma_epsilon = np.zeros((nxi, 6, 6))
+        for i in range(nxi):
+            Kappa0 = epsilon0[i, 3:]
+            T = approx_fprime(
+                epsilon[i, 3:],
+                lambda Kappa: self.B_m_B_Kappa(None, None, Kappa, Kappa0) @ v[i, 3:],
+            )
+            Csigma_epsilon[i, 3:, 3:] = -C[i, 3:, 3:] @ T
+
+        return Csigma_epsilon
+
+    def epsilon_rel_inv(self, sigma, epsilon0, prepare, rtol=1e-10, max_iter=20):
+        # solves C(epsilon) @ sigma - epsilon_rel(epsilon) = 0 for epsilon,
+        # which is equivalent to sigma(epsilon) - sigma = 0 as C is regular
+        idx = 3 + self.idx_active
+        atol = rtol * (1 + np.max(np.abs(sigma[:, idx])))
+
+        # Newton iteration, starting at linearized solution
+        C0 = self.C(epsilon0, epsilon0, prepare)
+        epsilon = epsilon0 + np.einsum("ijk,ik->ij", C0, sigma)
+        for _ in range(max_iter):
+            R = self.sigma(epsilon, epsilon0, None, prepare)[:, idx] - sigma[:, idx]
+            if np.max(np.abs(R)) < atol:
+                break
+            m_Ka = self.sigma_epsilon(epsilon, epsilon0, None, prepare)[3]
+            m_Ka = m_Ka[:, idx[:, None] - 3, idx - 3]
+            epsilon[:, idx] -= np.linalg.solve(m_Ka, R[:, :, None])[:, :, 0]
+        else:
+            raise RuntimeError("epsilon_rel_inv: Newton iteration did not converge")
+
+        return epsilon
 
     ###############
     # phi functions

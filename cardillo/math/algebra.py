@@ -96,12 +96,15 @@ def ax2skew_squared(a: np.ndarray) -> np.ndarray:
 
 
 def skew2ax(A: np.ndarray) -> np.ndarray:
-    """Computes the axial vector from a skew symmetric 3x3 matrix."""
-    assert A.shape == (3, 3)
+    """Computes the axial vector from a skew symmetric 3x3 matrix, i.e., of the
+    skew symmetric part of A. A stack of matrices (..., 3, 3) results in a stack
+    of axial vectors (..., 3)."""
+    A = np.asarray(A)
+    assert A.shape[-2:] == (3, 3)
     # fmt: off
-    return 0.5 * np.array([A[2, 1] - A[1, 2], 
-                           A[0, 2] - A[2, 0], 
-                           A[1, 0] - A[0, 1]], dtype=A.dtype)
+    return 0.5 * np.stack([A[..., 2, 1] - A[..., 1, 2],
+                           A[..., 0, 2] - A[..., 2, 0],
+                           A[..., 1, 0] - A[..., 0, 1]], axis=-1)
     # fmt: on
 
 

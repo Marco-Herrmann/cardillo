@@ -45,6 +45,8 @@ def consistent_initial_conditions(
             np.zeros(system.nla_g),
             np.zeros(system.nla_gamma),
             np.zeros(system.nla_c),
+            np.zeros(system.nla_e),
+            np.zeros(system.nla_d),
             np.zeros(system.nla_N),
             np.zeros(system.nla_F),
         )
@@ -63,6 +65,12 @@ def consistent_initial_conditions(
 
     W_c = system.W_c(t0, q0)
     la_c0 = system.la_c(t0, q0, u0)
+
+    W_e = system.W_e(t0, q0)
+    la_e0 = system.la_e(t0, q0)
+
+    W_d = system.W_d(t0, q0)
+    la_d0 = system.la_d(t0, q0, u0)
 
     # compute constant contact quantities
     g_N = system.g_N(t0, q0)
@@ -118,7 +126,7 @@ def consistent_initial_conditions(
 
     b0 = np.concatenate(
         [
-            h + W_c @ la_c0,
+            h + W_c @ la_c0 + W_e @ la_e0 + W_d @ la_d0,
             -zeta_g,
             -zeta_gamma,
         ]
@@ -235,7 +243,20 @@ def consistent_initial_conditions(
         g_S0, np.zeros(system.nla_S), atol=IS_CLOSE_ATOL
     ), "Initial conditions do not fulfill g_S0!"
 
-    return t0, q0, u0, q_dot0, u_dot0, la_g0, la_gamma0, la_c0, la_N0, la_F0
+    return (
+        t0,
+        q0,
+        u0,
+        q_dot0,
+        u_dot0,
+        la_g0,
+        la_gamma0,
+        la_c0,
+        la_e0,
+        la_d0,
+        la_N0,
+        la_F0,
+    )
 
 
 def compute_I_F(I_N, system, slice=True):
