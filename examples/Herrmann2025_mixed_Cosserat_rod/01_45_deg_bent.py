@@ -13,6 +13,7 @@ from cardillo.rods_new import (
     Simo1986,
     RectangularCrossSection,
     make_CosseratRod,
+    Material3D,
     Elasticity,
     Rectangle_Quadrature,
 )
@@ -68,7 +69,8 @@ def bent_45(
     material_model1 = Simo1986(Ei, Fi)
 
     cross_section_quadrature = Rectangle_Quadrature(5, 10, w, w)
-    material_model2 = Elasticity(E, nu, cross_section_quadrature)
+    material_model_3D = Elasticity(E, nu)
+    material_model2 = Material3D(material_model_3D, cross_section_quadrature)
 
     # initialize system
     system = System()
@@ -130,7 +132,9 @@ def bent_45(
     # read solution
     t = sol.t
     q = sol.q
+    u = sol.u
     la_c = sol.la_c
+    la_e = sol.la_e
     la_g = sol.la_g
 
     # export
@@ -208,10 +212,10 @@ def bent_45(
     nxi_el = max(11, int(np.ceil((nxi_ges_min + rod1.nelement - 1) / rod1.nelement)))
     stresses_header = "xi, nx, ny, nz, mx, my, mz, nxE, nyE, nzE, mxE, myE, MzE"
     xis, B_n, B_m = rod1.eval_stresses(
-        t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        t[-1], q[-1], u[-1], la_c[-1], la_e[-1], la_g[-1], n_per_element=nxi_el
     )
     _, B_nE, B_mE = rod2.eval_stresses(
-        t[-1], q[-1], la_c[-1], la_g[-1], n_per_element=nxi_el
+        t[-1], q[-1], u[-1], la_c[-1], la_e[-1], la_g[-1], n_per_element=nxi_el
     )
     stresses = np.hstack([xis[:, None], B_n, B_m, B_nE, B_mE]).T
 
