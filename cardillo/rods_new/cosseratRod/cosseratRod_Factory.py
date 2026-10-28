@@ -419,6 +419,15 @@ class CosseratRod(RodBlenderExport):
         if hasattr(self.internal, "assembler_callback"):
             self.internal.assembler_callback()
 
+    def step_callback(self, t, q, u):
+        if hasattr(self.kinematics, "step_callback"):
+            q, u = self.kinematics.step_callback(t, q, u)
+
+        if hasattr(self.internal, "step_callback"):
+            q, u = self.internal.step_callback(t, q, u)
+
+        return q, u
+
 
 def make_CosseratRod(
     *,

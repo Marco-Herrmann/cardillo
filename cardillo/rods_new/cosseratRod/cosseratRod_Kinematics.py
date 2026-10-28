@@ -209,8 +209,6 @@ class CosseratRod_Kinematics(ABC):
         self.parent = parent
         self.mesh = mesh
 
-        self.parent.step_callback = self.step_callback
-
         # export and visualization
         self.parent.nodes = self.nodes
         self.parent.nodalFrames = self.nodalFrames

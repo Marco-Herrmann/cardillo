@@ -263,6 +263,21 @@ class CosseratRod_Internal:
         if self._nla_d > 0:
             self._d_la_d_coo()
 
+    def step_callback(self, t, q, u):
+        if hasattr(self.material_model, "step_callback"):
+            _eval = self.parent.kinematics._eval_internal_vec(
+                self.N_int, self.N_xi_int, q
+            )
+            _eval_dot = self._eval_internal_vec_dot(
+                self.N_int, self.N_xi_int, q, u, _eval=_eval
+            )
+            epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
+            epsilon_dot = np.hstack(_eval_dot[1:]) / self.J_int_vec[:, None]
+            self.material_model.step_callback(
+                t, epsilon, self.epsilon0_int, epsilon_dot, self.material_model_qp
+            )
+        return q, u
+
     def _c_la_c_coo(self):
         C_qp = self.material_model.C_inv(self.material_model_qp)
         c_la_c = self.c_la_c_SAB.add_blocks(
@@ -386,7 +401,7 @@ class CosseratRod_Internal:
         )
         E_pot = np.sum(E_pot_i * self.qw_int_vec * self.J_int_vec)
         return E_pot
-    
+
     def l_rel(self, q):
         _eval = self.parent.kinematics._eval_internal_vec(self.N_int, self.N_xi_int, q)
         epsilon = np.hstack([_eval[1], _eval[2]]) / self.J_int_vec[:, None]
@@ -489,9 +504,10 @@ class CosseratRod_Internal:
             )
             J = np.linalg.norm(B_gamma0_bar, axis=1)
             # current strains
-            _, B_gamma_bar, B_kappa_bar = self.parent.kinematics._eval_internal_vec(
+            _eval = self.parent.kinematics._eval_internal_vec(
                 N, N_xi, q[self.parent.qDOF]
             )
+            _, B_gamma_bar, B_kappa_bar = _eval
 
             epsilon = np.hstack([B_gamma_bar, B_kappa_bar]) / J[:, None]
             epsilon0 = np.hstack([B_gamma0_bar, B_kappa0_bar]) / J[:, None]
@@ -500,7 +516,7 @@ class CosseratRod_Internal:
                 epsilon_dot = np.zeros_like(epsilon)
             else:
                 _eval_dot = self._eval_internal_vec_dot(
-                    N, N_xi, q[self.parent.qDOF], u[self.parent.uDOF]
+                    N, N_xi, q[self.parent.qDOF], u[self.parent.uDOF], _eval=_eval
                 )
                 epsilon_dot = np.hstack(_eval_dot[1:]) / J[:, None]
             sigma_db = self.material_model.sigma(
@@ -595,7 +611,7 @@ class CosseratRod_internal_PG_IB(CosseratRod_Internal):
             )
         return result
 
-    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _eval=None):
+    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _eval=None, _deval=None):
         """Strain rates consistent with the virtual strains of the Petrov-Galerkin
         formulation, i.e., the virtual strain operator applied to u. Returns
         (B_Omega, B_gamma_bar_dot, B_kappa_bar_dot)."""
@@ -860,7 +876,7 @@ class CosseratRod_internal_BG(CosseratRod_Internal):
         u_nodes = u.reshape(self.parent.nnodes, -1)
         return np.array([N @ u_nodes, N_xi @ u_nodes])
 
-    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _deval=None):
+    def _eval_internal_vec_dot(self, N, N_xi, q, u, *, _eval=None, _deval=None):
         """Strain rates epsilon_bar_dot = epsilon_bar_q @ q_dot with q_dot = q_dot(q, u).
         Returns (None, B_gamma_bar_dot, B_kappa_bar_dot)."""
         if _deval is None:

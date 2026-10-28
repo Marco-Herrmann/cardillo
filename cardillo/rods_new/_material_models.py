@@ -407,9 +407,7 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
         has_ln = prepare["has_ln"]
         k = prepare["EiFi_quad"].copy()
         k[has_ln, 0] += (
-            prepare["E_ln"][has_ln]
-            * epsilon0[has_ln, 0] ** 2
-            / epsilon[has_ln, 0] ** 2
+            prepare["E_ln"][has_ln] * epsilon0[has_ln, 0] ** 2 / epsilon[has_ln, 0] ** 2
         )
         return k
 
@@ -465,4 +463,210 @@ class Herrmann2026(LinearViscousDamping, RodMaterialModel):
             2 * E_ln * x0**2 / (b + sqrt_D),
             (-b + sqrt_D) / (2 * E_quad),
         )
+        return epsilon
+
+
+class Herrmann2026_lnexp(LinearViscousDamping, RodMaterialModel):
+    def __init__(
+        self, Ei, Fi, DEi=np.zeros(3), DFi=np.zeros(3), ln_part=0.25, exp_part=0.25
+    ):
+        """
+        Material model with quadratic shear, torsion and bending and an axial
+        part, which is a combination of a quadratic, a ln and an exp part.
+        With x = Gamma_1, x0 = Gamma0_1 and d = (x - x0) / x0, the axial
+        potential reads
+
+            W_x = 0.5 * E_quad * (x - x0)^2
+                  + E_ln * x0^2 * (d - ln(1 + d))
+                  + E_exp * x0^2 * (exp(d) - 1 - d),
+
+        where E_ln = ln_part * E0, E_exp = exp_part * E0 and E_quad is the
+        remaining part of E0. All parts have zero stress at the reference and
+        add up to the axial stiffness E0 there. The ln part stiffens under
+        compression (x -> 0), the exp part under extension.
+
+        Parameters
+        ----------
+        Ei : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
+            E0: axial stiffness, E1, E2: shear stiffnesses.
+        Fi : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
+            F0: torsional stiffness, F1, F2: flexural stiffnesses.
+        DEi, DFi : np.ndarray (3,) or callable(xi) -> np.ndarray (3,)
+            Linear viscous damping, see LinearViscousDamping.
+        ln_part, exp_part : float
+            Parts of E0 for the ln and the exp part.
+        """
+        self.Ei = parametrize(Ei)
+        self.Fi = parametrize(Fi)
+
+        assert ln_part >= 0 and exp_part >= 0, "ln_part and exp_part must be >= 0"
+        assert ln_part + exp_part <= 1, "ln_part + exp_part must be <= 1"
+        # the ln part alone limits the axial force in extension, the exp part
+        # alone in compression
+        assert ln_part < 1, "a pure ln part is bounded in extension"
+        assert exp_part < 1, "a pure exp part is bounded in compression"
+        self.ln_part = ln_part
+        self.exp_part = exp_part
+
+        self._init_damping(DEi, DFi)
+
+    def prepare(self, xi):
+        Ei = self.Ei(xi)
+        Fi = self.Fi(xi)
+        E0 = Ei[:, 0]
+        # split of the axial stiffness into the quadratic, ln and exp part
+        E_ln = self.ln_part * E0
+        E_exp = self.exp_part * E0
+        E_quad = E0 - E_ln - E_exp
+
+        prepare = {}
+        prepare["E_ln"] = E_ln
+        prepare["E_exp"] = E_exp
+        prepare["has_ln"] = E_ln != 0.0
+        prepare["has_exp"] = E_exp != 0.0
+        # diagonal of the quadratic part, i.e., stored component-wise
+        EiFi_quad = np.hstack([E_quad[:, None], Ei[:, 1:], Fi])
+        prepare["EiFi_quad"] = EiFi_quad
+        # constant parts of sigma_epsilon, only n_Ga[:, 0, 0] gets the ln and exp part
+        prepare["n_Ga_quad"] = np.apply_along_axis(np.diag, 1, EiFi_quad[:, :3])
+        prepare["m_Ka"] = np.apply_along_axis(np.diag, 1, Fi)
+        prepare["zeros"] = np.zeros((len(xi), 3, 3))
+        prepare.update(self._prepare_damping(xi))
+        return prepare
+
+    def potential(self, epsilon, epsilon0, prepare):
+        d_eps = epsilon - epsilon0
+        W = 0.5 * np.sum(prepare["EiFi_quad"] * d_eps**2, axis=1)
+
+        h = prepare["has_ln"]
+        x, x0 = epsilon[h, 0], epsilon0[h, 0]
+        W[h] += -prepare["E_ln"][h] * x0 * (x0 * np.log(x / x0) - (x - x0))
+
+        h = prepare["has_exp"]
+        x0 = epsilon0[h, 0]
+        d = (epsilon[h, 0] - x0) / x0
+        W[h] += prepare["E_exp"][h] * x0**2 * (np.exp(d) - 1 - d)
+        return W
+
+    def sigma(self, epsilon, epsilon0, epsilon_dot, prepare):
+        sigma = prepare["EiFi_quad"] * (epsilon - epsilon0)
+
+        h = prepare["has_ln"]
+        x, x0 = epsilon[h, 0], epsilon0[h, 0]
+        sigma[h, 0] += prepare["E_ln"][h] * x0 * (x - x0) / x
+
+        h = prepare["has_exp"]
+        x0 = epsilon0[h, 0]
+        d = (epsilon[h, 0] - x0) / x0
+        sigma[h, 0] += prepare["E_exp"][h] * x0 * (np.exp(d) - 1)
+        return sigma + self._sigma_damping(epsilon_dot, prepare)
+
+    def sigma_epsilon(self, epsilon, epsilon0, epsilon_dot, prepare):
+        n_Ga = prepare["n_Ga_quad"].copy()
+        n_Ga[:, 0, 0] = self._k(epsilon, epsilon0, prepare)[:, 0]
+        zeros = prepare["zeros"]
+        return n_Ga, zeros, zeros, prepare["m_Ka"]
+
+    # compliance form: C(epsilon) @ sigma - epsilon_rel(epsilon) = 0,
+    # with C = sigma_epsilon^-1 and epsilon_rel = C @ sigma.
+    # sigma_epsilon is diagonal, hence everything is evaluated component-wise.
+    def _k(self, epsilon, epsilon0, prepare):
+        """diagonal of sigma_epsilon"""
+        k = prepare["EiFi_quad"].copy()
+
+        h = prepare["has_ln"]
+        x, x0 = epsilon[h, 0], epsilon0[h, 0]
+        k[h, 0] += prepare["E_ln"][h] * x0**2 / x**2
+
+        h = prepare["has_exp"]
+        x0 = epsilon0[h, 0]
+        k[h, 0] += prepare["E_exp"][h] * np.exp((epsilon[h, 0] - x0) / x0)
+        return k
+
+    def C(self, epsilon, epsilon0, prepare):
+        k = self._k(epsilon, epsilon0, prepare)
+        C = np.zeros((len(epsilon), 6, 6))
+        C[:, range(6), range(6)] = 1 / k
+        return C
+
+    def epsilon_rel(self, epsilon, epsilon0, prepare):
+        k = self._k(epsilon, epsilon0, prepare)
+        return self.sigma(epsilon, epsilon0, None, prepare) / k
+
+    def epsilon_rel_epsilon(self, epsilon, epsilon0, prepare):
+        # d(C @ sigma)/d epsilon = C @ sigma_epsilon + d(C @ sigma)/d epsilon|_sigma
+        sigma = self.sigma(epsilon, epsilon0, None, prepare)
+        epsilon_rel_epsilon = self.Csigma_epsilon(epsilon, epsilon0, sigma, prepare)
+        epsilon_rel_epsilon[:, range(6), range(6)] += 1.0
+        return epsilon_rel_epsilon
+
+    def Csigma_epsilon(self, epsilon, epsilon0, sigma, prepare):
+        # only C[0, 0] = 1 / k0 depends on epsilon, with dk0/dx from the ln
+        # part -2 * E_ln * x0^2 / x^3 and from the exp part E_exp * exp(d) / x0
+        k0 = self._k(epsilon, epsilon0, prepare)[:, 0]
+        k0_x = np.zeros(len(epsilon))
+
+        h = prepare["has_ln"]
+        x, x0 = epsilon[h, 0], epsilon0[h, 0]
+        k0_x[h] += -2 * prepare["E_ln"][h] * x0**2 / x**3
+
+        h = prepare["has_exp"]
+        x0 = epsilon0[h, 0]
+        k0_x[h] += prepare["E_exp"][h] * np.exp((epsilon[h, 0] - x0) / x0) / x0
+
+        Csigma_epsilon = np.zeros((len(epsilon), 6, 6))
+        Csigma_epsilon[:, 0, 0] = -sigma[:, 0] * k0_x / k0**2
+        return Csigma_epsilon
+
+    def epsilon_rel_inv(self, sigma, epsilon0, prepare, rtol=1e-12, max_iter=100):
+        # solves C(epsilon) @ sigma - epsilon_rel(epsilon) = 0 for epsilon,
+        # which is equivalent to sigma(epsilon) - sigma = 0 as C is regular
+        epsilon = epsilon0 + sigma / prepare["EiFi_quad"]
+
+        # axial part: no closed form solution, hence a Newton iteration on
+        # n(x) - sigma_x = 0, safeguarded by bisection, as n(x) is monotonically
+        # increasing, but neither convex nor concave
+        n = sigma[:, 0]
+        x0 = epsilon0[:, 0]
+        has_ln = prepare["has_ln"]
+
+        def n_k(x):
+            eps = epsilon0.copy()
+            eps[:, 0] = x
+            n_x = self.sigma(eps, epsilon0, None, prepare)[:, 0]
+            k_x = self._k(eps, epsilon0, prepare)[:, 0]
+            return n_x, k_x
+
+        # bracket [lo, hi] with n(lo) <= n <= n(hi); the ln part requires x > 0
+        lo, hi = x0.copy(), x0.copy()
+        dist = x0.copy()
+        for _ in range(max_iter):
+            too_high = n_k(lo)[0] > n
+            if not np.any(too_high):
+                break
+            lo[too_high] = np.where(has_ln, 0.5 * lo, x0 - dist)[too_high]
+            dist[too_high] *= 2
+        dist = x0.copy()
+        for _ in range(max_iter):
+            too_low = n_k(hi)[0] < n
+            if not np.any(too_low):
+                break
+            hi[too_low] = (x0 + dist)[too_low]
+            dist[too_low] *= 2
+
+        x = np.clip(epsilon[:, 0], lo, hi)
+        for _ in range(max_iter):
+            n_x, k_x = n_k(x)
+            R = n_x - n
+            if np.max(np.abs(R) / (1 + np.abs(n))) < rtol:
+                break
+            lo = np.where(R < 0, x, lo)
+            hi = np.where(R > 0, x, hi)
+            x_new = x - R / k_x
+            outside = (x_new <= lo) | (x_new >= hi)
+            x = np.where(outside, 0.5 * (lo + hi), x_new)
+        else:
+            raise RuntimeError("epsilon_rel_inv: Newton iteration did not converge")
+
+        epsilon[:, 0] = x
         return epsilon
